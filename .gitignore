@@ -1,0 +1,16 @@
+# Environment files — contain secrets. Use *.example files as templates.
+.env
+CrowsNest/.env
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Logs
+*.log
+error_log.log
+
+# Editor / OS artifacts
+.DS_Store
+*.swp

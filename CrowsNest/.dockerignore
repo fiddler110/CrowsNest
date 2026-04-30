@@ -1,0 +1,25 @@
+# Credentials — never bake into the image; mounted at runtime via compose volume
+.env
+
+# CLI tool — only needed on the host, not inside the container
+set_password.py
+
+# Docs
+README.md
+*.md
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Development / editor artifacts
+.env.example
+.venv/
+venv/
+*.egg-info/
+dist/
+.pytest_cache/
+.mypy_cache/
