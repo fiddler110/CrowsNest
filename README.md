@@ -8,19 +8,20 @@ Docker Compose stack for the Windrose dedicated game server alongside the **Crow
 
 1. [Architecture Overview](#architecture-overview)
 2. [Directory Structure](#directory-structure)
-3. [Windrose Server Image](#windrose-server-image)
-4. [Prerequisites](#prerequisites)
-5. [First-Time Setup](#first-time-setup)
-6. [Environment Variables Reference](#environment-variables-reference)
-7. [Starting the Stack](#starting-the-stack)
-8. [CrowsNest Web UI](#crowsnest-web-ui)
-9. [Windrose+ Integration](#windrose-integration)
-10. [Night Shutdown](#night-shutdown)
-11. [Discord Notifications](#discord-notifications)
-12. [Security](#security)
-13. [Ports Reference](#ports-reference)
-14. [Common Operations](#common-operations)
-15. [Troubleshooting](#troubleshooting)
+3. [CrowsNest Image](#crowsnest-image)
+4. [Windrose Server Image](#windrose-server-image)
+5. [Prerequisites](#prerequisites)
+6. [First-Time Setup](#first-time-setup)
+7. [Environment Variables Reference](#environment-variables-reference)
+8. [Starting the Stack](#starting-the-stack)
+9. [CrowsNest Web UI](#crowsnest-web-ui)
+10. [Windrose+ Integration](#windrose-integration)
+11. [Night Shutdown](#night-shutdown)
+12. [Discord Notifications](#discord-notifications)
+13. [Security](#security)
+14. [Ports Reference](#ports-reference)
+15. [Common Operations](#common-operations)
+16. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -54,7 +55,8 @@ The `crowsnest` container:
 
 ```
 Windrose/
-├── compose.yaml                    # Docker Compose stack (both services)
+├── compose.yaml                    # Docker Compose stack (both services) — active config
+├── compose.yaml.example            # Annotated template showing Docker Hub vs local-build options
 ├── .env                            # Windrose server env vars (not committed — copy from .env.example)
 ├── .env.example                    # Template for the root .env
 ├── .gitignore
@@ -73,6 +75,16 @@ Windrose/
 
 ---
 
+## CrowsNest Image
+
+CrowsNest is published to Docker Hub and can be pulled directly — no local build required:
+
+> **[hub.docker.com/r/fiddler110/crowsnest](https://hub.docker.com/r/fiddler110/crowsnest)**
+
+The active `compose.yaml` defaults to `image: fiddler110/crowsnest:latest`. If you want to customise the source, switch to the local-build block documented in `compose.yaml.example`.
+
+---
+
 ## Windrose Server Image
 
 The `windrose` service in this stack uses the Docker image maintained by **indifferentbroccoli**:
@@ -86,7 +98,7 @@ Refer to that project for the full list of supported environment variables, volu
 ## Prerequisites
 
 - **Docker Engine** ≥ 24 with the `compose` plugin (`docker compose`)
-- **Python 3.10+** on the host (only for the one-time `set_password.py` step)
+- **Python 3.10+** on the host — only needed for the one-time `set_password.py` step **if you are not using the Docker Hub image**. When pulling from Docker Hub you can run `set_password.py` inside the container instead (see [Authentication](#authentication--setting-passwords)).
 - **Windrose+** installed in the server files (optional — controller works without it)
 - The host Docker socket group GID (run `stat -c '%g' /var/run/docker.sock` to find it)
 
@@ -97,13 +109,24 @@ Refer to that project for the full list of supported environment variables, volu
 ### 1 — Clone the repo and copy the env templates
 
 ```bash
-git clone https://github.com/<your-username>/CrowsNest.git
+git clone https://github.com/fiddler110/CrowsNest.git
 cd CrowsNest
 cp .env.example .env
 cp CrowsNest/.env.example CrowsNest/.env
 ```
 
 All commands below assume you are running from the directory that contains `compose.yaml` (the repo root).
+
+#### Choosing between Docker Hub and a local build
+
+The repository ships with two compose files:
+
+| File | Purpose |
+|------|---------|
+| `compose.yaml` | Active stack — uses `fiddler110/crowsnest:latest` from Docker Hub by default |
+| `compose.yaml.example` | Annotated template showing both the Docker Hub and local-build options |
+
+To switch to a local build, open `compose.yaml` and replace the `image:` line with the `build:` block shown in `compose.yaml.example`. Both variants share identical volume mounts, environment variables, and ports — only the image source differs.
 
 > **Using with an existing Docker stack**: This `compose.yaml` can be pulled into a parent stack using the [`include:` top-level key](https://docs.docker.com/compose/how-tos/multiple-compose-files/include/) (requires Docker Compose ≥ v2.20):
 >
@@ -167,7 +190,9 @@ NIGHT_SHUTDOWN_INTERVAL=30   # Minutes between checks   (default: 30)
 
 ### 4 — Set user passwords
 
-Users are defined by the `VALID_USERS` set in `app.py`. Before running, edit that set to include the usernames you want, then run `set_password.py` for each one:
+Users are defined by the `VALID_USERS` set in `app.py`. Before running, edit that set to include the usernames you want, then generate a hash for each one.
+
+**If running from source (local build):**
 
 ```bash
 cd CrowsNest
@@ -179,7 +204,20 @@ python3 set_password.py bob
 cd ..
 ```
 
-This writes `ALICE_PASSWORD_HASH` and `BOB_PASSWORD_HASH` into `CrowsNest/.env`. If you add or remove a username from `VALID_USERS`, rebuild the container afterward. Password-only changes take effect immediately — no rebuild needed.
+**If using the Docker Hub image** (Python not required on the host):
+
+```bash
+# Start the container first (it will start even without a password hash)
+docker compose up -d crowsnest
+
+# Then run set_password.py inside the running container
+docker exec -it crowsnest python set_password.py alice
+# Enter and confirm password when prompted
+
+docker exec -it crowsnest python set_password.py bob
+```
+
+This writes `ALICE_PASSWORD_HASH` and `BOB_PASSWORD_HASH` into the bind-mounted `CrowsNest/.env`. No container restart is needed for password changes. If you add or remove a username from `VALID_USERS` in `app.py`, a rebuild is required (local build only — Docker Hub users must wait for an updated image).
 
 ### 5 — Verify the Docker socket GID
 
@@ -294,11 +332,27 @@ Alternatively you can set a custom password yourself — edit `windrose_plus.jso
 
 All `docker compose` commands must be run from the **project root** (the directory that contains the top-level `docker-compose.yml` or wherever `INCLUDES` points). If you are running this as a standalone stack, run from the `Windrose/` directory.
 
+#### Using the Docker Hub image (default)
+
 ```bash
-# Build the CrowsNest image and start it (controller only — no game server yet)
-docker compose up -d --build crowsnest
+# Pull the latest image and start the controller
+docker compose pull crowsnest
+docker compose up -d crowsnest
 
 # Start the Windrose game server (requires the "windrose" profile)
+docker compose --profile windrose up -d windrose
+
+# Or start everything at once
+docker compose --profile windrose up -d
+```
+
+#### Using a local build
+
+```bash
+# Build and start the controller
+docker compose up -d --build crowsnest
+
+# Start the Windrose game server
 docker compose --profile windrose up -d windrose
 
 # Or start everything at once
@@ -307,7 +361,15 @@ docker compose --profile windrose up -d --build
 
 The `windrose` service is behind a **profile** (`profiles: ["windrose"]`) so it is not started by default with a bare `docker compose up`. This allows the controller to remain running even when the game server is stopped, and lets the controller itself manage the server lifecycle.
 
-### Rebuild after code changes
+### Update / rebuild the controller
+
+**Docker Hub image** — pull the latest and restart:
+
+```bash
+docker compose pull crowsnest && docker compose up -d --no-deps crowsnest
+```
+
+**Local build** — rebuild from source and restart:
 
 ```bash
 docker compose build crowsnest && docker compose up -d --no-deps crowsnest
@@ -491,7 +553,15 @@ docker stop windrose
 docker restart crowsnest
 ```
 
-### Rebuild and redeploy the controller after code changes
+### Update the CrowsNest controller
+
+**Docker Hub image** (default):
+
+```bash
+docker compose pull crowsnest && docker compose up -d --no-deps crowsnest
+```
+
+**Local build** (after code changes):
 
 ```bash
 # From the Docker Compose project root:

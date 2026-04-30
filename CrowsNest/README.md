@@ -1,8 +1,8 @@
-# CrowsNest
+# CrowsNest — Windrose Server Controller
 
-A lightweight Flask web application for starting, stopping, and monitoring the Windrose dedicated game server. Access is protected by per-user login. Runs as a Docker container alongside the game server.
+A login-protected web dashboard for managing and monitoring your Windrose dedicated game server. Start and stop the server, stream live logs, track resource usage, and get real-time Windrose+ data — all from a browser. Runs as a Docker container alongside the game server.
 
-See the [parent `Windrose/` README](../README.md) for full stack setup instructions.
+> **Source:** [github.com/fiddler110/CrowsNest](https://github.com/fiddler110/CrowsNest) | **Image:** [hub.docker.com/r/fiddler110/crowsnest](https://hub.docker.com/r/fiddler110/crowsnest)
 
 ---
 
@@ -12,134 +12,236 @@ See the [parent `Windrose/` README](../README.md) for full stack setup instructi
 - Live server status badge — `online` / `starting` / `offline` / `unknown`
 - One-click **Start** and **Stop** buttons
 - Smart polling: every 30 minutes at idle; every 10 seconds for 10 minutes after a Start/Stop action
-- Live log streaming (Server-Sent Events)
-- System resource stats (CPU, memory, optional GPU via `nvidia-smi`)
-- **Windrose+ panel** — live player count, player names, world time/weather, server uptime, connection info, memory usage, multipliers, and **server mode badge** (active/idle/degraded/boot) — requires Windrose+ plugin
+- Live log streaming via Server-Sent Events
+- System resource stats: CPU, memory, and optional GPU via `nvidia-smi`
+- **Windrose+ panel** — live player count, player names, world time/weather, server uptime, connection info, memory usage, multipliers, and server mode badge (`active` / `idle` / `degraded` / `boot`) — requires the Windrose+ plugin
 - Night shutdown — auto-stops the server when empty during a configurable overnight window
 - Optional Discord notifications on automated shutdown
 
 ---
 
-## Directory Structure
+## How to Use
 
+### First-time setup
+
+**1.** Copy the env file templates and fill in your values:
+
+```bash
+cp CrowsNest/.env.example CrowsNest/.env
 ```
-CrowsNest/
-├── app.py              # Flask application
-├── set_password.py     # CLI tool for setting user passwords
-├── Dockerfile          # Python 3.12-slim + Docker CLI
-├── requirements.txt    # Python dependencies
-├── .env                # Credentials and config (not committed — see .env.example)
-├── .env.example        # Template showing all expected keys
-└── templates/
-    ├── login.html
-    └── index.html
+
+**2.** Set a password for each user (see [Authentication](#authentication)):
+
+```bash
+docker run --rm -it \
+  -v ./CrowsNest/.env:/app/.env \
+  fiddler110/crowsnest \
+  python set_password.py scott
+```
+
+**3.** Start the container:
+
+```bash
+docker compose up -d crowsnest
+```
+
+---
+
+### Docker Compose
+
+```yaml
+services:
+  crowsnest:
+    image: fiddler110/crowsnest:latest
+    container_name: crowsnest
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - WINDROSE_COMPOSE_FILE=/windrose/compose.yaml
+      - ENV_FILE=/app/.env
+      - WINDROSE_ENV_FILE=/windrose/.env
+      - COMPOSE_PROJECT_NAME=windrose
+      - TZ=${TZ:-UTC}
+    group_add:
+      - "${DOCKER_GID:-999}"
+    volumes:
+      - ./CrowsNest/.env:/app/.env
+      - ./compose.yaml:/windrose/compose.yaml:ro
+      - ./.env:/windrose/.env
+      - /var/run/docker.sock:/var/run/docker.sock
+```
+
+```bash
+docker compose up -d
+```
+
+### Docker Run
+
+```bash
+docker run -d \
+  --restart unless-stopped \
+  --name crowsnest \
+  -p 5000:5000 \
+  --add-host host.docker.internal:host-gateway \
+  --group-add "${DOCKER_GID:-999}" \
+  -e WINDROSE_COMPOSE_FILE=/windrose/compose.yaml \
+  -e ENV_FILE=/app/.env \
+  -e WINDROSE_ENV_FILE=/windrose/.env \
+  -e COMPOSE_PROJECT_NAME=windrose \
+  -e TZ=UTC \
+  -v ./CrowsNest/.env:/app/.env \
+  -v ./compose.yaml:/windrose/compose.yaml:ro \
+  -v ./.env:/windrose/.env \
+  -v /var/run/docker.sock:/var/run/docker.sock \
+  fiddler110/crowsnest:latest
 ```
 
 ---
 
 ## Authentication
 
-### How it works
+Users are defined by the `VALID_USERS` set in `app.py`. Each username must also have a corresponding `<NAME>_PASSWORD_HASH` entry in `.env`. Passwords are stored as **PBKDF2-SHA256 hashes** (260,000 iterations, random 16-byte salt) — never in plaintext.
 
-Users are defined by the `VALID_USERS` set near the top of `app.py`. Each name in that set must have a corresponding `<NAME>_PASSWORD_HASH` entry in `.env`. Passwords are stored as **PBKDF2-SHA256 hashes** (260,000 iterations, random 16-byte salt) — never in plaintext.
+### Setting passwords
 
-### Adding or changing users
-
-**1. Add the username to `VALID_USERS` in `app.py`** (if it isn't already there):
-
-```python
-VALID_USERS = {"alice", "bob"}
-```
-
-**2. Generate and store the password hash** using the helper script:
+Use the bundled `set_password.py` helper to generate and store a hash:
 
 ```bash
-cd CrowsNest
-python3 set_password.py alice
+# Run against the mounted .env file
+docker exec -it crowsnest python set_password.py scott
 # Enter and confirm the password when prompted
 ```
 
-This appends (or updates) `ALICE_PASSWORD_HASH=<hash>` in `.env`. Repeat for each user.
+This writes `SCOTT_PASSWORD_HASH=<hash>` into `.env`. No container restart is needed — the bind-mounted `.env` is read on every login attempt.
 
-`set_password.py` validates username format (`[a-zA-Z0-9_]`, max 64 chars) but does not edit `VALID_USERS` for you. A user can only log in if they are present in both `VALID_USERS` and `.env`.
+### Adding users
 
-**3. Rebuild the container** (only needed if you changed `VALID_USERS` in `app.py`):
+**1.** Add the username to `VALID_USERS` in `app.py`:
 
-```bash
-docker compose build crowsnest
-docker compose up -d --no-deps crowsnest
+```python
+VALID_USERS = {"scott", "alice"}
 ```
 
-Password changes (step 2 only) take effect immediately — no rebuild needed, since `.env` is bind-mounted.
+**2.** Generate the hash as shown above.
+
+**3.** Rebuild and restart the container (required only when `VALID_USERS` changes):
+
+```bash
+docker compose build crowsnest && docker compose up -d --no-deps crowsnest
+```
 
 ### Login behaviour
 
-- Sessions are invalidated when the browser is closed (`SESSION_PERMANENT = False`).
+- Sessions invalidate on browser close (`SESSION_PERMANENT = False`).
 - Login attempts are rate-limited to 10 per IP per 60-second window.
-- Session cookies are set with `HttpOnly`, `SameSite=Strict`, and (in production) `Secure` flags.
+- Cookies are set with `HttpOnly`, `SameSite=Strict`, and (in production) `Secure` flags.
 
 ---
 
-## Configuration
+## Environment Variables
 
-All configuration lives in `CrowsNest/.env`. Create this file from `.env.example` before first run.
+All configuration lives in `CrowsNest/.env`.
 
-| Variable | Required | Default | Description |
-|----------|----------|---------|-------------|
-| `<NAME>_PASSWORD_HASH` | Yes | — | PBKDF2-SHA256 hash for each user. Generated by `set_password.py`. One entry per user in `VALID_USERS`. |
-| `SESSION_SECRET` | No | auto-generated | Flask session signing key. Auto-created on first run if absent. |
-| `TZ` | No | `UTC` | IANA timezone used for night shutdown scheduling and log timestamps, e.g. `America/New_York`. Forwarded automatically from the root `.env` via `compose.yaml` — no need to set it separately unless you want a different timezone for the controller. |
-| `WINDROSE_PLUS_RCON_PASSWORD` | No | — | Must match `rcon.password` in `windrose_plus.json`. Required to enable Windrose+ integration. |
-| `WPLUS_HTTP_URL` | No | `http://host.docker.internal:8780` | Base URL of the Windrose+ HTTP API. |
-| `DISCORD_WEBHOOK_URL` | No | — | Discord webhook for night shutdown notifications. |
-| `NIGHT_SHUTDOWN_ENABLED` | No | `true` | Set to `false` to disable the night shutdown job entirely. |
-| `NIGHT_SHUTDOWN_START` | No | `23` | Hour (0–23) the shutdown window opens. |
-| `NIGHT_SHUTDOWN_END` | No | `5` | Hour (0–23) the shutdown window closes. Wraps midnight. |
-| `NIGHT_SHUTDOWN_INTERVAL` | No | `30` | Minutes between idle checks. |
-
----
-
-## Running Locally (without Docker)
-
-```bash
-pip install -r requirements.txt
-
-# Set at least one password
-python3 set_password.py <username>
-
-# Run the app
-python3 app.py
-```
-
-The app listens on `http://0.0.0.0:5000`.
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `<NAME>_PASSWORD_HASH` | — | PBKDF2-SHA256 hash for each user. **Required** — generated by `set_password.py`. |
+| `SESSION_SECRET` | auto-generated | Flask session signing key. Created automatically on first run if absent. |
+| `TZ` | `UTC` | IANA timezone for night shutdown scheduling and log timestamps, e.g. `America/New_York`. |
+| `WINDROSE_PLUS_RCON_PASSWORD` | — | Must match `rcon.password` in `windrose_plus.json`. Required for Windrose+ integration. |
+| `WPLUS_HTTP_URL` | `http://host.docker.internal:8780` | Base URL of the Windrose+ HTTP API. |
+| `DISCORD_WEBHOOK_URL` | — | Discord webhook URL for night shutdown notifications. |
+| `NIGHT_SHUTDOWN_ENABLED` | `true` | Set to `false` to disable the night shutdown job entirely. |
+| `NIGHT_SHUTDOWN_START` | `23` | Hour (0–23) the shutdown window opens. |
+| `NIGHT_SHUTDOWN_END` | `5` | Hour (0–23) the shutdown window closes. Wraps midnight. |
+| `NIGHT_SHUTDOWN_INTERVAL` | `30` | Minutes between idle checks inside the shutdown window. |
+| `INSECURE_COOKIE` | `false` | Set to `true` to disable the `Secure` cookie flag (for plain-HTTP dev environments). |
 
 ---
 
-## Running via Docker Compose
-
-See the [parent README](../README.md) for the full workflow. Quick reference:
-
-```bash
-# From the Windrose/ directory
-docker compose up -d --build crowsnest
-```
-
-### Docker volumes used by this service
+## Volumes
 
 | Host path | Container path | Purpose |
 |-----------|----------------|---------|
-| `./CrowsNest/.env` | `/app/.env` | Credential and config store |
+| `./CrowsNest/.env` | `/app/.env` | Credentials and runtime configuration |
 | `./compose.yaml` | `/windrose/compose.yaml` | Compose file used to start/stop the game server (read-only) |
 | `./.env` | `/windrose/.env` | Windrose server `.env` (for `UPDATE_ON_START` toggling) |
-| `/var/run/docker.sock` | `/var/run/docker.sock` | Docker socket so the app can issue `docker` commands |
+| `/var/run/docker.sock` | `/var/run/docker.sock` | Docker socket for issuing `docker` commands against the host |
 
-> **No shared data volume is needed.** All Windrose+ data is fetched over HTTP via `http://host.docker.internal:8780`.
+> **No shared data volume is needed between containers.** All Windrose+ data is fetched over HTTP via `http://host.docker.internal:8780`.
+
+---
+
+## Docker Socket Access
+
+The container runs as a non-root user (`appuser`, UID 1000). To access the Docker socket at runtime, the container is added to the host's `docker` group via `group_add`.
+
+Find your host Docker group GID:
+
+```bash
+stat -c '%g' /var/run/docker.sock
+```
+
+Set `DOCKER_GID` in your root `.env` if it differs from the default of `999`:
+
+```env
+DOCKER_GID=998
+```
+
+---
+
+## Windrose+ Integration
+
+When [Windrose+](https://github.com/humangenome/WindrosePlus) is enabled on the game server (`WINDROSE_PLUS_ENABLED=true`), CrowsNest connects to its HTTP API at port `8780` and surfaces a live info panel on the dashboard showing:
+
+- Active player count and names
+- Server mode: `active` / `idle` / `degraded` / `boot`
+- World time of day and current weather
+- Server uptime
+- Connection info and region
+- Memory usage
+- Multiplier values
+
+Set `WINDROSE_PLUS_RCON_PASSWORD` in `CrowsNest/.env` to the same value as `rcon.password` in your `windrose_plus.json` to enable this panel.
+
+---
+
+## Night Shutdown
+
+CrowsNest can automatically stop the Windrose server during overnight hours if the server is empty. This is useful to avoid leaving a server running with no players.
+
+The scheduler wakes up every `NIGHT_SHUTDOWN_INTERVAL` minutes within the configured window and stops the server only if the player count is zero.
+
+Configure via environment variables in `CrowsNest/.env`:
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `NIGHT_SHUTDOWN_ENABLED` | `true` | Enable or disable the feature |
+| `NIGHT_SHUTDOWN_START` | `23` | Hour the window opens (e.g. `23` = 11 PM) |
+| `NIGHT_SHUTDOWN_END` | `5` | Hour the window closes (e.g. `5` = 5 AM) |
+| `NIGHT_SHUTDOWN_INTERVAL` | `30` | Check interval in minutes |
+
+The window wraps midnight — a start of `23` and end of `5` covers 11 PM to 5 AM.
+
+You can also toggle and reconfigure night shutdown live from the dashboard without restarting the container.
+
+---
+
+## Discord Notifications
+
+Set `DISCORD_WEBHOOK_URL` in `CrowsNest/.env` to receive a notification in a Discord channel whenever the night shutdown job stops the server.
+
+```env
+DISCORD_WEBHOOK_URL=https://discord.com/api/webhooks/...
+```
 
 ---
 
 ## HTTP API
 
-All endpoints require an active session cookie (log in via the web UI first).
+All endpoints require an active session cookie obtained via `/login`.
 
 | Method | Path | Description |
 |--------|------|-------------|
@@ -157,3 +259,25 @@ All endpoints require an active session cookie (log in via the web UI first).
 | `POST` | `/api/update-on-start` | Toggle `UPDATE_ON_START` |
 | `GET` | `/api/night-shutdown` | Night shutdown config and next scheduled check time |
 | `POST` | `/api/night-shutdown` | Enable/disable and reconfigure the shutdown window |
+
+---
+
+## Running Locally (without Docker)
+
+```bash
+pip install -r requirements.txt
+
+# Set at least one password
+python3 set_password.py scott
+
+# Run the dev server
+python3 app.py
+```
+
+The app listens on `http://0.0.0.0:5000`. Set `INSECURE_COOKIE=true` in `.env` when running without HTTPS.
+
+---
+
+## About
+
+CrowsNest is a companion controller for the [Windrose dedicated server Docker image](https://hub.docker.com/r/indifferentbroccoli/windrose-server-docker) maintained by [indifferentbroccoli](https://indifferentbroccoli.com/). CrowsNest is an independent project and is not affiliated with indifferentbroccoli or the Windrose game.

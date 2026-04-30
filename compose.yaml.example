@@ -1,0 +1,87 @@
+# compose.yaml — Windrose + CrowsNest stack
+#
+# CrowsNest deployment options
+# ─────────────────────────────
+# Choose ONE of the two blocks below for the crowsnest service.
+#
+# Option A — Pull the pre-built image from Docker Hub (recommended):
+#   Uses fiddler110/crowsnest:latest. No local build required.
+#   Update by running: docker compose pull crowsnest && docker compose up -d --no-deps crowsnest
+#
+# Option B — Build the image locally from source:
+#   Use this if you have cloned the CrowsNest source and want to customise it.
+#   Update by running: docker compose build crowsnest && docker compose up -d --no-deps crowsnest
+
+services:
+
+  # ── Option A: Docker Hub image ────────────────────────────────────────────
+  crowsnest:
+    image: fiddler110/crowsnest:latest
+    container_name: crowsnest
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - WINDROSE_COMPOSE_FILE=/windrose/compose.yaml
+      - ENV_FILE=/app/.env
+      - WINDROSE_ENV_FILE=/windrose/.env
+      - COMPOSE_PROJECT_NAME=windrose
+      - TZ=${TZ:-UTC}
+    # Grant the non-root appuser access to the host Docker socket.
+    # Run: stat -c '%g' /var/run/docker.sock  to get your host docker group GID.
+    # Set DOCKER_GID in the root .env if it differs from 999 (Ubuntu/Debian default).
+    group_add:
+      - "${DOCKER_GID:-999}"
+    volumes:
+      - ./CrowsNest/.env:/app/.env
+      - ./compose.yaml:/windrose/compose.yaml:ro
+      - ./.env:/windrose/.env
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  # ── Option B: Build locally ───────────────────────────────────────────────
+  # Uncomment the block below and remove (or comment out) Option A above.
+  #
+  # crowsnest:
+  #   build:
+  #     context: ./CrowsNest
+  #   container_name: crowsnest
+  #   restart: unless-stopped
+  #   ports:
+  #     - "5000:5000"
+  #   extra_hosts:
+  #     - "host.docker.internal:host-gateway"
+  #   environment:
+  #     - WINDROSE_COMPOSE_FILE=/windrose/compose.yaml
+  #     - ENV_FILE=/app/.env
+  #     - WINDROSE_ENV_FILE=/windrose/.env
+  #     - COMPOSE_PROJECT_NAME=windrose
+  #     - TZ=${TZ:-UTC}
+  #   group_add:
+  #     - "${DOCKER_GID:-999}"
+  #   volumes:
+  #     - ./CrowsNest/.env:/app/.env
+  #     - ./compose.yaml:/windrose/compose.yaml:ro
+  #     - ./.env:/windrose/.env
+  #     - /var/run/docker.sock:/var/run/docker.sock
+
+  # ── Windrose game server ───────────────────────────────────────────────────
+  # Behind the "windrose" profile so it is NOT started by a bare `docker compose up`.
+  # Managed via the CrowsNest web UI, or start/stop manually with:
+  #   docker compose --profile windrose up -d windrose
+  #   docker compose --profile windrose stop windrose
+  windrose:
+    image: indifferentbroccoli/windrose-server-docker:latest
+    profiles: ["windrose"]
+    restart: unless-stopped
+    container_name: windrose
+    stop_grace_period: 30s
+    network_mode: host
+    env_file:
+      - .env
+    environment:
+      - P2P_PROXY_ADDRESS=${P2P_PROXY_ADDRESS:-10.0.0.2}
+    volumes:
+      - ${USERDIR}/Windrose:/home/steam/server-files
+      - ${USERDIR}/Windrose/Saved:/server/R5/Saved
