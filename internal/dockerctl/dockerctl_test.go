@@ -264,6 +264,21 @@ func TestRun_ErrorIncludesStderr(t *testing.T) {
 	}
 }
 
+func TestHost_PrependsGlobalFlag(t *testing.T) {
+	c, logPath := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
+[ "$3" = "stop" ] && exit 0
+`)
+	c.Host = "tcp://docker-socket-proxy:2375"
+	if err := c.Stop(context.Background(), "windrose"); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+	invocations := readInvocations(t, logPath)
+	want := "-H tcp://docker-socket-proxy:2375 stop windrose"
+	if len(invocations) != 1 || invocations[0] != want {
+		t.Fatalf("invocations = %v, want [%q]", invocations, want)
+	}
+}
+
 func TestRun_Timeout(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\nsleep 5\n")
 	c.Timeout = 50 * time.Millisecond

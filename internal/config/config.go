@@ -48,6 +48,14 @@ type ServerConfig struct {
 	// from that header when the request's RemoteAddr is in this list.
 	// Empty (the default) means never trust it.
 	TrustedProxies []string `yaml:"trusted_proxies"`
+
+	// DockerHost, when set, points every docker/docker-compose CLI call at
+	// this daemon instead of the local /var/run/docker.sock — e.g.
+	// "tcp://docker-socket-proxy:2375" to run against a docker-socket-proxy
+	// (see compose.yaml.example) instead of mounting the raw socket into
+	// this container. Empty (the default) leaves the docker CLI's own
+	// resolution in place (DOCKER_HOST env var, then the local socket).
+	DockerHost string `yaml:"docker_host"`
 }
 
 // IdleShutdownConfig controls the auto-stop-when-empty policy. A nil

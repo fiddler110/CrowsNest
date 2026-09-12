@@ -7,6 +7,36 @@
 # CrowsNest itself starts/stops the game services on demand via the Docker
 # socket; you generally don't run `--profile <game> up` yourself. See
 # config.yaml.example for the matching CrowsNest configuration.
+#
+# Docker socket access — two ways to grant it:
+#
+#   1. Direct socket mount (default below): simplest, but a container with
+#      /var/run/docker.sock has root-equivalent control of the whole host —
+#      anything that ever runs code inside the crowsnest container inherits
+#      that. Fine for a small trusted homelab; worth knowing the blast
+#      radius before exposing this beyond your LAN.
+#   2. docker-socket-proxy (commented out below): puts a small HTTP proxy
+#      (github.com/Tecnativa/docker-socket-proxy) between crowsnest and the
+#      real socket, allowlisting only the Docker API endpoints crowsnest
+#      actually calls (list/inspect/start/stop/exec/logs/stats/compose) and
+#      rejecting everything else (image builds, volume/network deletion,
+#      swarm, secrets, ...). To switch to it: comment out crowsnest's
+#      `group_add` and the `/var/run/docker.sock` volume line below,
+#      uncomment the `dockerproxy` service and crowsnest's `depends_on`
+#      line, and set `server.docker_host: tcp://dockerproxy:2375` in
+#      config.yaml (see config.yaml.example) — crowsnest passes that
+#      straight through as the docker CLI's `-H` flag on every call, no
+#      env var needed. Verified against a real Tecnativa proxy: read-only
+#      calls (ps/inspect/stats) work unchanged, and the proxy correctly
+#      403s any call outside the allowlisted set below.
+#
+#      Note the EXEC=1 permission below: Windrose's status check greps a
+#      log file inside its own container via `docker exec`, so the proxy
+#      must allow exec to preserve that "starting vs. online" detection.
+#      That's real exec access to the Windrose container (not root on the
+#      host, but real code-execution-in-container reach) — drop EXEC=1 if
+#      you'd rather lose Windrose's fine-grained status in exchange for not
+#      exposing exec at all; docker-ps-only status still works either way.
 
 services:
   crowsnest:
@@ -27,6 +57,8 @@ services:
     # Grants the container's non-root user access to the host Docker socket.
     # Run `stat -c '%g' /var/run/docker.sock` to find your host's docker
     # group GID if it differs from the Debian/Ubuntu default of 999.
+    # Not needed when using the dockerproxy alternative below — remove this
+    # and the docker.sock volume line, and set server.docker_host instead.
     group_add:
       - "${DOCKER_GID:-999}"
     volumes:
@@ -35,6 +67,42 @@ services:
       - ./session_secret:/app/.session_secret
       - ./compose.yaml:/data/compose.yaml:ro
       - /var/run/docker.sock:/var/run/docker.sock
+    # depends_on:
+    #   - dockerproxy
+
+  # docker-socket-proxy alternative to mounting /var/run/docker.sock
+  # straight into crowsnest — see the note above. Uncomment this service,
+  # comment out crowsnest's group_add/docker.sock lines above, and set
+  # `server.docker_host: tcp://dockerproxy:2375` in config.yaml.
+  # dockerproxy:
+  #   image: ghcr.io/tecnativa/docker-socket-proxy:latest
+  #   container_name: crowsnest-dockerproxy
+  #   restart: unless-stopped
+  #   # No ports: — only reachable from other containers on this compose
+  #   # network, never from the host or the internet.
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock:ro
+  #   environment:
+  #     # Read-only inspection — status/logs/stats/`docker ps`:
+  #     - CONTAINERS=1
+  #     - IMAGES=1
+  #     - NETWORKS=1
+  #     - VOLUMES=1
+  #     - INFO=1
+  #     - VERSION=1
+  #     - PING=1
+  #     - GET=1
+  #     - HEAD=1
+  #     # Needed for start/stop/switch and `docker compose up`:
+  #     - POST=1
+  #     - START=1
+  #     - STOP=1
+  #     - CREATE=1
+  #     # Needed only for Windrose's in-container log-marker status check —
+  #     # see the caveat above. Every other feature works with this at 0.
+  #     - EXEC=1
+  #     # Leave everything else at the proxy's secure-by-default 0: no
+  #     # BUILD, DELETE, SECRETS, SERVICES, SWARM, SYSTEM, etc.
 
   windrose:
     image: indifferentbroccoli/windrose-server-docker:latest

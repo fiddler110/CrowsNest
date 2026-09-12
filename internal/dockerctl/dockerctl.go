@@ -49,6 +49,13 @@ func newCmd(ctx context.Context, bin string, args ...string) *exec.Cmd {
 }
 
 func (c *Client) newCmd(ctx context.Context, args ...string) *exec.Cmd {
+	if c.Host != "" {
+		// The docker CLI's -H flag is global: it must precede the
+		// subcommand ("docker -H <host> ps ...", "docker -H <host> compose
+		// -f ... up -d ..."), which prepending here guarantees regardless
+		// of which operation called us.
+		args = append([]string{"-H", c.Host}, args...)
+	}
 	return newCmd(ctx, c.bin(), args...)
 }
 
@@ -82,8 +89,18 @@ type Client struct {
 	// DockerBin overrides the docker binary/path; defaults to "docker".
 	DockerBin string
 
+	// Host, when non-empty, is passed as the docker CLI's global `-H` flag
+	// on every invocation (e.g. "tcp://docker-socket-proxy:2375"), so every
+	// command — including `docker compose` — is issued against a remote
+	// daemon or a docker-socket-proxy instead of the local
+	// /var/run/docker.sock. Empty (the default) leaves the docker CLI to
+	// its own resolution (DOCKER_HOST env var, then the local socket),
+	// which is what a direct socket-mount deployment wants.
+	Host string
+
 	// NvidiaSmiBin overrides the nvidia-smi binary/path used by GPUStats;
-	// defaults to "nvidia-smi".
+	// defaults to "nvidia-smi". Unaffected by Host — GPU stats are read
+	// straight from the host's nvidia-smi, not through the Docker API.
 	NvidiaSmiBin string
 
 	// Timeout, when non-zero, overrides every operation's default timeout.

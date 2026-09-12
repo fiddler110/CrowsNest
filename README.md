@@ -52,6 +52,23 @@ existing game server images from Docker Hub — no local Go toolchain needed.
 3. Create at least one login: `docker compose exec crowsnest crowsnest set-password <username>`.
 4. Open `http://<host>:5000`.
 
+### Docker socket access
+
+By default `compose.yaml.example` mounts `/var/run/docker.sock` straight
+into the crowsnest container so it can control the game containers. That's
+the simplest setup, but it's worth knowing what it grants: anything that
+ever runs arbitrary code inside the crowsnest container has root-equivalent
+control of the whole host through that socket.
+
+If you'd rather not hand over the raw socket, `compose.yaml.example` also
+has a commented-out [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy)
+service that sits between crowsnest and the socket, allowlisting only the
+Docker API calls crowsnest actually makes (list/inspect/start/stop/logs/stats,
+`docker compose up`, and — only if you want Windrose's fine-grained
+starting/online status — `exec`). Point crowsnest at it with
+`server.docker_host: tcp://dockerproxy:2375` in `config.yaml` instead of
+the socket mount; see the comments in both example files for the swap.
+
 ## HTTP API
 
 All `/api/*` routes require an active session cookie (log in via `/login`

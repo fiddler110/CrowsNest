@@ -10,6 +10,9 @@ server:
   session_secret_file: /app/.session_secret   # generated on first run if absent
   tz: "America/New_York"                      # IANA name; used by night_shutdown and logs
   # trusted_proxies: ["10.0.0.0/8"]           # CIDRs allowed to set X-Forwarded-For
+  # docker_host: tcp://dockerproxy:2375       # route docker/compose calls through a
+                                               # docker-socket-proxy instead of the raw
+                                               # socket mount — see compose.yaml.example
 
 idle_shutdown:
   enabled: true

@@ -85,7 +85,7 @@ func serve() error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	docker := &dockerctl.Client{}
+	docker := &dockerctl.Client{Host: cfg.Server.DockerHost}
 	defs := games.FromConfig(cfg.Games, docker)
 	var valheimTrackers []*valheim.Tracker
 	for i, d := range defs {
