@@ -19,53 +19,42 @@ grouped by priority, not phase; check them off as they land.
   back as a real 403 through the same code path. This is opt-in — the raw
   socket mount stays the default so nobody's existing setup breaks.
 
+- [x] **CSP nonce is generated but never used — broke CSRF in real
+  browsers.** The inline `<script>window.CROWSNEST_CSRF = ...</script>` in
+  `dashboard.html` had no `nonce`, so `script-src 'self' 'nonce-<x>'` would
+  have silently blocked it in any standards-compliant browser, leaving
+  `window.CROWSNEST_CSRF` unset and every Start/Stop/Switch POST rejected
+  with 403. Fixed by dropping the inline script entirely: the CSRF token is
+  now delivered via `<meta name="csrf-token" content="{{.CSRFToken}}">` and
+  read in `app.js` via `document.querySelector('meta[name=csrf-token]').content`
+  — sidesteps CSP nonces, no per-template nonce plumbing needed.
+  Files: `internal/web/templates/dashboard.html`, `internal/web/static/app.js`.
+
+- [x] **`SecureCookies` is now wired up.** Added a `server.secure_cookies`
+  config bool (`internal/config/config.go`), passed into
+  `auth.Service.SecureCookies` in `main.go`, and `auth.SecurityHeaders` now
+  takes an `hsts bool` param that sets `Strict-Transport-Security` when
+  enabled. Documented in `config.yaml.example`. Still opt-in/off by default
+  since most deployments are plain-HTTP LAN setups where a `Secure` cookie
+  would never come back from the browser.
+  Files: `internal/config/config.go`, `cmd/crowsnest/main.go`,
+  `internal/auth/middleware.go`.
+
+- [x] **Graceful shutdown.** `serve()` now derives a context from
+  `signal.NotifyContext(os.Interrupt, syscall.SIGTERM)`, passes it to
+  `idleshutdown.Run`, `nightshutdown.Run`, and `valheim.Tracker.Run` instead
+  of `context.Background()`, and runs the HTTP server via `http.Server` so
+  `docker stop crowsnest` triggers `srv.Shutdown` (10s timeout) instead of
+  waiting out the grace period and getting SIGKILLed.
+  Files: `cmd/crowsnest/main.go`.
+
 ## High priority
 
-- [ ] **CSP nonce is generated but never used — breaks CSRF in real
-  browsers.** `auth.SecurityHeaders` sends a strict
-  `script-src 'self' 'nonce-<x>'` CSP, but `dashboard.html`'s inline
-  `<script>window.CROWSNEST_CSRF = {{.CSRFToken}};</script>` has no
-  matching `nonce` attribute, and nothing wires `NonceFromContext` into the
-  template data. Per the CSP spec, a nonce-source in `script-src` means
-  `'self'` no longer authorizes inline scripts — every standards-compliant
-  browser will silently block this script, `window.CROWSNEST_CSRF` never
-  gets set, and every Start/Stop/Switch POST gets rejected with 403
-  (`X-CSRF-Token: undefined`). Go's `httptest`-based test suite can't catch
-  this since nothing executes CSP.
-  - Fix: drop the inline script; deliver the token via a non-executing tag
-    instead, e.g. `<meta name="csrf-token" content="{{.CSRFToken}}">`, read
-    via `document.querySelector('meta[name=csrf-token]').content` in
-    `app.js`. Sidesteps CSP nonces entirely — no per-template nonce
-    plumbing to keep in sync going forward.
-  - Files: `internal/web/templates/dashboard.html`,
-    `internal/web/static/app.js`.
+(none currently — see Done)
 
 ## Medium priority
 
-- [ ] **`SecureCookies` is plumbed through but never enabled.**
-  `auth.Service.SecureCookies` exists and is honored in `ServeLogin`/
-  `ServeLogout`, but `main.go` never sets it and there's no `config.yaml`
-  knob for it. Combined with no built-in TLS and no HSTS header, a
-  deployment behind a TLS-terminating reverse proxy — the natural way to
-  expose this beyond a LAN — still ships the session cookie without
-  `Secure`.
-  - Fix: add a `server.secure_cookies` (or `behind_tls_proxy`) config bool,
-    wire it into `auth.Service.SecureCookies` in `main.go`, and set
-    `Strict-Transport-Security` in `SecurityHeaders` when it's on.
-  - Files: `internal/config/config.go`, `cmd/crowsnest/main.go`,
-    `internal/auth/middleware.go`.
-
-- [ ] **No graceful shutdown.** `main.go`'s own comment admits it:
-  `http.ListenAndServe` blocks forever; `idleshutdown`, `nightshutdown`,
-  and `valheim.Tracker` all run on `context.Background()` for the life of
-  the process. `docker stop crowsnest` just gets SIGKILLed after the grace
-  period instead of draining in-flight SSE streams/docker subprocesses.
-  - Fix: `signal.NotifyContext(os.Interrupt, syscall.SIGTERM)` at the top
-    of `serve()`, pass the derived context to the shutdown managers and
-    `valheim.Tracker.Run` instead of `context.Background()`, and call
-    `http.Server.Shutdown` on signal instead of using the package-level
-    `http.ListenAndServe`.
-  - Files: `cmd/crowsnest/main.go`.
+(none currently — see Done)
 
 ## Low priority / hygiene
 

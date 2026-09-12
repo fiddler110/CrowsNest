@@ -11,7 +11,9 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/auth"
@@ -80,6 +82,9 @@ func configPath() string {
 }
 
 func serve() error {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
 	cfg, err := config.Load(configPath())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -140,7 +145,7 @@ func serve() error {
 		return fmt.Errorf("build game registry: %w", err)
 	}
 	for _, tr := range valheimTrackers {
-		go tr.Run(context.Background())
+		go tr.Run(ctx)
 	}
 
 	users, err := auth.LoadUsers(cfg.UsersFile)
@@ -163,6 +168,7 @@ func serve() error {
 		Sessions:       auth.NewSessionManager(secret, auth.DefaultSessionTTL),
 		LoginLimiter:   auth.NewLimiter(10, 5*time.Minute),
 		TrustedProxies: trustedProxies,
+		SecureCookies:  cfg.Server.SecureCookies,
 	}
 
 	templates, err := web.LoadTemplates()
@@ -197,7 +203,7 @@ func serve() error {
 			time.Duration(cfg.IdleShutdown.CheckIntervalSeconds)*time.Second,
 		)
 		idle.Notifier = discordNotifier
-		go idle.Run(context.Background())
+		go idle.Run(ctx)
 		log.Printf("idleshutdown: enabled, stopping games after %dm with no players (checked every %ds)",
 			cfg.IdleShutdown.IdleMinutes, cfg.IdleShutdown.CheckIntervalSeconds)
 	} else {
@@ -218,15 +224,42 @@ func serve() error {
 			loc,
 		)
 		night.Notifier = discordNotifier
-		go night.Run(context.Background())
+		go night.Run(ctx)
 		log.Printf("nightshutdown: enabled, stopping empty games between %02d:00 and %02d:00 %s (checked every %dm)",
 			cfg.NightShutdown.StartHour, cfg.NightShutdown.EndHour, cfg.Server.TZ, cfg.NightShutdown.CheckIntervalMinutes)
 	} else {
 		log.Printf("nightshutdown: disabled via config")
 	}
 
-	log.Printf("crowsnest listening on %s", cfg.Server.Addr)
-	return http.ListenAndServe(cfg.Server.Addr, auth.SecurityHeaders(newMux(app)))
+	srv := &http.Server{
+		Addr:    cfg.Server.Addr,
+		Handler: auth.SecurityHeaders(cfg.Server.SecureCookies, newMux(app)),
+	}
+
+	serveErr := make(chan error, 1)
+	go func() {
+		log.Printf("crowsnest listening on %s", cfg.Server.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			serveErr <- err
+			return
+		}
+		serveErr <- nil
+	}()
+
+	select {
+	case err := <-serveErr:
+		return err
+	case <-ctx.Done():
+	}
+
+	stop()
+	log.Printf("shutting down (signal received)")
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	return <-serveErr
 }
 
 // setPassword implements `crowsnest set-password <username>`: reads a

@@ -95,7 +95,7 @@ func TestRequireCSRF(t *testing.T) {
 
 func TestSecurityHeaders(t *testing.T) {
 	var gotNonce string
-	handler := SecurityHeaders(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := SecurityHeaders(false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotNonce, _ = NonceFromContext(r.Context())
 	}))
 
@@ -108,11 +108,25 @@ func TestSecurityHeaders(t *testing.T) {
 	if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
 		t.Errorf("X-Content-Type-Options = %q, want nosniff", rec.Header().Get("X-Content-Type-Options"))
 	}
+	if rec.Header().Get("Strict-Transport-Security") != "" {
+		t.Errorf("Strict-Transport-Security = %q, want empty when hsts=false", rec.Header().Get("Strict-Transport-Security"))
+	}
 	csp := rec.Header().Get("Content-Security-Policy")
 	if gotNonce == "" {
 		t.Fatal("NonceFromContext() returned empty, want a generated nonce")
 	}
 	if !strings.Contains(csp, gotNonce) {
 		t.Errorf("CSP header %q does not contain the request's nonce %q", csp, gotNonce)
+	}
+}
+
+func TestSecurityHeadersHSTS(t *testing.T) {
+	handler := SecurityHeaders(true, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+
+	if got := rec.Header().Get("Strict-Transport-Security"); got == "" {
+		t.Error("Strict-Transport-Security header missing, want set when hsts=true")
 	}
 }

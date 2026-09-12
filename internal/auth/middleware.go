@@ -83,8 +83,10 @@ func NonceFromContext(ctx context.Context) (string, bool) {
 }
 
 // SecurityHeaders sets a baseline set of hardening headers, including a CSP
-// with a per-request nonce.
-func SecurityHeaders(next http.Handler) http.Handler {
+// with a per-request nonce. hsts should be true when the deployment sits
+// behind a TLS-terminating reverse proxy (config.Server.SecureCookies) —
+// sending Strict-Transport-Security over plain HTTP would be misleading.
+func SecurityHeaders(hsts bool, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		nonceBytes := make([]byte, 16)
 		nonce := ""
@@ -95,6 +97,9 @@ func SecurityHeaders(next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
+		if hsts {
+			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
+		}
 
 		csp := "default-src 'self'"
 		if nonce != "" {

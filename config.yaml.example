@@ -13,6 +13,9 @@ server:
   # docker_host: tcp://dockerproxy:2375       # route docker/compose calls through a
                                                # docker-socket-proxy instead of the raw
                                                # socket mount — see compose.yaml.example
+  # secure_cookies: true                      # set once a TLS-terminating reverse proxy
+                                               # sits in front of CrowsNest; marks the
+                                               # session cookie Secure and adds HSTS
 
 idle_shutdown:
   enabled: true

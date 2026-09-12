@@ -56,6 +56,13 @@ type ServerConfig struct {
 	// this container. Empty (the default) leaves the docker CLI's own
 	// resolution in place (DOCKER_HOST env var, then the local socket).
 	DockerHost string `yaml:"docker_host"`
+
+	// SecureCookies marks the session cookie Secure and adds
+	// Strict-Transport-Security to every response. Enable this when
+	// CrowsNest sits behind a TLS-terminating reverse proxy; leave it off
+	// for plain-HTTP LAN deployments, where a Secure cookie would never be
+	// sent back by the browser at all.
+	SecureCookies bool `yaml:"secure_cookies"`
 }
 
 // IdleShutdownConfig controls the auto-stop-when-empty policy. A nil

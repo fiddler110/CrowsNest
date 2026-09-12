@@ -1,4 +1,4 @@
-const CSRF_TOKEN = window.CROWSNEST_CSRF;
+const CSRF_TOKEN = document.querySelector('meta[name=csrf-token]').content;
 const POLL_INTERVAL_MS = 5000;
 const STATS_POLL_MS = 3000;
 const INFO_POLL_MS = 5000;

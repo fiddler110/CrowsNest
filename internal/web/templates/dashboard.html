@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="csrf-token" content="{{.CSRFToken}}">
 <title>CrowsNest</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
@@ -72,7 +73,6 @@
   </div>
 </div>
 
-<script>window.CROWSNEST_CSRF = {{.CSRFToken}};</script>
 <script src="/static/app.js"></script>
 </body>
 </html>
