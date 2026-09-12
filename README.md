@@ -35,12 +35,20 @@ layers.
 
 ## Running
 
-1. Copy [`config.yaml.example`](config.yaml.example) to `config.yaml` and
-   [`compose.yaml.example`](compose.yaml.example) to `compose.yaml`, and edit
-   both for your setup (paths, timezone, which integrations to enable).
-2. Build and start just the controller: `docker compose up -d crowsnest`.
-   CrowsNest starts/stops the game containers itself via the Docker socket —
-   you don't run `--profile <game> up` by hand.
+Pre-built images are published to `ghcr.io/fiddler110/crowsnest` on every
+push to `main` (`:latest`) and version tag (`:vX.Y.Z`), alongside the
+existing game server images from Docker Hub — no local Go toolchain needed.
+
+1. Copy [`config.yaml.example`](config.yaml.example) to `config.yaml`,
+   [`compose.yaml.example`](compose.yaml.example) to `compose.yaml`, and
+   [`.env.example`](.env.example) to `.env`. Edit all three for your setup —
+   `config.yaml` for paths/timezone/integrations, `compose.yaml` for
+   volumes/ports, `.env` for secrets and host-specific values (it's
+   git-ignored; everything else here is meant to be committed as-is or with
+   your own edits).
+2. Start just the controller: `docker compose up -d crowsnest`. CrowsNest
+   starts/stops the game containers itself via the Docker socket — you don't
+   run `--profile <game> up` by hand.
 3. Create at least one login: `docker compose exec crowsnest crowsnest set-password <username>`.
 4. Open `http://<host>:5000`.
 

@@ -1,6 +1,6 @@
 # Example Docker Compose stack for CrowsNest and the three game servers it
-# controls. Copy to compose.yaml, adjust volumes/env vars for your setup,
-# and start only the controller by default:
+# controls. Copy to compose.yaml, copy .env.example to .env and fill in your
+# secrets/paths, then start only the controller by default:
 #
 #   docker compose up -d crowsnest
 #
@@ -10,9 +10,9 @@
 
 services:
   crowsnest:
-    build: .
-    # Once you're building/publishing your own image:
-    # image: your-namespace/crowsnest:latest
+    image: ghcr.io/fiddler110/crowsnest:latest
+    # Building from source instead (e.g. local changes):
+    # build: .
     container_name: crowsnest
     restart: unless-stopped
     ports:
