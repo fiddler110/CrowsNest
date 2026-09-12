@@ -2,6 +2,7 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -280,6 +281,203 @@ esac
 
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("POST switch = %d, want %d, body=%s", rec.Code, http.StatusAccepted, rec.Body)
+	}
+}
+
+func TestHandleStats(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\n[ \"$1\" = stats ] && printf '12.34%%\\t100MiB / 512MiB\\t19.53%%\\n'\n")
+	// nvidia-smi is unset -> defaults to the "nvidia-smi" binary, which
+	// won't exist on the test host; GPUStats should degrade to ok=false
+	// rather than erroring the whole endpoint.
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/stats", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET stats = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body)
+	}
+	var body statsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.CPU == nil || *body.CPU != "12.34" {
+		t.Fatalf("cpu = %v, want 12.34", body.CPU)
+	}
+	if body.MemUsed == nil || *body.MemUsed != "100MiB" {
+		t.Fatalf("mem_used = %v, want 100MiB", body.MemUsed)
+	}
+	if body.GPUUtil != nil {
+		t.Fatalf("gpu_util = %v, want nil (no GPU on test host)", *body.GPUUtil)
+	}
+}
+
+func TestHandleStats_ContainerNotRunning(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 1\n")
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/stats", nil))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET stats = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body)
+	}
+	var body statsResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.CPU != nil {
+		t.Fatalf("cpu = %v, want nil when docker stats fails", *body.CPU)
+	}
+}
+
+func TestHandleStats_UnknownGame(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/palworld/stats", nil))
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET stats for unregistered game = %d, want %d", rec.Code, http.StatusNotFound)
+	}
+}
+
+// fakePlayerCounter reports a fixed count/ok pair, for tests that need a
+// determinable (or deliberately undeterminable) PlayerCounter.
+type fakePlayerCounter struct {
+	count int
+	names []string
+	ok    bool
+}
+
+func (f fakePlayerCounter) PlayerCount(context.Context) (int, []string, bool) {
+	return f.count, f.names, f.ok
+}
+
+// fakeInfoProvider reports fixed Info data/ok, for tests exercising
+// games.InfoProvider.
+type fakeInfoProvider struct {
+	data map[string]any
+	ok   bool
+}
+
+func (f fakeInfoProvider) Info(context.Context) (map[string]any, bool) {
+	return f.data, f.ok
+}
+
+func TestHandleListGames_IncludesPlayerCount(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\n[ \"$1\" = ps ] && echo windrose\n")
+	defs := []games.GameDef{
+		{
+			ID: "windrose", DisplayName: "windrose", ContainerName: "windrose",
+			Status:  &games.DockerStatusChecker{Docker: docker},
+			Players: fakePlayerCounter{count: 3, ok: true},
+		},
+		{
+			ID: "valheim", DisplayName: "valheim", ContainerName: "valheim",
+			Status:  &games.DockerStatusChecker{Docker: docker},
+			Players: fakePlayerCounter{ok: false},
+		},
+	}
+	h := newHarnessFromDefs(t, docker, defs)
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games", nil))
+
+	var body []gameSummary
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body[0].PlayerCount == nil || *body[0].PlayerCount != 3 {
+		t.Fatalf("windrose player_count = %v, want 3", body[0].PlayerCount)
+	}
+	if body[1].PlayerCount != nil {
+		t.Fatalf("valheim player_count = %v, want nil (undeterminable)", *body[1].PlayerCount)
+	}
+}
+
+func TestHandlePlayers_Available(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	defs := []games.GameDef{{
+		ID: "windrose", DisplayName: "windrose", ContainerName: "windrose",
+		Players: fakePlayerCounter{count: 2, names: []string{"Alice", "Bob"}, ok: true},
+	}}
+	h := newHarnessFromDefs(t, docker, defs)
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/players", nil))
+
+	var body playersResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !body.Available || body.Count != 2 || len(body.Names) != 2 {
+		t.Fatalf("players = %+v, want available with count=2", body)
+	}
+}
+
+func TestHandlePlayers_Undeterminable(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	defs := []games.GameDef{{
+		ID: "windrose", DisplayName: "windrose", ContainerName: "windrose",
+		Players: fakePlayerCounter{ok: false},
+	}}
+	h := newHarnessFromDefs(t, docker, defs)
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/players", nil))
+
+	var body playersResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Available {
+		t.Fatalf("players = %+v, want available=false", body)
+	}
+}
+
+func TestHandlePlayers_NoPlayerCounterWired(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	// newHarness wires games.UnknownPlayerCounter{}, which always reports
+	// ok=false — confirm that surfaces as unavailable, not an error.
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/players", nil))
+
+	var body playersResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body.Available {
+		t.Fatalf("players = %+v, want available=false", body)
+	}
+}
+
+func TestHandleInfo_Available(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	defs := []games.GameDef{{
+		ID: "windrose", DisplayName: "windrose", ContainerName: "windrose",
+		Info: fakeInfoProvider{data: map[string]any{"available": true, "uptime": "1h"}, ok: true},
+	}}
+	h := newHarnessFromDefs(t, docker, defs)
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/info", nil))
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["available"] != true || body["uptime"] != "1h" {
+		t.Fatalf("info = %v, want available=true uptime=1h", body)
+	}
+}
+
+func TestHandleInfo_NoInfoProviderWired(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/info", nil))
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["available"] != false {
+		t.Fatalf("info = %v, want available=false", body)
 	}
 }
 

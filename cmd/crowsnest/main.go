@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -18,7 +19,12 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/exclusivity"
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/games/palworld"
+	"github.com/fiddler110/crowsnest/internal/games/valheim"
 	"github.com/fiddler110/crowsnest/internal/games/windrose"
+	"github.com/fiddler110/crowsnest/internal/idleshutdown"
+	"github.com/fiddler110/crowsnest/internal/nightshutdown"
+	"github.com/fiddler110/crowsnest/internal/notify"
 	"github.com/fiddler110/crowsnest/internal/web"
 )
 
@@ -81,19 +87,60 @@ func serve() error {
 
 	docker := &dockerctl.Client{}
 	defs := games.FromConfig(cfg.Games, docker)
+	var valheimTrackers []*valheim.Tracker
 	for i, d := range defs {
-		// Windrose gets its real status/startup detection (a direct port of
-		// the original Python CrowsNest's log-marker grep) ahead of the
-		// other games' Phase 10 integrations, since it needs no HTTP/RCON
-		// spike — see docs/implementation-plan.md phase 7.
-		if d.ID == "windrose" {
+		// cfg.Games[i] lines up 1:1 with defs[i]: FromConfig builds defs by
+		// iterating cfg.Games in order without filtering or reordering.
+		switch d.ID {
+		case "windrose":
+			// Real status/startup detection (a direct port of the original
+			// Python CrowsNest's log-marker grep) plus, when configured,
+			// the Windrose+ HTTP/RCON integration for player count and the
+			// rich info panel — see docs/implementation-plan.md phases 7
+			// and 10.
 			defs[i].Status = &windrose.StatusChecker{Docker: docker}
 			defs[i].Startup = windrose.Startup
+			if wc := cfg.Games[i].Windrose; wc != nil {
+				client := &windrose.Client{
+					BaseURL:       wc.HTTPAPIURL,
+					Password:      os.Getenv(wc.RCONPasswordEnv),
+					Docker:        docker,
+					ContainerName: d.ContainerName,
+				}
+				defs[i].Players = client
+				defs[i].Info = client
+			}
+		case "palworld":
+			// Palworld's dedicated server REST API doubles as both status
+			// probe (reachable == online) and player counter — see
+			// docs/implementation-plan.md phase 10. Not yet exercised
+			// against a real running server.
+			if pc := cfg.Games[i].Palworld; pc != nil {
+				client := &palworld.Client{
+					BaseURL:  pc.RESTAPIURL,
+					User:     pc.RESTAPIUser,
+					Password: os.Getenv(pc.RESTAPIPasswordEnv),
+					Docker:   docker,
+				}
+				defs[i].Status = client
+				defs[i].Players = client
+			}
+		case "valheim":
+			// No first-party API: player count comes from tailing the
+			// container's own log output for join/leave markers — see
+			// docs/implementation-plan.md phase 10. Not yet exercised
+			// against a real running server.
+			tracker := valheim.NewTracker(docker, d.ContainerName)
+			defs[i].Players = tracker
+			valheimTrackers = append(valheimTrackers, tracker)
 		}
 	}
 	registry, err := games.NewRegistry(defs)
 	if err != nil {
 		return fmt.Errorf("build game registry: %w", err)
+	}
+	for _, tr := range valheimTrackers {
+		go tr.Run(context.Background())
 	}
 
 	users, err := auth.LoadUsers(cfg.UsersFile)
@@ -123,12 +170,59 @@ func serve() error {
 		return fmt.Errorf("load templates: %w", err)
 	}
 
+	exclusivityMgr := exclusivity.NewManager(registry, docker)
 	app := &web.App{
 		Registry:    registry,
 		Docker:      docker,
-		Exclusivity: exclusivity.NewManager(registry, docker),
+		Exclusivity: exclusivityMgr,
 		Auth:        authSvc,
 		Templates:   templates,
+	}
+
+	var discordNotifier *notify.Discord
+	if cfg.Notifications.DiscordWebhookURLEnv != "" {
+		discordNotifier = &notify.Discord{WebhookURL: os.Getenv(cfg.Notifications.DiscordWebhookURLEnv)}
+		if discordNotifier.WebhookURL == "" {
+			log.Printf("notify: %s is not set — Discord notifications disabled", cfg.Notifications.DiscordWebhookURLEnv)
+		}
+	} else {
+		discordNotifier = &notify.Discord{} // inert zero value; Notify becomes a no-op
+	}
+
+	if cfg.IdleShutdown.Enabled {
+		idle := idleshutdown.New(
+			registry,
+			exclusivityMgr,
+			time.Duration(cfg.IdleShutdown.IdleMinutes)*time.Minute,
+			time.Duration(cfg.IdleShutdown.CheckIntervalSeconds)*time.Second,
+		)
+		idle.Notifier = discordNotifier
+		go idle.Run(context.Background())
+		log.Printf("idleshutdown: enabled, stopping games after %dm with no players (checked every %ds)",
+			cfg.IdleShutdown.IdleMinutes, cfg.IdleShutdown.CheckIntervalSeconds)
+	} else {
+		log.Printf("idleshutdown: disabled via config")
+	}
+
+	if cfg.NightShutdown.Enabled {
+		loc, err := cfg.Server.Location()
+		if err != nil {
+			return fmt.Errorf("night shutdown: %w", err)
+		}
+		night := nightshutdown.New(
+			registry,
+			exclusivityMgr,
+			cfg.NightShutdown.StartHour,
+			cfg.NightShutdown.EndHour,
+			time.Duration(cfg.NightShutdown.CheckIntervalMinutes)*time.Minute,
+			loc,
+		)
+		night.Notifier = discordNotifier
+		go night.Run(context.Background())
+		log.Printf("nightshutdown: enabled, stopping empty games between %02d:00 and %02d:00 %s (checked every %dm)",
+			cfg.NightShutdown.StartHour, cfg.NightShutdown.EndHour, cfg.Server.TZ, cfg.NightShutdown.CheckIntervalMinutes)
+	} else {
+		log.Printf("nightshutdown: disabled via config")
 	}
 
 	log.Printf("crowsnest listening on %s", cfg.Server.Addr)

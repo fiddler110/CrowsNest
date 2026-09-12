@@ -42,6 +42,9 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/games/{id}/status", a.requireSession(http.HandlerFunc(a.handleStatus)))
 	mux.Handle("GET /api/games/{id}/logs", a.requireSession(http.HandlerFunc(a.handleLogs)))
 	mux.Handle("GET /api/games/{id}/startup-progress", a.requireSession(http.HandlerFunc(a.handleStartupProgress)))
+	mux.Handle("GET /api/games/{id}/stats", a.requireSession(http.HandlerFunc(a.handleStats)))
+	mux.Handle("GET /api/games/{id}/players", a.requireSession(http.HandlerFunc(a.handlePlayers)))
+	mux.Handle("GET /api/games/{id}/info", a.requireSession(http.HandlerFunc(a.handleInfo)))
 	mux.Handle("POST /api/games/{id}/start", a.requireSessionAndCSRF(http.HandlerFunc(a.handleStart)))
 	mux.Handle("POST /api/games/{id}/switch", a.requireSessionAndCSRF(http.HandlerFunc(a.handleSwitch)))
 	mux.Handle("POST /api/games/{id}/stop", a.requireSessionAndCSRF(http.HandlerFunc(a.handleStop)))
@@ -79,6 +82,22 @@ type gameSummary struct {
 	ID          string `json:"id"`
 	DisplayName string `json:"display_name"`
 	Status      string `json:"status"`
+
+	// PlayerCount is nil when the game has no PlayerCounter wired, or its
+	// count is currently undeterminable — never a guessed zero.
+	PlayerCount *int `json:"player_count"`
+}
+
+// playerCount reports d's current player count, if determinable.
+func playerCount(r *http.Request, d games.GameDef) *int {
+	if d.Players == nil {
+		return nil
+	}
+	count, _, ok := d.Players.PlayerCount(r.Context())
+	if !ok {
+		return nil
+	}
+	return &count
 }
 
 func checkStatus(r *http.Request, d games.GameDef) games.Status {
@@ -126,9 +145,61 @@ func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
 	defs := a.Registry.All()
 	out := make([]gameSummary, len(defs))
 	for i, d := range defs {
-		out[i] = gameSummary{ID: d.ID, DisplayName: d.DisplayName, Status: checkStatus(r, d).String()}
+		out[i] = gameSummary{
+			ID:          d.ID,
+			DisplayName: d.DisplayName,
+			Status:      checkStatus(r, d).String(),
+			PlayerCount: playerCount(r, d),
+		}
 	}
 	writeJSON(w, http.StatusOK, out)
+}
+
+// playersResponse is the /api/games/{id}/players shape. Available is false
+// whenever the game has no PlayerCounter wired or its count is currently
+// undeterminable; Count/Names are meaningless in that case.
+type playersResponse struct {
+	Available bool     `json:"available"`
+	Count     int      `json:"count"`
+	Names     []string `json:"names"`
+}
+
+func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
+	d, ok := a.gameOr404(w, r)
+	if !ok {
+		return
+	}
+	if d.Players == nil {
+		writeJSON(w, http.StatusOK, playersResponse{})
+		return
+	}
+	count, names, avail := d.Players.PlayerCount(r.Context())
+	if !avail {
+		writeJSON(w, http.StatusOK, playersResponse{})
+		return
+	}
+	writeJSON(w, http.StatusOK, playersResponse{Available: true, Count: count, Names: names})
+}
+
+// handleInfo reports a game's optional rich info panel data (world
+// time/weather/multipliers/memory for Windrose, currently — see
+// games.InfoProvider). {"available": false} for any game without one
+// wired, or when the provider itself couldn't reach its data source.
+func (a *App) handleInfo(w http.ResponseWriter, r *http.Request) {
+	d, ok := a.gameOr404(w, r)
+	if !ok {
+		return
+	}
+	if d.Info == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"available": false})
+		return
+	}
+	data, ok := d.Info.Info(r.Context())
+	if !ok {
+		writeJSON(w, http.StatusOK, map[string]any{"available": false})
+		return
+	}
+	writeJSON(w, http.StatusOK, data)
 }
 
 func (a *App) gameOr404(w http.ResponseWriter, r *http.Request) (games.GameDef, bool) {
@@ -147,6 +218,49 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": checkStatus(r, d).String()})
+}
+
+// statsResponse mirrors the original Python CrowsNest's /api/stats shape:
+// each field is null (an absent pointer) when it couldn't be determined —
+// container not running, docker/nvidia-smi unavailable — rather than an
+// error, so the dashboard can render "N/A" per field instead of failing the
+// whole panel.
+type statsResponse struct {
+	CPU         *string `json:"cpu"`
+	MemUsed     *string `json:"mem_used"`
+	MemTotal    *string `json:"mem_total"`
+	MemPercent  *string `json:"mem_pct"`
+	GPUUtil     *string `json:"gpu_util"`
+	GPUMemUsed  *string `json:"gpu_mem_used"`
+	GPUMemTotal *string `json:"gpu_mem_total"`
+}
+
+func strPtr(s string) *string { return &s }
+
+// handleStats reports docker stats (CPU/memory) for one game's container
+// plus host-level GPU utilization via nvidia-smi, if present — direct
+// equivalent of the original Python CrowsNest's /api/stats, generalized to
+// per-game containers (GPU stats stay host-wide, since a host has one GPU
+// shared by whichever game is running).
+func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
+	d, ok := a.gameOr404(w, r)
+	if !ok {
+		return
+	}
+
+	var resp statsResponse
+	if s, err := a.Docker.Stats(r.Context(), d.ContainerName); err == nil {
+		resp.CPU = strPtr(s.CPUPercent)
+		resp.MemUsed = strPtr(s.MemUsed)
+		resp.MemTotal = strPtr(s.MemTotal)
+		resp.MemPercent = strPtr(s.MemPercent)
+	}
+	if g, ok := a.Docker.GPUStats(r.Context()); ok {
+		resp.GPUUtil = strPtr(g.UtilPercent)
+		resp.GPUMemUsed = strPtr(g.MemUsedMiB + " MiB")
+		resp.GPUMemTotal = strPtr(g.MemTotalMiB + " MiB")
+	}
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {

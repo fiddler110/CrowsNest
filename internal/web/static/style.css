@@ -91,6 +91,12 @@ button:hover {
 .status-starting { background: var(--starting); color: #2b1c00; }
 .status-unknown { background: var(--unknown); color: #fff; }
 
+.player-count {
+  margin-left: 8px;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
 .actions {
   margin-top: 14px;
   display: flex;
@@ -139,6 +145,73 @@ button:hover {
   color: #94a3b8;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.stats-panel {
+  margin-top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.stat-row-head {
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.8em;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+
+.stat-value {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.stat-track {
+  height: 6px;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.08);
+  overflow: hidden;
+}
+
+.stat-fill {
+  height: 100%;
+  width: 0%;
+  border-radius: 999px;
+  background: var(--online);
+  transition: width 0.4s ease, background-color 0.2s ease;
+}
+
+.stat-fill.stat-warn { background: var(--starting); }
+.stat-fill.stat-danger { background: var(--danger); }
+
+.info-panel {
+  margin-top: 12px;
+}
+
+.info-empty {
+  margin: 0;
+  font-size: 0.85em;
+  color: var(--muted);
+}
+
+.info-fields {
+  margin: 0;
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 4px 12px;
+  font-size: 0.82em;
+}
+
+.info-fields dt {
+  color: var(--muted);
+}
+
+.info-fields dd {
+  margin: 0;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  word-break: break-word;
 }
 
 .dialog {

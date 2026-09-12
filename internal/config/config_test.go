@@ -128,6 +128,114 @@ games:
 	if *cfg.IdleShutdown != want {
 		t.Errorf("IdleShutdown = %+v, want %+v", *cfg.IdleShutdown, want)
 	}
+	wantNight := NightShutdownConfig{
+		Enabled:              false,
+		StartHour:            defaultNightShutdownStartHour,
+		EndHour:              defaultNightShutdownEndHour,
+		CheckIntervalMinutes: defaultNightShutdownCheckIntervalMinutes,
+	}
+	if *cfg.NightShutdown != wantNight {
+		t.Errorf("NightShutdown = %+v, want %+v", *cfg.NightShutdown, wantNight)
+	}
+	if cfg.Notifications == nil || cfg.Notifications.DiscordWebhookURLEnv != "" {
+		t.Errorf("Notifications = %+v, want an empty (disabled) block", cfg.Notifications)
+	}
+}
+
+func TestLoad_NightShutdownAndNotifications(t *testing.T) {
+	path := writeConfig(t, `
+users_file: /app/users.env
+night_shutdown:
+  enabled: true
+  start_hour: 22
+  end_hour: 6
+  check_interval_minutes: 15
+notifications:
+  discord_webhook_url_env: DISCORD_WEBHOOK_URL
+games:
+  - id: windrose
+    display_name: Windrose
+    container_name: windrose
+    compose_file: /windrose/compose.yaml
+    compose_profile: windrose
+    compose_service: windrose
+  - id: palworld
+    display_name: Palworld
+    container_name: palworld
+    compose_file: /palworld/compose.yaml
+    compose_profile: palworld
+    compose_service: palworld
+    night_shutdown: false
+`)
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	want := NightShutdownConfig{Enabled: true, StartHour: 22, EndHour: 6, CheckIntervalMinutes: 15}
+	if *cfg.NightShutdown != want {
+		t.Errorf("NightShutdown = %+v, want %+v", *cfg.NightShutdown, want)
+	}
+	if cfg.Notifications.DiscordWebhookURLEnv != "DISCORD_WEBHOOK_URL" {
+		t.Errorf("Notifications.DiscordWebhookURLEnv = %q, want DISCORD_WEBHOOK_URL", cfg.Notifications.DiscordWebhookURLEnv)
+	}
+	if cfg.Games[0].NightShutdown != nil {
+		t.Errorf("Games[0].NightShutdown = %v, want nil (included by default)", cfg.Games[0].NightShutdown)
+	}
+	if cfg.Games[1].NightShutdown == nil || *cfg.Games[1].NightShutdown {
+		t.Errorf("Games[1].NightShutdown = %v, want explicit false", cfg.Games[1].NightShutdown)
+	}
+}
+
+func TestLoad_InvalidNightShutdownHours(t *testing.T) {
+	tests := []struct {
+		name    string
+		yaml    string
+		wantErr string
+	}{
+		{
+			name: "start hour out of range",
+			yaml: `
+users_file: /app/users.env
+night_shutdown:
+  start_hour: 24
+games:
+  - id: a
+    display_name: A
+    container_name: a
+    compose_file: f
+    compose_profile: p
+    compose_service: s
+`,
+			wantErr: "start_hour",
+		},
+		{
+			name: "invalid timezone",
+			yaml: `
+server:
+  tz: "Not/A/Zone"
+users_file: /app/users.env
+games:
+  - id: a
+    display_name: A
+    container_name: a
+    compose_file: f
+    compose_profile: p
+    compose_service: s
+`,
+			wantErr: "server.tz",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := writeConfig(t, tt.yaml)
+			_, err := Load(path)
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("Load() error = %v, want it to contain %q", err, tt.wantErr)
+			}
+		})
+	}
 }
 
 func TestLoad_PartialIdleShutdownKeepsExplicitValues(t *testing.T) {

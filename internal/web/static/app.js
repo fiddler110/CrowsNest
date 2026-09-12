@@ -1,9 +1,13 @@
 const CSRF_TOKEN = window.CROWSNEST_CSRF;
 const POLL_INTERVAL_MS = 5000;
+const STATS_POLL_MS = 3000;
+const INFO_POLL_MS = 5000;
 const MAX_LOG_LINES = 300;
 
 const logSources = {};
 const progressSources = {};
+const statsTimers = {};
+const infoTimers = {};
 
 function setStatus(id, status) {
   const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
@@ -55,6 +59,18 @@ function stopProgressTracking(id) {
   if (card) card.querySelector(".progress-wrap").hidden = true;
 }
 
+function setPlayerCount(id, count) {
+  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  if (!card) return;
+  const el = card.querySelector(".player-count");
+  if (count == null) {
+    el.hidden = true;
+    return;
+  }
+  el.hidden = false;
+  el.textContent = count === 1 ? "1 player" : `${count} players`;
+}
+
 function toggleLogs(id) {
   const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
   if (!card) return;
@@ -92,6 +108,142 @@ function toggleLogs(id) {
   };
 }
 
+function setStatBar(fillEl, valueEl, pct, text) {
+  fillEl.style.width = Math.min(Math.max(pct, 0), 100) + "%";
+  fillEl.classList.remove("stat-warn", "stat-danger");
+  if (pct >= 90) fillEl.classList.add("stat-danger");
+  else if (pct >= 70) fillEl.classList.add("stat-warn");
+  valueEl.textContent = text;
+}
+
+function clearStatBar(fillEl, valueEl) {
+  fillEl.style.width = "0%";
+  fillEl.classList.remove("stat-warn", "stat-danger");
+  valueEl.textContent = "N/A";
+}
+
+async function fetchStats(id) {
+  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  if (!card) return;
+  let res;
+  try {
+    res = await fetch(`/api/games/${id}/stats`);
+  } catch (err) {
+    return; // transient network hiccup; next poll retries
+  }
+  if (!res.ok) return;
+  const d = await res.json();
+
+  if (d.cpu != null) {
+    const pct = parseFloat(d.cpu);
+    setStatBar(card.querySelector(".stat-cpu-fill"), card.querySelector(".stat-cpu-val"), pct, pct.toFixed(1) + "%");
+  } else {
+    clearStatBar(card.querySelector(".stat-cpu-fill"), card.querySelector(".stat-cpu-val"));
+  }
+
+  if (d.mem_pct != null) {
+    const pct = parseFloat(d.mem_pct);
+    setStatBar(card.querySelector(".stat-mem-fill"), card.querySelector(".stat-mem-val"), pct, `${d.mem_used || "?"} / ${d.mem_total || "?"}`);
+  } else {
+    clearStatBar(card.querySelector(".stat-mem-fill"), card.querySelector(".stat-mem-val"));
+  }
+
+  const gpuRow = card.querySelector(".stat-gpu-row");
+  if (d.gpu_util != null) {
+    gpuRow.hidden = false;
+    const pct = parseFloat(d.gpu_util);
+    setStatBar(card.querySelector(".stat-gpu-fill"), card.querySelector(".stat-gpu-val"), pct, pct.toFixed(0) + "%");
+  } else {
+    gpuRow.hidden = true;
+  }
+
+  const gpuMemRow = card.querySelector(".stat-gpu-mem-row");
+  if (d.gpu_mem_used != null && d.gpu_mem_total != null) {
+    gpuMemRow.hidden = false;
+    const used = parseFloat(d.gpu_mem_used);
+    const total = parseFloat(d.gpu_mem_total);
+    const pct = total > 0 ? (used / total) * 100 : 0;
+    setStatBar(card.querySelector(".stat-gpu-mem-fill"), card.querySelector(".stat-gpu-mem-val"), pct, `${d.gpu_mem_used} / ${d.gpu_mem_total}`);
+  } else {
+    gpuMemRow.hidden = true;
+  }
+}
+
+function toggleStats(id) {
+  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  if (!card) return;
+  const panel = card.querySelector(".stats-panel");
+  const btn = card.querySelector(".stats-btn");
+
+  if (statsTimers[id]) {
+    clearInterval(statsTimers[id]);
+    delete statsTimers[id];
+    panel.hidden = true;
+    btn.textContent = "Stats";
+    return;
+  }
+
+  panel.hidden = false;
+  btn.textContent = "Hide Stats";
+  fetchStats(id);
+  statsTimers[id] = setInterval(() => fetchStats(id), STATS_POLL_MS);
+}
+
+// fetchInfo fills the info panel's key/value list from
+// /api/games/{id}/info. Nested values (players, multipliers) are skipped —
+// the panel is a flat fact sheet, not a full data browser.
+async function fetchInfo(id) {
+  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  if (!card) return;
+  let res;
+  try {
+    res = await fetch(`/api/games/${id}/info`);
+  } catch (err) {
+    return; // transient network hiccup; next poll retries
+  }
+  if (!res.ok) return;
+  const data = await res.json();
+
+  const emptyEl = card.querySelector(".info-empty");
+  const fieldsEl = card.querySelector(".info-fields");
+  fieldsEl.innerHTML = "";
+
+  if (!data.available) {
+    emptyEl.hidden = false;
+    return;
+  }
+  emptyEl.hidden = true;
+  for (const [key, value] of Object.entries(data)) {
+    if (key === "available" || value == null || typeof value === "object") continue;
+    const dt = document.createElement("dt");
+    dt.textContent = key.replace(/_/g, " ");
+    const dd = document.createElement("dd");
+    dd.textContent = String(value);
+    fieldsEl.appendChild(dt);
+    fieldsEl.appendChild(dd);
+  }
+}
+
+function toggleInfo(id) {
+  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  if (!card) return;
+  const panel = card.querySelector(".info-panel");
+  const btn = card.querySelector(".info-btn");
+
+  if (infoTimers[id]) {
+    clearInterval(infoTimers[id]);
+    delete infoTimers[id];
+    panel.hidden = true;
+    btn.textContent = "Info";
+    return;
+  }
+
+  panel.hidden = false;
+  btn.textContent = "Hide Info";
+  fetchInfo(id);
+  infoTimers[id] = setInterval(() => fetchInfo(id), INFO_POLL_MS);
+}
+
 async function refreshStatuses() {
   let res;
   try {
@@ -101,7 +253,10 @@ async function refreshStatuses() {
   }
   if (!res.ok) return;
   const games = await res.json();
-  games.forEach((g) => setStatus(g.id, g.status));
+  games.forEach((g) => {
+    setStatus(g.id, g.status);
+    setPlayerCount(g.id, g.player_count);
+  });
 }
 
 function callAPI(path, options = {}) {
@@ -160,6 +315,8 @@ document.querySelectorAll(".game-card").forEach((card) => {
   card.querySelector(".start-btn").addEventListener("click", () => startGame(id));
   card.querySelector(".stop-btn").addEventListener("click", () => stopGame(id));
   card.querySelector(".logs-btn").addEventListener("click", () => toggleLogs(id));
+  card.querySelector(".stats-btn").addEventListener("click", () => toggleStats(id));
+  card.querySelector(".info-btn").addEventListener("click", () => toggleInfo(id));
 
   const status = card.querySelector(".status").textContent.trim();
   if (status === "starting") startProgressTracking(id);
@@ -173,6 +330,8 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
 window.addEventListener("beforeunload", () => {
   Object.values(logSources).forEach((es) => es.close());
   Object.values(progressSources).forEach((es) => es.close());
+  Object.values(statsTimers).forEach((t) => clearInterval(t));
+  Object.values(infoTimers).forEach((t) => clearInterval(t));
 });
 
 setInterval(refreshStatuses, POLL_INTERVAL_MS);

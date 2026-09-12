@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,16 +19,22 @@ const (
 	defaultTZ                   = "UTC"
 	defaultIdleMinutes          = 15
 	defaultCheckIntervalSeconds = 60
+
+	defaultNightShutdownStartHour            = 23
+	defaultNightShutdownEndHour              = 5
+	defaultNightShutdownCheckIntervalMinutes = 30
 )
 
 var gameIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
 
 // Config is the root of config.yaml.
 type Config struct {
-	Server       ServerConfig        `yaml:"server"`
-	IdleShutdown *IdleShutdownConfig `yaml:"idle_shutdown"`
-	UsersFile    string              `yaml:"users_file"`
-	Games        []GameConfig        `yaml:"games"`
+	Server        ServerConfig         `yaml:"server"`
+	IdleShutdown  *IdleShutdownConfig  `yaml:"idle_shutdown"`
+	NightShutdown *NightShutdownConfig `yaml:"night_shutdown"`
+	Notifications *NotificationsConfig `yaml:"notifications"`
+	UsersFile     string               `yaml:"users_file"`
+	Games         []GameConfig         `yaml:"games"`
 }
 
 // ServerConfig holds top-level HTTP server settings.
@@ -50,6 +57,33 @@ type IdleShutdownConfig struct {
 	Enabled              bool `yaml:"enabled"`
 	IdleMinutes          int  `yaml:"idle_minutes"`
 	CheckIntervalSeconds int  `yaml:"check_interval_seconds"`
+}
+
+// NightShutdownConfig controls the time-window auto-stop policy: stop an
+// online, empty game during a nightly window, independent of (and in
+// addition to) idle-shutdown's continuous grace period. A nil
+// *NightShutdownConfig on Config means "disabled" — unlike idle-shutdown,
+// this isn't on by default: a preset curfew is a stronger, more surprising
+// behavior than stopping only once a server has sat empty a while, and
+// multi-game/multi-timezone friend groups don't share the original's
+// single-user assumption that made an always-on curfew safe to default to.
+type NightShutdownConfig struct {
+	Enabled bool `yaml:"enabled"`
+	// StartHour/EndHour are 0-23, local to Server.TZ. The window wraps
+	// midnight when StartHour > EndHour (e.g. 23 -> 5 means 23:00-04:59).
+	StartHour            int `yaml:"start_hour"`
+	EndHour              int `yaml:"end_hour"`
+	CheckIntervalMinutes int `yaml:"check_interval_minutes"`
+}
+
+// NotificationsConfig holds outbound-notification settings shared by
+// idle-shutdown and night-shutdown.
+type NotificationsConfig struct {
+	// DiscordWebhookURLEnv names an environment variable holding the
+	// Discord webhook URL, kept out of config.yaml itself like every other
+	// secret in this config (rcon_password_env, rest_api_password_env).
+	// Empty (the default) means notifications are disabled.
+	DiscordWebhookURLEnv string `yaml:"discord_webhook_url_env"`
 }
 
 // WindroseConfig holds Windrose-specific integration settings (Windrose+
@@ -76,6 +110,11 @@ type GameConfig struct {
 	ComposeProfile string `yaml:"compose_profile"`
 	ComposeService string `yaml:"compose_service"`
 	EnvFile        string `yaml:"env_file"`
+
+	// NightShutdown opts this game out of the global night-shutdown window
+	// when explicitly set to false. Nil (the default) means "included,"
+	// same as every other game, so long as night_shutdown.enabled is true.
+	NightShutdown *bool `yaml:"night_shutdown,omitempty"`
 
 	Windrose *WindroseConfig `yaml:"windrose,omitempty"`
 	Palworld *PalworldConfig `yaml:"palworld,omitempty"`
@@ -117,14 +156,36 @@ func (c *Config) applyDefaults() {
 			IdleMinutes:          defaultIdleMinutes,
 			CheckIntervalSeconds: defaultCheckIntervalSeconds,
 		}
-		return
+	} else {
+		if c.IdleShutdown.IdleMinutes == 0 {
+			c.IdleShutdown.IdleMinutes = defaultIdleMinutes
+		}
+		if c.IdleShutdown.CheckIntervalSeconds == 0 {
+			c.IdleShutdown.CheckIntervalSeconds = defaultCheckIntervalSeconds
+		}
 	}
-	if c.IdleShutdown.IdleMinutes == 0 {
-		c.IdleShutdown.IdleMinutes = defaultIdleMinutes
+
+	if c.NightShutdown == nil {
+		// Disabled by default — see NightShutdownConfig's doc comment.
+		c.NightShutdown = &NightShutdownConfig{Enabled: false}
 	}
-	if c.IdleShutdown.CheckIntervalSeconds == 0 {
-		c.IdleShutdown.CheckIntervalSeconds = defaultCheckIntervalSeconds
+	if c.NightShutdown.StartHour == 0 && c.NightShutdown.EndHour == 0 {
+		c.NightShutdown.StartHour = defaultNightShutdownStartHour
+		c.NightShutdown.EndHour = defaultNightShutdownEndHour
 	}
+	if c.NightShutdown.CheckIntervalMinutes == 0 {
+		c.NightShutdown.CheckIntervalMinutes = defaultNightShutdownCheckIntervalMinutes
+	}
+
+	if c.Notifications == nil {
+		c.Notifications = &NotificationsConfig{}
+	}
+}
+
+// Location parses Server.TZ, which applyDefaults has already guaranteed is
+// non-empty.
+func (s ServerConfig) Location() (*time.Location, error) {
+	return time.LoadLocation(s.TZ)
 }
 
 func (c *Config) validate() error {
@@ -138,6 +199,19 @@ func (c *Config) validate() error {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("server.trusted_proxies[%d] (%s): %w", i, cidr, err)
 		}
+	}
+	if _, err := c.Server.Location(); err != nil {
+		return fmt.Errorf("server.tz (%s): %w", c.Server.TZ, err)
+	}
+
+	if h := c.NightShutdown.StartHour; h < 0 || h > 23 {
+		return fmt.Errorf("night_shutdown.start_hour (%d): must be 0-23", h)
+	}
+	if h := c.NightShutdown.EndHour; h < 0 || h > 23 {
+		return fmt.Errorf("night_shutdown.end_hour (%d): must be 0-23", h)
+	}
+	if c.NightShutdown.CheckIntervalMinutes < 1 {
+		return fmt.Errorf("night_shutdown.check_interval_minutes (%d): must be >= 1", c.NightShutdown.CheckIntervalMinutes)
 	}
 
 	ids := make(map[string]bool, len(c.Games))

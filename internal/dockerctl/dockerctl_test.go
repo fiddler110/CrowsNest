@@ -198,6 +198,44 @@ func TestStats(t *testing.T) {
 	}
 }
 
+// newFakeBin writes script as an executable file and returns its path.
+func newFakeBin(t *testing.T, name, script string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
+	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake %s: %v", name, err)
+	}
+	return path
+}
+
+func TestGPUStats_Success(t *testing.T) {
+	c := &Client{NvidiaSmiBin: newFakeBin(t, "nvidia-smi", "#!/bin/sh\nprintf '45, 2048, 8192\\n'\n")}
+	g, ok := c.GPUStats(context.Background())
+	if !ok {
+		t.Fatal("GPUStats() ok = false, want true")
+	}
+	want := GPUStats{UtilPercent: "45", MemUsedMiB: "2048", MemTotalMiB: "8192"}
+	if g != want {
+		t.Fatalf("GPUStats() = %+v, want %+v", g, want)
+	}
+}
+
+func TestGPUStats_Unavailable(t *testing.T) {
+	c := &Client{NvidiaSmiBin: filepath.Join(t.TempDir(), "does-not-exist")}
+	g, ok := c.GPUStats(context.Background())
+	if ok {
+		t.Fatalf("GPUStats() ok = true, want false when nvidia-smi is unavailable; got %+v", g)
+	}
+}
+
+func TestGPUStats_MalformedOutput(t *testing.T) {
+	c := &Client{NvidiaSmiBin: newFakeBin(t, "nvidia-smi", "#!/bin/sh\nprintf 'not what we expected\\n'\n")}
+	g, ok := c.GPUStats(context.Background())
+	if ok {
+		t.Fatalf("GPUStats() ok = true, want false for malformed output; got %+v", g)
+	}
+}
+
 func TestLogs(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\necho line1\necho line2\n")
 	rc, err := c.Logs(context.Background(), "windrose", "", "")

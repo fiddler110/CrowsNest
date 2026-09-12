@@ -8,6 +8,7 @@ import (
 )
 
 func TestFromConfig(t *testing.T) {
+	optedOut := false
 	cfgs := []config.GameConfig{
 		{
 			ID:             "windrose",
@@ -24,6 +25,7 @@ func TestFromConfig(t *testing.T) {
 			ComposeFile:    "/valheim/compose.yaml",
 			ComposeProfile: "valheim",
 			ComposeService: "valheim",
+			NightShutdown:  &optedOut,
 		},
 	}
 	docker := &dockerctl.Client{}
@@ -42,6 +44,12 @@ func TestFromConfig(t *testing.T) {
 	}
 	if _, ok := d.Players.(UnknownPlayerCounter); !ok {
 		t.Errorf("defs[0].Players = %T, want UnknownPlayerCounter", d.Players)
+	}
+	if !d.NightShutdown {
+		t.Errorf("defs[0].NightShutdown = false, want true (included by default)")
+	}
+	if defs[1].NightShutdown {
+		t.Errorf("defs[1].NightShutdown = true, want false (explicitly opted out)")
 	}
 
 	want := dockerctl.Target{

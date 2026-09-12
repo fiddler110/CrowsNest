@@ -25,6 +25,7 @@ const (
 	defaultShortTimeout = 10 * time.Second
 	defaultStopTimeout  = 60 * time.Second
 	defaultStartTimeout = 120 * time.Second
+	defaultGPUTimeout   = 5 * time.Second
 
 	// waitDelay bounds how long Wait may take to return after a timeout
 	// cancels a command, in case killing the process group doesn't close
@@ -37,14 +38,18 @@ const (
 // cancellation only signals the direct child, which can leave a hung Wait()
 // if that child has already forked a grandchild holding the stdout/stderr
 // pipes open (e.g. a shell wrapper execing a long-running subprocess).
-func (c *Client) newCmd(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, c.bin(), args...)
+func newCmd(ctx context.Context, bin string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
 		return syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
 	}
 	cmd.WaitDelay = waitDelay
 	return cmd
+}
+
+func (c *Client) newCmd(ctx context.Context, args ...string) *exec.Cmd {
+	return newCmd(ctx, c.bin(), args...)
 }
 
 // Target identifies a container plus, for one that may not exist yet, the
@@ -64,10 +69,22 @@ type Stats struct {
 	MemPercent string
 }
 
+// GPUStats is a host-level (not per-container) GPU utilization/memory
+// snapshot from nvidia-smi.
+type GPUStats struct {
+	UtilPercent string
+	MemUsedMiB  string
+	MemTotalMiB string
+}
+
 // Client runs docker CLI commands. The zero value is ready to use.
 type Client struct {
 	// DockerBin overrides the docker binary/path; defaults to "docker".
 	DockerBin string
+
+	// NvidiaSmiBin overrides the nvidia-smi binary/path used by GPUStats;
+	// defaults to "nvidia-smi".
+	NvidiaSmiBin string
 
 	// Timeout, when non-zero, overrides every operation's default timeout.
 	// Intended for tests; production callers should leave it unset.
@@ -79,6 +96,13 @@ func (c *Client) bin() string {
 		return c.DockerBin
 	}
 	return "docker"
+}
+
+func (c *Client) nvidiaSmiBin() string {
+	if c.NvidiaSmiBin != "" {
+		return c.NvidiaSmiBin
+	}
+	return "nvidia-smi"
 }
 
 // run executes `docker <args...>`, returning trimmed stdout. defaultTimeout
@@ -233,4 +257,37 @@ func (c *Client) Stats(ctx context.Context, name string) (Stats, error) {
 		s.MemPercent = strings.TrimSuffix(strings.TrimSpace(parts[2]), "%")
 	}
 	return s, nil
+}
+
+// GPUStats returns a host-level GPU utilization/memory snapshot via
+// nvidia-smi (only the first GPU is reported, matching the original
+// single-GPU assumption). ok is false whenever the reading can't be
+// produced — no GPU, nvidia-smi not installed, unparseable output — which
+// is the common case on a host with no GPU and is never surfaced as an
+// error, matching the original's silent try/except.
+func (c *Client) GPUStats(ctx context.Context) (GPUStats, bool) {
+	timeout := defaultGPUTimeout
+	if c.Timeout > 0 {
+		timeout = c.Timeout
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	cmd := newCmd(runCtx, c.nvidiaSmiBin(), "--query-gpu=utilization.gpu,memory.used,memory.total", "--format=csv,noheader,nounits")
+	var stdout bytes.Buffer
+	cmd.Stdout = &stdout
+	if err := cmd.Run(); err != nil {
+		return GPUStats{}, false
+	}
+
+	line, _, _ := strings.Cut(strings.TrimSpace(stdout.String()), "\n")
+	parts := strings.Split(line, ",")
+	if len(parts) < 3 {
+		return GPUStats{}, false
+	}
+	return GPUStats{
+		UtilPercent: strings.TrimSpace(parts[0]),
+		MemUsedMiB:  strings.TrimSpace(parts[1]),
+		MemTotalMiB: strings.TrimSpace(parts[2]),
+	}, true
 }

@@ -19,6 +19,7 @@
   <section class="game-card" data-id="{{.ID}}">
     <h2>{{.DisplayName}}</h2>
     <span class="status status-{{.Status}}">{{.Status}}</span>
+    <span class="player-count" hidden></span>
     <div class="progress-wrap" hidden>
       <div class="progress-track"><div class="progress-bar" style="width:0%"></div></div>
       <span class="progress-label"></span>
@@ -27,9 +28,33 @@
       <button class="start-btn" type="button">Start</button>
       <button class="stop-btn" type="button">Stop</button>
       <button class="logs-btn" type="button">Logs</button>
+      <button class="stats-btn" type="button">Stats</button>
+      <button class="info-btn" type="button">Info</button>
     </div>
     <div class="log-panel" hidden>
       <div class="log-output"></div>
+    </div>
+    <div class="info-panel" hidden>
+      <p class="info-empty" hidden>No additional info available for this game.</p>
+      <dl class="info-fields"></dl>
+    </div>
+    <div class="stats-panel" hidden>
+      <div class="stat-row">
+        <div class="stat-row-head"><span>CPU</span><span class="stat-value stat-cpu-val">—</span></div>
+        <div class="stat-track"><div class="stat-fill stat-cpu-fill"></div></div>
+      </div>
+      <div class="stat-row">
+        <div class="stat-row-head"><span>Memory</span><span class="stat-value stat-mem-val">—</span></div>
+        <div class="stat-track"><div class="stat-fill stat-mem-fill"></div></div>
+      </div>
+      <div class="stat-row stat-gpu-row" hidden>
+        <div class="stat-row-head"><span>GPU</span><span class="stat-value stat-gpu-val">—</span></div>
+        <div class="stat-track"><div class="stat-fill stat-gpu-fill"></div></div>
+      </div>
+      <div class="stat-row stat-gpu-mem-row" hidden>
+        <div class="stat-row-head"><span>GPU Memory</span><span class="stat-value stat-gpu-mem-val">—</span></div>
+        <div class="stat-track"><div class="stat-fill stat-gpu-mem-fill"></div></div>
+      </div>
     </div>
   </section>
   {{else}}
