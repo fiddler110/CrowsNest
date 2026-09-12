@@ -1,0 +1,11 @@
+# Environment files — contain secrets. Use *.example files as templates.
+.env
+*.env
+
+# Build output
+/bin/
+/crowsnest
+
+# Editor / OS artifacts
+.DS_Store
+*.swp

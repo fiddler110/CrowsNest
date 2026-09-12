@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CrowsNest</title>
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <h1>CrowsNest</h1>
+  <div class="user-bar">
+    <span>{{.Username}}</span>
+    <button id="logout-btn" type="button">Log out</button>
+  </div>
+</header>
+<main id="games">
+  {{range .Games}}
+  <section class="game-card" data-id="{{.ID}}">
+    <h2>{{.DisplayName}}</h2>
+    <span class="status status-{{.Status}}">{{.Status}}</span>
+    <div class="progress-wrap" hidden>
+      <div class="progress-track"><div class="progress-bar" style="width:0%"></div></div>
+      <span class="progress-label"></span>
+    </div>
+    <div class="actions">
+      <button class="start-btn" type="button">Start</button>
+      <button class="stop-btn" type="button">Stop</button>
+      <button class="logs-btn" type="button">Logs</button>
+    </div>
+    <div class="log-panel" hidden>
+      <div class="log-output"></div>
+    </div>
+  </section>
+  {{else}}
+  <p>No games configured.</p>
+  {{end}}
+</main>
+
+<div id="conflict-dialog" class="dialog" hidden>
+  <div class="dialog-box">
+    <p id="conflict-message"></p>
+    <div class="dialog-actions">
+      <button id="conflict-confirm" type="button">Switch</button>
+      <button id="conflict-cancel" type="button">Cancel</button>
+    </div>
+  </div>
+</div>
+
+<script>window.CROWSNEST_CSRF = {{.CSRFToken}};</script>
+<script src="/static/app.js"></script>
+</body>
+</html>
