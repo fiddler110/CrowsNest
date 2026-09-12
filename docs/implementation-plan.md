@@ -282,13 +282,20 @@ flagged below where that's still unverified against a real running server.
     itself is the grace period. Both mechanisms can cover the same game
     independently; a game opts out of night-shutdown alone via
     `games[].night_shutdown: false`.
-12. Polish: Docker Hub publish workflow (mirrors the original
-    `dockerhub-publish.yml`), `config.yaml.example`, `compose.yaml.example`
-    for the new multi-game stack, docs.
+12. ~~Polish: `config.yaml.example`, `compose.yaml.example` for the new
+    multi-game stack, docs.~~ — done, with one correction: the "Docker Hub
+    publish workflow (mirrors the original `dockerhub-publish.yml`)" item
+    was dropped. That file was never real — the original's Docker Hub
+    references (`app.py` ~1255-1319) are an unrelated feature (checking for
+    a newer *game server* image, not publishing CrowsNest's own), and no
+    such workflow exists anywhere in either repo's git history. Asked the
+    user on 2026-09-12 whether to build a from-scratch publish workflow
+    anyway; they chose to skip it for now rather than commit to a Docker Hub
+    namespace/secrets setup that wasn't otherwise called for.
 
 ## Where things stand (last updated 2026-09-12)
 
-Phases 1-11 are implemented and tested (`go build/vet/gofmt/test` clean
+Phases 1-12 are implemented and tested (`go build/vet/gofmt/test` clean
 across all packages, including the three per-game packages from Phase 10
 and the two new packages from Phase 11 — see below). Phase 10
 was manually smoke-tested end-to-end against real Docker containers plus
@@ -324,7 +331,13 @@ cover the window math (midnight wrap, same-day window), the safety rules
 game), per-game opt-out, and the webhook's URL-prefix guard and no-op
 behavior when unconfigured.
 
-**Phase 12 (polish) is the natural next step.**
+Phase 12 is done: `config.yaml.example` and `compose.yaml.example` give a
+runnable starting point for the multi-game stack (single shared compose file
+with per-game profiles, matching `internal/dockerctl`'s
+`docker compose -f ... --profile ... up -d ...` invocation), and the README
+was rewritten from its "early scaffolding" placeholder to describe the
+finished feature set, running instructions, and HTTP API table. All 12
+originally-scoped phases are now complete.
 
 Key new pieces from phase 11, for orientation:
 - `internal/notify.Discord` — direct port of the original's

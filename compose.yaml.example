@@ -1,0 +1,91 @@
+# Example Docker Compose stack for CrowsNest and the three game servers it
+# controls. Copy to compose.yaml, adjust volumes/env vars for your setup,
+# and start only the controller by default:
+#
+#   docker compose up -d crowsnest
+#
+# CrowsNest itself starts/stops the game services on demand via the Docker
+# socket; you generally don't run `--profile <game> up` yourself. See
+# config.yaml.example for the matching CrowsNest configuration.
+
+services:
+  crowsnest:
+    build: .
+    # Once you're building/publishing your own image:
+    # image: your-namespace/crowsnest:latest
+    container_name: crowsnest
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    environment:
+      - TZ=${TZ:-UTC}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+      - WINDROSE_RCON_PASSWORD=${WINDROSE_RCON_PASSWORD:-}
+      - PALWORLD_ADMIN_PASSWORD=${PALWORLD_ADMIN_PASSWORD:-}
+    # Grants the container's non-root user access to the host Docker socket.
+    # Run `stat -c '%g' /var/run/docker.sock` to find your host's docker
+    # group GID if it differs from the Debian/Ubuntu default of 999.
+    group_add:
+      - "${DOCKER_GID:-999}"
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./users.env:/app/users.env
+      - ./session_secret:/app/.session_secret
+      - ./compose.yaml:/data/compose.yaml:ro
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  windrose:
+    image: indifferentbroccoli/windrose-server-docker:latest
+    profiles: ["windrose"]
+    container_name: windrose
+    restart: unless-stopped
+    stop_grace_period: 30s
+    network_mode: host
+    environment:
+      - TZ=${TZ:-UTC}
+      - P2P_PROXY_ADDRESS=${P2P_PROXY_ADDRESS:-10.0.0.2}
+    volumes:
+      - ${USERDIR}/Windrose:/home/steam/server-files
+      - ${USERDIR}/Windrose/Saved:/server/R5/Saved
+
+  valheim:
+    image: lloesche/valheim-server:latest
+    profiles: ["valheim"]
+    container_name: valheim
+    restart: unless-stopped
+    stop_grace_period: 2m
+    ports:
+      - "2456-2457:2456-2457/udp"
+    environment:
+      - TZ=${TZ:-UTC}
+      - SERVER_NAME=${VALHEIM_SERVER_NAME:-My Valheim Server}
+      - WORLD_NAME=${VALHEIM_WORLD_NAME:-Midgard}
+      - SERVER_PASS=${VALHEIM_SERVER_PASS:?set a server password}
+    volumes:
+      - ${USERDIR}/Valheim/config:/config
+      - ${USERDIR}/Valheim/data:/opt/valheim
+
+  palworld:
+    image: thijsvanloef/palworld-server-docker:latest
+    profiles: ["palworld"]
+    container_name: palworld
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "8211:8211/udp"
+      - "8212:8212/tcp"   # REST API — used by crowsnest for status/player count
+    environment:
+      - TZ=${TZ:-UTC}
+      - PUID=1000
+      - PGID=1000
+      - PORT=8211
+      - PLAYERS=${PALWORLD_MAX_PLAYERS:-16}
+      - MULTITHREADING=true
+      - REST_API_ENABLED=true
+      - REST_API_PORT=8212
+      - ADMIN_PASSWORD=${PALWORLD_ADMIN_PASSWORD:?set an admin password}
+      - SERVER_PASSWORD=${PALWORLD_SERVER_PASSWORD:-}
+    volumes:
+      - ${USERDIR}/Palworld:/palworld

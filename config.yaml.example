@@ -1,0 +1,63 @@
+# CrowsNest configuration.
+#
+# Copy this file to config.yaml and edit it, then bind-mount it into the
+# container at /app/config.yaml (or point CROWSNEST_CONFIG elsewhere).
+# See compose.yaml.example for the matching Docker Compose setup and
+# docs/implementation-plan.md for the full schema/behavior reference.
+
+server:
+  addr: ":5000"
+  session_secret_file: /app/.session_secret   # generated on first run if absent
+  tz: "America/New_York"                      # IANA name; used by night_shutdown and logs
+  # trusted_proxies: ["10.0.0.0/8"]           # CIDRs allowed to set X-Forwarded-For
+
+idle_shutdown:
+  enabled: true
+  idle_minutes: 15
+  check_interval_seconds: 60
+
+night_shutdown:                # off by default — a preset curfew is a stronger,
+  enabled: false                # more surprising behavior than idle_shutdown alone
+  start_hour: 23                # 0-23, local to server.tz; wraps midnight if > end_hour
+  end_hour: 5
+  check_interval_minutes: 30
+
+notifications:                 # Discord webhook, posted on both idle and night auto-stop
+  discord_webhook_url_env: DISCORD_WEBHOOK_URL   # names an env var; unset/empty = disabled
+
+users_file: /app/users.env     # <NAME>_PASSWORD_HASH entries; managed by `crowsnest set-password`
+
+games:
+  - id: windrose
+    display_name: Windrose
+    container_name: windrose
+    compose_file: /data/compose.yaml
+    compose_profile: windrose
+    compose_service: windrose
+    # Windrose+ integration (optional): live player count/names, world time
+    # and weather, connection info, memory usage, multipliers. Omit this
+    # block to run with docker-ps-only status and no player count.
+    windrose:
+      http_api_url: http://host.docker.internal:8780
+      rcon_password_env: WINDROSE_RCON_PASSWORD
+
+  - id: valheim
+    display_name: Valheim
+    container_name: valheim
+    compose_file: /data/compose.yaml
+    compose_profile: valheim
+    compose_service: valheim
+    # night_shutdown: false     # opt this game out, e.g. a friend group spanning time zones
+
+  - id: palworld
+    display_name: Palworld
+    container_name: palworld
+    compose_file: /data/compose.yaml
+    compose_profile: palworld
+    compose_service: palworld
+    # Palworld's dedicated server REST API (enable REST_API_ENABLED on the
+    # server container) doubles as status probe and player counter.
+    palworld:
+      rest_api_url: http://palworld:8212
+      rest_api_user: admin
+      rest_api_password_env: PALWORLD_ADMIN_PASSWORD
