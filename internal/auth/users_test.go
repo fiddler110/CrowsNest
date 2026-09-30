@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadUsers(t *testing.T) {
@@ -19,9 +20,39 @@ func TestLoadUsers(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadUsers() error = %v", err)
 	}
-	want := Users{"admin": "hash1", "scott": "hash2"}
-	if len(users) != len(want) || users["admin"] != "hash1" || users["scott"] != "hash2" {
+	want := Users{"admin": {Hash: "hash1"}, "scott": {Hash: "hash2"}}
+	if len(users) != len(want) || users["admin"] != want["admin"] || users["scott"] != want["scott"] {
 		t.Fatalf("LoadUsers() = %+v, want %+v", users, want)
+	}
+}
+
+func TestLoadUsers_ValidAfter(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.env")
+	contents := "SCOTT_PASSWORD_HASH=hash1\nSCOTT_VALID_AFTER=1700000000\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatalf("write users file: %v", err)
+	}
+
+	users, err := LoadUsers(path)
+	if err != nil {
+		t.Fatalf("LoadUsers() error = %v", err)
+	}
+	rec, ok := users["scott"]
+	if !ok || rec.Hash != "hash1" {
+		t.Fatalf("LoadUsers() = %+v, want scott with hash1", users)
+	}
+	if rec.ValidAfter.Unix() != 1700000000 {
+		t.Fatalf("ValidAfter = %v, want unix 1700000000", rec.ValidAfter)
+	}
+}
+
+func TestLoadUsers_ValidAfterNotAnInt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.env")
+	os.WriteFile(path, []byte("SCOTT_PASSWORD_HASH=hash1\nSCOTT_VALID_AFTER=nope\n"), 0o600)
+
+	_, err := LoadUsers(path)
+	if err == nil {
+		t.Fatal("LoadUsers() error = nil, want error for a non-integer VALID_AFTER")
 	}
 }
 
@@ -73,7 +104,7 @@ func TestSetUserHash_CreatesFileAndUpserts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadUsers() error = %v", err)
 	}
-	if users["admin"] != "hash1-updated" || users["scott"] != "hash2" {
+	if users["admin"].Hash != "hash1-updated" || users["scott"].Hash != "hash2" {
 		t.Fatalf("LoadUsers() = %+v, want admin updated and scott preserved", users)
 	}
 
@@ -83,5 +114,36 @@ func TestSetUserHash_CreatesFileAndUpserts(t *testing.T) {
 	}
 	if info.Mode().Perm() != 0o600 {
 		t.Fatalf("users file mode = %v, want 0600", info.Mode().Perm())
+	}
+}
+
+func TestRevokeSessions_SetsValidAfterAndPreservesHash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.env")
+	if err := SetUserHash(path, "scott", "hash1"); err != nil {
+		t.Fatalf("SetUserHash() error = %v", err)
+	}
+
+	before := time.Now().Add(-time.Second)
+	if err := RevokeSessions(path, "Scott"); err != nil {
+		t.Fatalf("RevokeSessions() error = %v", err)
+	}
+
+	users, err := LoadUsers(path)
+	if err != nil {
+		t.Fatalf("LoadUsers() error = %v", err)
+	}
+	rec, ok := users["scott"]
+	if !ok || rec.Hash != "hash1" {
+		t.Fatalf("LoadUsers() = %+v, want scott's hash preserved", users)
+	}
+	if rec.ValidAfter.Before(before) {
+		t.Fatalf("ValidAfter = %v, want a timestamp at/after %v", rec.ValidAfter, before)
+	}
+}
+
+func TestRevokeSessions_UnknownUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.env")
+	if err := RevokeSessions(path, "ghost"); err == nil {
+		t.Fatal("RevokeSessions() error = nil, want error for a user with no password set")
 	}
 }

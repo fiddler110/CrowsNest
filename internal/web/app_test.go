@@ -284,6 +284,20 @@ esac
 	}
 }
 
+func TestHandleSwitch_BodyTooLarge(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n", "windrose", "valheim")
+
+	oversized := bytes.Repeat([]byte(" "), maxSwitchBodyBytes+1)
+	body := append([]byte(`{"from":"valheim","pad":"`), append(oversized, []byte(`"}`)...)...)
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPost, "/api/games/windrose/switch", body))
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("POST oversized switch body = %d, want %d, body=%s", rec.Code, http.StatusBadRequest, rec.Body)
+	}
+}
+
 func TestHandleStats(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\n[ \"$1\" = stats ] && printf '12.34%%\\t100MiB / 512MiB\\t19.53%%\\n'\n")
 	// nvidia-smi is unset -> defaults to the "nvidia-smi" binary, which
@@ -526,7 +540,7 @@ func TestLoginLogoutFlow(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HashPassword() error = %v", err)
 	}
-	h.App.Auth.Users["tester"] = hash
+	h.App.Auth.Users["tester"] = auth.UserRecord{Hash: hash}
 
 	loginBody, _ := json.Marshal(map[string]string{"username": "tester", "password": "s3cret-pw"})
 	rec := httptest.NewRecorder()

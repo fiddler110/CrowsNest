@@ -43,6 +43,36 @@ func TestLimiter_WindowExpires(t *testing.T) {
 	}
 }
 
+func TestLimiter_PruneDropsStaleKeys(t *testing.T) {
+	l := NewLimiter(1, 20*time.Millisecond)
+	l.Allow("a")
+	l.Allow("b")
+
+	time.Sleep(30 * time.Millisecond)
+	l.Prune()
+
+	l.mu.Lock()
+	n := len(l.hits)
+	l.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("len(hits) after Prune = %d, want 0 once every key's hits are outside the window", n)
+	}
+}
+
+func TestLimiter_PruneKeepsFreshKeys(t *testing.T) {
+	l := NewLimiter(5, time.Minute)
+	l.Allow("a")
+
+	l.Prune()
+
+	l.mu.Lock()
+	n := len(l.hits)
+	l.mu.Unlock()
+	if n != 1 {
+		t.Fatalf("len(hits) after Prune = %d, want 1 — key is still within its window", n)
+	}
+}
+
 func TestClientIP_UntrustedIgnoresXFF(t *testing.T) {
 	r := httptest.NewRequest(http.MethodGet, "/", nil)
 	r.RemoteAddr = "203.0.113.5:1234"

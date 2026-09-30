@@ -16,7 +16,7 @@ func newTestService(t *testing.T) *Service {
 		t.Fatalf("HashPassword() error = %v", err)
 	}
 	return &Service{
-		Users:        Users{"scott": hash},
+		Users:        Users{"scott": {Hash: hash}},
 		Sessions:     NewSessionManager([]byte("test-secret"), time.Hour),
 		LoginLimiter: NewLimiter(100, time.Minute),
 	}
@@ -88,6 +88,20 @@ func TestServeLogin_RateLimited(t *testing.T) {
 	second := doLogin(t, svc, "scott", "s3cret-password")
 	if second.Code != http.StatusTooManyRequests {
 		t.Fatalf("second attempt status = %d, want %d", second.Code, http.StatusTooManyRequests)
+	}
+}
+
+func TestServeLogin_BodyTooLarge(t *testing.T) {
+	svc := newTestService(t)
+
+	oversized := bytes.Repeat([]byte("a"), maxLoginBodyBytes+1)
+	body, _ := json.Marshal(loginRequest{Username: "scott", Password: string(oversized)})
+	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	svc.ServeLogin(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d for an oversized body", rec.Code, http.StatusBadRequest)
 	}
 }
 

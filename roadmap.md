@@ -6,6 +6,24 @@ grouped by priority, not phase; check them off as they land.
 
 ## Done
 
+- [x] **`exclusivity.ActiveGame` fail-open on a status-check error let two
+  games start concurrently.** Found during a 2026-09-12 deeper pass over
+  cross-service interactions (auth/web/exclusivity/idle-night-shutdown).
+  `ActiveGame` used to swallow a `Status.Check` error by treating that game
+  as not active and continuing the scan — the opposite failure direction
+  from idleshutdown/nightshutdown, which both already treat an
+  undeterminable status as "assume active, never touch it." A transient
+  docker/status hiccup (docker-socket-proxy blip, or Windrose's two-step
+  `docker ps` + `docker exec` check racing a container that's mid-restart)
+  on the currently-running game could make `RequestStart` for a *different*
+  game see no conflict and start it too, defeating the single-active-game
+  guarantee. `ActiveGame` now returns an error instead of silently skipping
+  the failed check, and `startLocked` refuses to start (rather than
+  proceeding) when it can't confirm no other game is active — fail closed,
+  matching the rest of the codebase's philosophy. Files:
+  `internal/exclusivity/exclusivity.go`,
+  `internal/exclusivity/exclusivity_test.go`.
+
 - [x] **Docker socket proxy support.** `dockerctl.Client.Host` (wired from
   the new `server.docker_host` config field) prepends `-H <host>` to every
   docker/compose invocation, so CrowsNest can run against a
@@ -48,6 +66,79 @@ grouped by priority, not phase; check them off as they land.
   waiting out the grace period and getting SIGKILLed.
   Files: `cmd/crowsnest/main.go`.
 
+- [x] **Request body size limits on unauthenticated/JSON endpoints.**
+  `ServeLogin` and `handleSwitch` both now wrap `r.Body` with
+  `http.MaxBytesReader` (4KB — both request shapes are a couple of short
+  fields) before decoding, so an oversized body fails fast with 400 instead
+  of letting `json.Decode` buffer arbitrarily large input.
+  Files: `internal/auth/login.go`, `internal/web/app.go`.
+
+- [x] **Capped concurrent SSE log streams.** `handleLogs` and
+  `handleStartupProgress` each hold a `docker logs -f` subprocess open for
+  the life of the connection; `App` now tracks an atomic counter and caps
+  both handlers combined at `MaxConcurrentStreams` (default 20), returning
+  503 once the cap is hit instead of letting forgotten tabs or a slow
+  client accumulate subprocesses without bound.
+  Files: `internal/web/streaming.go`.
+
+- [x] **`auth.Limiter` prunes stale keys.** Added `Limiter.Prune` (drops
+  every key with no hits inside the current window) and `RunPruner`, which
+  calls it on a ticker until its context is cancelled; wired up in
+  `main.go` as a background goroutine (10-minute interval) tied to the
+  same shutdown context as everything else, so a long-lived process being
+  probed from many distinct source IPs no longer accumulates map entries
+  forever.
+  Files: `internal/auth/ratelimit.go`, `cmd/crowsnest/main.go`.
+
+- [x] **Audit log line per start/stop/switch action.** `handleStart`,
+  `handleStop`, and `handleSwitch` now log
+  `audit: <username> started/stopped/switched <game>` (or `... failed: err`
+  on the error path) via the existing session in request context — enough
+  to answer "who did what, when" from the process log without adding a
+  datastore.
+  Files: `internal/web/app.go`.
+
+- [x] **Session revocation via per-user `ValidAfter` marker; shorter default
+  TTL.** Given this deployment's actual scale (a couple of trusted users,
+  short-lived sessions used only to start/stop/check a game server), a full
+  server-side session store was overkill — instead: `DefaultSessionTTL`
+  dropped from 24h to 3h, and `Users` gained an optional `ValidAfter`
+  timestamp per user (`<NAME>_VALID_AFTER=<unix seconds>` in the users
+  file). `SessionManager.Decode` rejects any session whose `IssuedAt`
+  predates its user's `ValidAfter`. New CLI command
+  `crowsnest revoke-sessions <username>` sets it to now, forcing that one
+  user to re-authenticate everywhere without touching anyone else's
+  session — takes effect on the next restart, same as `set-password`.
+  Rotating the session-secret file remains the blunter "log out everyone"
+  option. See `README.md`'s new "Sessions" section.
+  Files: `internal/auth/session.go`, `internal/auth/users.go`,
+  `internal/auth/login.go`, `cmd/crowsnest/main.go`.
+
+- [x] **`healthcheck` ignored `server.addr`.** The Dockerfile's
+  `HEALTHCHECK` invokes `crowsnest healthcheck`, which hardcoded
+  `http://localhost:5000/healthz` regardless of the (documented,
+  user-editable) `server.addr` config field — changing it to anything but
+  `:5000` would leave the container permanently reporting unhealthy despite
+  serving traffic fine. `healthcheck()` now loads config.yaml and derives
+  the loopback host:port from `cfg.Server.Addr` (`healthcheckAddr`, handling
+  `""`/`0.0.0.0`/`::` bind-all hosts by substituting `localhost`), falling
+  back to `localhost:5000` only if config can't be loaded at all. Also
+  closes the coverage gap that let this ship unnoticed: `cmd/crowsnest` was
+  at 4.0% coverage (only the `/healthz` mux route was tested, not
+  `healthcheck`/`setPassword`/`revokeSessions` themselves); new tests cover
+  `healthcheckAddr`'s parsing, a same-process end-to-end regression test
+  against a non-default port, the unhealthy/unreachable-backend paths, and
+  `setPassword`/`revokeSessions` round-tripped through a real temp users
+  file (29.4% coverage now).
+  Files: `cmd/crowsnest/main.go`, `cmd/crowsnest/main_test.go`.
+
+- [x] **CI didn't enforce `gofmt`.** `go vet`/`go build`/`go test` ran on
+  every push, but nothing failed the build on unformatted code, despite
+  "gofmt clean" being cited repeatedly as this project's quality bar.
+  Added a `gofmt -l .` step ahead of `go vet` that fails the job and lists
+  the offending files if any exist.
+  Files: `.github/workflows/ci.yml`.
+
 ## High priority
 
 (none currently — see Done)
@@ -58,41 +149,15 @@ grouped by priority, not phase; check them off as they land.
 
 ## Low priority / hygiene
 
-- [ ] **No request body size limits.** `ServeLogin` and `handleSwitch` both
-  `json.NewDecoder(r.Body).Decode(&req)` with no cap. `/login` is
-  unauthenticated, so this is a cheap memory-pressure DoS vector before
-  rate limiting even applies.
-  - Fix: wrap with `http.MaxBytesReader(w, r.Body, 4096)` (or similar)
-    before decoding on both handlers.
-  - Files: `internal/auth/login.go`, `internal/web/app.go`.
+(none currently — see Done)
 
-- [ ] **No rate limiting beyond `/login`; unbounded concurrent SSE
-  streams.** Every authenticated route is otherwise unlimited, and
-  `handleLogs`/`handleStartupProgress` spawn a new `docker logs -f`
-  subprocess per open connection with no per-user/global cap. Low severity
-  for a small trusted friend group; worth a cap before exposing this more
-  broadly.
-  - Files: `internal/web/streaming.go`, `internal/dockerctl/dockerctl.go`.
+## Considered, not doing
 
-- [ ] **`auth.Limiter.hits` map grows unboundedly.** Keys for IPs with no
-  recent hits are never pruned, so a long-lived process getting probed by
-  many distinct source IPs (e.g. an internet-facing `/login`) accumulates
-  map entries forever.
-  - Fix: periodic sweep (e.g. on each `Allow` call, or a ticker) that drops
-    keys whose most recent hit is outside the window.
-  - Files: `internal/auth/ratelimit.go`.
-
-- [ ] **Session revocation is all-or-nothing.** Stateless HMAC cookies mean
-  the only way to invalidate a session (compromised device, offboarding a
-  user) is rotating the session-secret file, which logs out everyone at
-  once. Acceptable at current scale; worth a lightweight server-side
-  denylist (or moving to a small server-side session store) if this ever
-  grows past a single trusted household.
-
-- [ ] **No audit trail of start/stop/switch actions.** Multi-user + shared
-  infra + no "who did what, when" logging is a minor gap if more than one
-  person uses this at a time. Even a structured log line per action
-  (`log.Printf` already has the shape) would cover most of the value.
+- **Gating `docker-publish.yml` on the Trivy scan.** The scan currently
+  runs after the image is already pushed to GHCR — a CRITICAL/HIGH finding
+  is reported to code scanning but doesn't block the publish. Raised during
+  a 2026-09-12 review; kept as awareness-only rather than a release gate by
+  explicit choice.
 
 ## Tracking, not new — already flagged in `docs/implementation-plan.md`
 

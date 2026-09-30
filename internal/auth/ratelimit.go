@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -43,6 +44,45 @@ func (l *Limiter) Allow(key string) bool {
 	}
 	l.hits[key] = append(kept, now)
 	return true
+}
+
+// Prune drops every tracked key with no hits inside the current window.
+// Allow already trims stale hits off a key each time that key is seen
+// again, but a key that's hit once and never revisited (e.g. a one-off
+// probe from a source IP that never comes back) would otherwise sit in the
+// map forever — Prune bounds that.
+func (l *Limiter) Prune() {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	cutoff := time.Now().Add(-l.window)
+	for key, hits := range l.hits {
+		stale := true
+		for _, t := range hits {
+			if t.After(cutoff) {
+				stale = false
+				break
+			}
+		}
+		if stale {
+			delete(l.hits, key)
+		}
+	}
+}
+
+// RunPruner calls Prune every interval until ctx is cancelled. Meant to be
+// started in its own goroutine for the lifetime of the process.
+func (l *Limiter) RunPruner(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			l.Prune()
+		}
+	}
 }
 
 // ParseTrustedProxies converts CIDR strings into net.IPNets for ClientIP.

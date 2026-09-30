@@ -64,6 +64,31 @@ func TestSessionDecode_Expired(t *testing.T) {
 	}
 }
 
+func TestSessionDecode_RevokedByValidAfter(t *testing.T) {
+	mgr := NewSessionManager([]byte("test-secret"), time.Hour)
+	session, _ := mgr.New("scott")
+	token, _ := mgr.Encode(session)
+
+	mgr.Users = Users{"scott": {Hash: "irrelevant", ValidAfter: time.Now().Add(time.Minute)}}
+
+	_, err := mgr.Decode(token)
+	if err != ErrSessionRevoked {
+		t.Fatalf("Decode() error = %v, want ErrSessionRevoked once ValidAfter is after IssuedAt", err)
+	}
+}
+
+func TestSessionDecode_ValidAfterInPastStillAllowed(t *testing.T) {
+	mgr := NewSessionManager([]byte("test-secret"), time.Hour)
+	session, _ := mgr.New("scott")
+	token, _ := mgr.Encode(session)
+
+	mgr.Users = Users{"scott": {Hash: "irrelevant", ValidAfter: time.Now().Add(-time.Minute)}}
+
+	if _, err := mgr.Decode(token); err != nil {
+		t.Fatalf("Decode() error = %v, want nil when the session was issued after ValidAfter", err)
+	}
+}
+
 func TestSessionDecode_Malformed(t *testing.T) {
 	mgr := NewSessionManager([]byte("test-secret"), time.Hour)
 	if _, err := mgr.Decode("not-a-valid-token"); err == nil {

@@ -24,6 +24,38 @@ func (a *App) keepaliveInterval() time.Duration {
 	return defaultKeepaliveInterval
 }
 
+// defaultMaxConcurrentStreams bounds how many `docker logs -f` subprocesses
+// handleLogs/handleStartupProgress may have open at once, across all games
+// combined. Each open SSE connection holds one for as long as the client
+// stays connected, so with no cap a handful of forgotten browser tabs (or a
+// client that doesn't close streams) can accumulate unboundedly.
+const defaultMaxConcurrentStreams = 20
+
+func (a *App) maxConcurrentStreams() int {
+	if a.MaxConcurrentStreams > 0 {
+		return a.MaxConcurrentStreams
+	}
+	return defaultMaxConcurrentStreams
+}
+
+// acquireStream reserves a slot for a new log-streaming subprocess,
+// reporting false if the process-wide cap is already reached.
+func (a *App) acquireStream() bool {
+	for {
+		cur := a.streamCount.Load()
+		if int(cur) >= a.maxConcurrentStreams() {
+			return false
+		}
+		if a.streamCount.CompareAndSwap(cur, cur+1) {
+			return true
+		}
+	}
+}
+
+func (a *App) releaseStream() {
+	a.streamCount.Add(-1)
+}
+
 // handleLogs streams `docker logs -f` for a game as Server-Sent Events,
 // formatted through the game's LogLineFormatter (plain pass-through if none
 // is set) — direct equivalent of the original Python CrowsNest's /api/logs.
@@ -32,6 +64,11 @@ func (a *App) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if !a.acquireStream() {
+		http.Error(w, "too many active log streams, try again shortly", http.StatusServiceUnavailable)
+		return
+	}
+	defer a.releaseStream()
 
 	tail := r.URL.Query().Get("tail")
 	if tail == "" {
@@ -93,6 +130,12 @@ func (a *App) handleStartupProgress(w http.ResponseWriter, r *http.Request) {
 		sw.WriteEvent("unsupported", "this game has no startup progress tracking")
 		return
 	}
+
+	if !a.acquireStream() {
+		sw.WriteEvent("error", "too many active log streams, try again shortly")
+		return
+	}
+	defer a.releaseStream()
 
 	// tail=all so a client that subscribes after the milestone line already
 	// scrolled past still sees it replayed, not just newly-written lines.

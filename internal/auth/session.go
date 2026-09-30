@@ -14,7 +14,10 @@ import (
 )
 
 // DefaultSessionTTL is how long a session cookie stays valid after login.
-const DefaultSessionTTL = 24 * time.Hour
+// Kept short since CrowsNest sessions are just used to start/stop/check a
+// game server, not for long browsing — an expired session is a cheap
+// re-login, not a real inconvenience.
+const DefaultSessionTTL = 3 * time.Hour
 
 // SessionCookieName is the cookie a signed session is carried in.
 const SessionCookieName = "crowsnest_session"
@@ -22,6 +25,7 @@ const SessionCookieName = "crowsnest_session"
 var (
 	ErrInvalidSession = errors.New("auth: invalid session")
 	ErrSessionExpired = errors.New("auth: session expired")
+	ErrSessionRevoked = errors.New("auth: session revoked")
 )
 
 // Session is the payload signed into the session cookie. There is no
@@ -35,11 +39,17 @@ type Session struct {
 }
 
 // SessionManager signs and verifies session cookies with an HMAC-SHA256
-// tag. Stateless: revocation is only possible by rotating the secret, which
-// invalidates every session at once.
+// tag. Stateless — no server-side session store — but Decode still rejects
+// a session pre-dating its user's ValidAfter marker when Users is set,
+// giving per-user revocation (see RevokeSessions) without needing one.
+// Rotating the secret remains the blunt "revoke absolutely everyone" tool.
 type SessionManager struct {
 	secret []byte
 	ttl    time.Duration
+
+	// Users, when set, is consulted by Decode to reject sessions revoked via
+	// RevokeSessions. Left nil (the zero value) by default; nil-safe.
+	Users Users
 }
 
 func NewSessionManager(secret []byte, ttl time.Duration) *SessionManager {
@@ -98,6 +108,9 @@ func (m *SessionManager) Decode(token string) (Session, error) {
 	}
 	if time.Now().UTC().After(s.ExpiresAt) {
 		return Session{}, ErrSessionExpired
+	}
+	if rec, ok := m.Users[s.Username]; ok && !rec.ValidAfter.IsZero() && s.IssuedAt.Before(rec.ValidAfter) {
+		return Session{}, ErrSessionRevoked
 	}
 	return s, nil
 }

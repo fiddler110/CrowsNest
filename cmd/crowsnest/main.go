@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -51,8 +52,16 @@ func main() {
 		if err := setPassword(os.Args[2]); err != nil {
 			log.Fatal(err)
 		}
+	case "revoke-sessions":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: crowsnest revoke-sessions <username>")
+			os.Exit(2)
+		}
+		if err := revokeSessions(os.Args[2]); err != nil {
+			log.Fatal(err)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, healthcheck, set-password)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, healthcheck, set-password, revoke-sessions)\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -163,10 +172,14 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("parse trusted proxies: %w", err)
 	}
+	loginLimiter := auth.NewLimiter(10, 5*time.Minute)
+	go loginLimiter.RunPruner(ctx, 10*time.Minute)
+	sessions := auth.NewSessionManager(secret, auth.DefaultSessionTTL)
+	sessions.Users = users // enables per-user revocation; see `revoke-sessions`
 	authSvc := &auth.Service{
 		Users:          users,
-		Sessions:       auth.NewSessionManager(secret, auth.DefaultSessionTTL),
-		LoginLimiter:   auth.NewLimiter(10, 5*time.Minute),
+		Sessions:       sessions,
+		LoginLimiter:   loginLimiter,
 		TrustedProxies: trustedProxies,
 		SecureCookies:  cfg.Server.SecureCookies,
 	}
@@ -293,12 +306,58 @@ func setPassword(username string) error {
 	return nil
 }
 
+// revokeSessions implements `crowsnest revoke-sessions <username>`: marks
+// every session currently issued for username invalid, forcing a fresh
+// login on every device — e.g. after a lost/compromised device, or when
+// offboarding a user. Like set-password, this edits the users file but
+// doesn't hot-reload a running server; restart crowsnest for it to take
+// effect.
+func revokeSessions(username string) error {
+	cfg, err := config.Load(configPath())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if err := auth.RevokeSessions(cfg.UsersFile, username); err != nil {
+		return err
+	}
+	fmt.Printf("Revoked sessions for %s in %s — restart crowsnest for it to take effect\n", strings.ToLower(username), cfg.UsersFile)
+	return nil
+}
+
+// defaultHealthcheckAddr is used when config.yaml can't be loaded (e.g.
+// missing/unreadable) — matches config's own default server.addr, so
+// healthcheck() and serve() agree on where to look absent any config.
+const defaultHealthcheckAddr = "localhost:5000"
+
+// healthcheckAddr converts a server.addr value (e.g. ":5000",
+// "0.0.0.0:5000", "127.0.0.1:8080") into a loopback host:port that
+// healthcheck() can dial from inside the same container. Falls back to
+// defaultHealthcheckAddr if addr can't be parsed as a host:port.
+func healthcheckAddr(addr string) string {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil || port == "" {
+		return defaultHealthcheckAddr
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" {
+		host = "localhost"
+	}
+	return net.JoinHostPort(host, port)
+}
+
 // healthcheck is invoked as `crowsnest healthcheck` from the Dockerfile's
 // HEALTHCHECK instruction — an in-process HTTP GET, avoiding a curl
-// dependency in the runtime image. Returns a process exit code (0 = healthy).
+// dependency in the runtime image. Reads config.yaml to find the port serve()
+// actually bound (server.addr defaults to :5000, but is user-configurable),
+// so this stays correct if that's ever changed. Returns a process exit code
+// (0 = healthy).
 func healthcheck() int {
+	addr := defaultHealthcheckAddr
+	if cfg, err := config.Load(configPath()); err == nil {
+		addr = healthcheckAddr(cfg.Server.Addr)
+	}
+
 	client := &http.Client{Timeout: 5 * time.Second}
-	resp, err := client.Get("http://localhost:5000/healthz")
+	resp, err := client.Get("http://" + addr + "/healthz")
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return 1

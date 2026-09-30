@@ -65,21 +65,24 @@ func (m *Manager) pollTimeout() time.Duration {
 
 // ActiveGame returns the ID of the first registered game found to be
 // online or starting, if any. A game whose status can't be determined
-// right now is treated as not active rather than erroring the whole scan.
-func (m *Manager) ActiveGame(ctx context.Context) (string, bool) {
+// right now makes the whole scan inconclusive (err set, ok false) rather
+// than being silently treated as not active — callers that use this to
+// gate starting another game must never take an inconclusive scan as "all
+// clear", since that could let two game servers run at once.
+func (m *Manager) ActiveGame(ctx context.Context) (id string, ok bool, err error) {
 	for _, d := range m.registry.All() {
 		if d.Status == nil {
 			continue
 		}
 		status, err := d.Status.Check(ctx, d.ContainerName)
 		if err != nil {
-			continue
+			return "", false, fmt.Errorf("exclusivity: check %s status: %w", d.ID, err)
 		}
 		if status == games.StatusOnline || status == games.StatusStarting {
-			return d.ID, true
+			return d.ID, true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 // RequestStart starts id, refusing with a *ConflictError if a different
@@ -97,7 +100,13 @@ func (m *Manager) startLocked(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("exclusivity: unknown game %q", id)
 	}
-	if active, ok := m.ActiveGame(ctx); ok && active != id {
+	active, found, err := m.ActiveGame(ctx)
+	if err != nil {
+		// Can't rule out that some other game is active right now — refuse
+		// to start rather than risk two game servers running at once.
+		return fmt.Errorf("exclusivity: cannot confirm no other game is active: %w", err)
+	}
+	if found && active != id {
 		return &ConflictError{Active: active}
 	}
 	return m.docker.Start(ctx, target.DockerTarget())

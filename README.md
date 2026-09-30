@@ -52,6 +52,17 @@ existing game server images from Docker Hub — no local Go toolchain needed.
 3. Create at least one login: `docker compose exec crowsnest crowsnest set-password <username>`.
 4. Open `http://<host>:5000`.
 
+### Sessions
+
+Login sessions are stateless signed cookies, valid for `auth.DefaultSessionTTL`
+(3 hours) after login — no "remember me," just log back in once it expires.
+There's no server-side session store to revoke a single device from, but
+`docker compose exec crowsnest crowsnest revoke-sessions <username>` forces
+every outstanding session for that user to fail on their next request; it
+edits the users file, so it takes effect the next time crowsnest restarts.
+Rotating/deleting the session-secret file logs out every user at once, if
+you ever need that blunter option.
+
 ### Docker socket access
 
 By default `compose.yaml.example` mounts `/var/run/docker.sock` straight

@@ -14,6 +14,11 @@ import (
 // attacker enumerate valid usernames by response latency.
 var dummyHash = mustHash("crowsnest-timing-safety-dummy-password")
 
+// maxLoginBodyBytes caps the /login request body. It's unauthenticated, so
+// without a cap a client could force arbitrarily large allocations via
+// json.Decode before the rate limiter even has a chance to kick in.
+const maxLoginBodyBytes = 4096
+
 func mustHash(password string) string {
 	hash, err := HashPassword(password)
 	if err != nil {
@@ -54,6 +59,7 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	r.Body = http.MaxBytesReader(w, r.Body, maxLoginBodyBytes)
 	var req loginRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, "invalid request", http.StatusBadRequest)
@@ -61,7 +67,8 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.ToLower(strings.TrimSpace(req.Username))
 
-	hash, known := s.Users[username]
+	record, known := s.Users[username]
+	hash := record.Hash
 	if !known {
 		hash = dummyHash
 	}

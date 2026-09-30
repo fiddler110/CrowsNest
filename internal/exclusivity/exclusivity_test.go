@@ -117,8 +117,8 @@ func TestActiveGame_None(t *testing.T) {
 	registry := newRegistry(t, docker, "windrose", "valheim")
 	mgr := NewManager(registry, docker)
 
-	if _, ok := mgr.ActiveGame(context.Background()); ok {
-		t.Fatal("ActiveGame() ok = true, want false when nothing is running")
+	if _, ok, err := mgr.ActiveGame(context.Background()); ok || err != nil {
+		t.Fatalf("ActiveGame() = (ok=%v, err=%v), want (false, nil) when nothing is running", ok, err)
 	}
 }
 
@@ -127,9 +127,47 @@ func TestActiveGame_Found(t *testing.T) {
 	registry := newRegistry(t, docker, "windrose", "valheim", "palworld")
 	mgr := NewManager(registry, docker)
 
-	active, ok := mgr.ActiveGame(context.Background())
-	if !ok || active != "valheim" {
-		t.Fatalf("ActiveGame() = (%q, %v), want (valheim, true)", active, ok)
+	active, ok, err := mgr.ActiveGame(context.Background())
+	if err != nil || !ok || active != "valheim" {
+		t.Fatalf("ActiveGame() = (%q, %v, %v), want (valheim, true, nil)", active, ok, err)
+	}
+}
+
+// newFailingFakeDocker builds a docker replacement whose `ps` invocations
+// always fail (nonzero exit), simulating a docker daemon/socket-proxy
+// hiccup mid status-check.
+func newFailingFakeDocker(t *testing.T) *dockerctl.Client {
+	t.Helper()
+	dir := t.TempDir()
+	binPath := filepath.Join(dir, "docker")
+	script := "#!/bin/sh\nexit 1\n"
+	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("write fake docker: %v", err)
+	}
+	return &dockerctl.Client{DockerBin: binPath}
+}
+
+func TestActiveGame_StatusCheckError(t *testing.T) {
+	docker := newFailingFakeDocker(t)
+	registry := newRegistry(t, docker, "windrose", "valheim")
+	mgr := NewManager(registry, docker)
+
+	if _, ok, err := mgr.ActiveGame(context.Background()); ok || err == nil {
+		t.Fatalf("ActiveGame() = (ok=%v, err=%v), want (false, non-nil) when a status check errors", ok, err)
+	}
+}
+
+// TestRequestStart_FailsClosedOnStatusCheckError guards against
+// ActiveGame's error being silently treated as "nothing is active": if a
+// game's status can't be determined, RequestStart must refuse to start
+// anything rather than risk two game servers running at once.
+func TestRequestStart_FailsClosedOnStatusCheckError(t *testing.T) {
+	docker := newFailingFakeDocker(t)
+	registry := newRegistry(t, docker, "windrose", "valheim")
+	mgr := NewManager(registry, docker)
+
+	if err := mgr.RequestStart(context.Background(), "windrose"); err == nil {
+		t.Fatal("RequestStart() error = nil, want error when a status check fails instead of silently starting")
 	}
 }
 
@@ -199,9 +237,9 @@ func TestConfirmSwitch(t *testing.T) {
 		t.Fatalf("ConfirmSwitch() error = %v", err)
 	}
 
-	active, ok := mgr.ActiveGame(context.Background())
-	if !ok || active != "palworld" {
-		t.Fatalf("ActiveGame() after switch = (%q, %v), want (palworld, true)", active, ok)
+	active, ok, err := mgr.ActiveGame(context.Background())
+	if err != nil || !ok || active != "palworld" {
+		t.Fatalf("ActiveGame() after switch = (%q, %v, %v), want (palworld, true, nil)", active, ok, err)
 	}
 }
 

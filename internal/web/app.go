@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/auth"
@@ -28,7 +29,20 @@ type App struct {
 	// Intended for tests; production callers should leave it unset (falls
 	// back to defaultKeepaliveInterval).
 	KeepaliveInterval time.Duration
+
+	// MaxConcurrentStreams caps how many /logs and /startup-progress SSE
+	// connections (combined, across all games) may be open at once — each
+	// holds open a `docker logs -f` subprocess. Intended for tests;
+	// production callers should leave it unset (falls back to
+	// defaultMaxConcurrentStreams).
+	MaxConcurrentStreams int
+	streamCount          atomic.Int32
 }
+
+// maxSwitchBodyBytes caps the /api/games/{id}/switch request body — it's a
+// tiny fixed shape ({"from": "<id>"}), so there's no reason to let an
+// authenticated client force a large json.Decode allocation.
+const maxSwitchBodyBytes = 4096
 
 // Routes registers the dashboard, login/logout, and game-control API on
 // mux.
@@ -263,6 +277,16 @@ func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// actor returns the acting username for an audit log line, falling back to
+// "unknown" if for some reason no session is attached (shouldn't happen —
+// these handlers all sit behind requireSessionAndCSRF).
+func actor(r *http.Request) string {
+	if session, ok := auth.FromContext(r.Context()); ok {
+		return session.Username
+	}
+	return "unknown"
+}
+
 func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	d, ok := a.gameOr404(w, r)
 	if !ok {
@@ -270,6 +294,7 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	err := a.Exclusivity.RequestStart(r.Context(), d.ID)
 	if err == nil {
+		log.Printf("audit: %s started %s", actor(r), d.ID)
 		w.WriteHeader(http.StatusAccepted)
 		return
 	}
@@ -278,6 +303,7 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"conflict": true, "active_game": conflict.Active})
 		return
 	}
+	log.Printf("audit: %s start %s failed: %v", actor(r), d.ID, err)
 	http.Error(w, err.Error(), http.StatusBadGateway)
 }
 
@@ -287,9 +313,11 @@ func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.Exclusivity.Stop(r.Context(), d.ID); err != nil {
+		log.Printf("audit: %s stop %s failed: %v", actor(r), d.ID, err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	log.Printf("audit: %s stopped %s", actor(r), d.ID)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -302,6 +330,7 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSwitchBodyBytes)
 	var req switchRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.From == "" {
 		http.Error(w, `invalid request: expected {"from": "<game id>"}`, http.StatusBadRequest)
@@ -312,9 +341,11 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := a.Exclusivity.ConfirmSwitch(r.Context(), req.From, to.ID); err != nil {
+		log.Printf("audit: %s switch %s->%s failed: %v", actor(r), req.From, to.ID, err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
 	}
+	log.Printf("audit: %s switched %s->%s", actor(r), req.From, to.ID)
 	w.WriteHeader(http.StatusAccepted)
 }
 

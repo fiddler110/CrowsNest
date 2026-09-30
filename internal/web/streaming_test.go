@@ -42,6 +42,19 @@ func TestHandleLogs_Passthrough(t *testing.T) {
 	}
 }
 
+func TestHandleLogs_StreamCapExceeded(t *testing.T) {
+	h := newHarness(t, logsPrintTwoLines)
+	h.App.MaxConcurrentStreams = 1
+	h.App.streamCount.Store(1) // simulate one stream already in flight
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/logs", nil))
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("GET logs over the stream cap = %d, want %d, body=%s", rec.Code, http.StatusServiceUnavailable, rec.Body)
+	}
+}
+
 func TestHandleLogs_UnknownGame(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\nexit 0\n")
 	rec := httptest.NewRecorder()
