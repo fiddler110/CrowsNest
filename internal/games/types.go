@@ -67,6 +67,11 @@ type Milestone struct {
 // a GameDef means that game has no progress bar — just a status badge.
 type StartupMatcher struct {
 	Milestones []Milestone
+
+	// Parse, if set, is tried on every line before Milestones, for progress
+	// that has to be read out of the line itself (e.g. a download
+	// percentage) rather than matched against a fixed pattern.
+	Parse func(line string) (pct int, label string, ok bool)
 }
 
 // InfoProvider supplies extra per-game panel data (world time, weather,

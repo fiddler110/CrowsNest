@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -126,5 +127,60 @@ func TestHandleStartupProgress_MatchesMilestone(t *testing.T) {
 	}
 	if strings.Contains(body, "booting...") {
 		t.Fatalf("non-matching lines should not be emitted as events: %q", body)
+	}
+}
+
+// Fake docker for the progress tests below: `inspect` reports a StartedAt,
+// and `logs` echoes its arguments to stderr-free stdout as a marker line so
+// the test can see whether --since was passed, then prints download lines
+// out of order to check progress only moves forward.
+const logsDownloadWithStartedAt = `#!/bin/sh
+case "$1" in
+  inspect) echo 2026-09-30T13:00:00.123456789Z ;;
+  logs) echo "ARGS: $*"; printf 'progress 40\nprogress 60\nprogress 50\nprogress 60\n' ;;
+esac
+`
+
+func TestHandleStartupProgress_ParseIsMonotonicAndScopedToCurrentRun(t *testing.T) {
+	docker := fakeDockerClient(t, logsDownloadWithStartedAt)
+	re := regexp.MustCompile(`^progress (\d+)$`)
+	defs := []games.GameDef{{
+		ID:            "palworld",
+		DisplayName:   "palworld",
+		ContainerName: "palworld",
+		Status:        &games.DockerStatusChecker{Docker: docker},
+		Players:       games.UnknownPlayerCounter{},
+		Startup: &games.StartupMatcher{
+			Parse: func(line string) (int, string, bool) {
+				m := re.FindStringSubmatch(line)
+				if m == nil {
+					return 0, "", false
+				}
+				n, _ := strconv.Atoi(m[1])
+				return n, "downloading", true
+			},
+			Milestones: []games.Milestone{
+				{Pattern: regexp.MustCompile(`ARGS: .*--since 2026-09-30T13:00:00\.123456789Z`), Pct: 5, Label: "scoped to current run"},
+			},
+		},
+	}}
+	h := newHarnessFromDefs(t, docker, defs)
+	h.App.KeepaliveInterval = time.Hour
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/palworld/startup-progress", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, "scoped to current run") {
+		t.Errorf("logs were not requested with --since <StartedAt>: %q", body)
+	}
+	if n := strings.Count(body, `"pct":60`); n != 1 {
+		t.Errorf("pct 60 emitted %d times, want exactly once: %q", n, body)
+	}
+	if strings.Contains(body, `"pct":50`) {
+		t.Errorf("progress moved backwards to 50: %q", body)
+	}
+	if !strings.Contains(body, `"pct":40`) {
+		t.Errorf("missing first Parse-derived event: %q", body)
 	}
 }

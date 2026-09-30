@@ -111,7 +111,7 @@ type progressEvent struct {
 
 // handleStartupProgress streams startup-milestone matches for a game as
 // Server-Sent Events. Games without a StartupMatcher (everything but
-// Windrose, for now — see docs/implementation-plan.md phase 7) emit a
+// Windrose and Palworld, for now) emit a
 // single "unsupported" event and close; the dashboard treats that as "no
 // progress bar for this game."
 func (a *App) handleStartupProgress(w http.ResponseWriter, r *http.Request) {
@@ -137,29 +137,51 @@ func (a *App) handleStartupProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	defer a.releaseStream()
 
-	// tail=all so a client that subscribes after the milestone line already
-	// scrolled past still sees it replayed, not just newly-written lines.
-	rc, err := a.Docker.Logs(r.Context(), d.ContainerName, "", "all")
+	// Read only the current run's log: a container restarted by compose keeps
+	// its earlier runs' output, and replaying a previous run's "ready" line
+	// would report 100% before the new run has even begun. tail=all so a
+	// client that subscribes after a milestone already scrolled past still
+	// sees it replayed. If StartedAt can't be read, fall back to the whole
+	// log rather than fail the stream.
+	since := ""
+	if started, err := a.Docker.StartedAt(r.Context(), d.ContainerName); err == nil {
+		since = started.UTC().Format(time.RFC3339Nano)
+	}
+	rc, err := a.Docker.Logs(r.Context(), d.ContainerName, since, "all")
 	if err != nil {
 		sw.WriteEvent("error", err.Error())
 		return
 	}
 	defer rc.Close()
 
-	best := -1
+	// Progress only moves forward: log lines can repeat or arrive out of
+	// order relative to the milestone table.
+	last := -1
 	streamLines(r, sw, rc, a.keepaliveInterval(), func(line string) (event, text string, emit bool) {
-		for i, m := range d.Startup.Milestones {
-			if i <= best {
-				continue
-			}
-			if m.Pattern.MatchString(line) {
-				best = i
-				body, _ := json.Marshal(progressEvent{Pct: m.Pct, Label: m.Label})
-				return "progress", string(body), true
-			}
+		pct, label, ok := matchStartup(d.Startup, line)
+		if !ok || pct <= last {
+			return "", "", false
 		}
-		return "", "", false
+		last = pct
+		body, _ := json.Marshal(progressEvent{Pct: pct, Label: label})
+		return "progress", string(body), true
 	})
+}
+
+// matchStartup returns the progress a log line represents, if any: Parse
+// first (values read from the line), then the first matching milestone.
+func matchStartup(m *games.StartupMatcher, line string) (pct int, label string, ok bool) {
+	if m.Parse != nil {
+		if pct, label, ok = m.Parse(line); ok {
+			return pct, label, true
+		}
+	}
+	for _, ms := range m.Milestones {
+		if ms.Pattern.MatchString(line) {
+			return ms.Pct, ms.Label, true
+		}
+	}
+	return 0, "", false
 }
 
 // streamLines reads newline-delimited text from rc, and for each line whose

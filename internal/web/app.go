@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"time"
 
@@ -134,6 +135,7 @@ func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 type dashboardGame struct {
 	ID          string
 	DisplayName string
+	Initial     string // first letter, for the card's emblem
 	Status      string
 }
 
@@ -148,7 +150,12 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	defs := a.Registry.All()
 	data := dashboardData{Username: session.Username, CSRFToken: session.CSRFToken}
 	for _, d := range defs {
-		data.Games = append(data.Games, dashboardGame{ID: d.ID, DisplayName: d.DisplayName, Status: checkStatus(r, d).String()})
+		data.Games = append(data.Games, dashboardGame{
+			ID:          d.ID,
+			DisplayName: d.DisplayName,
+			Initial:     initialOf(d.DisplayName),
+			Status:      checkStatus(r, d).String(),
+		})
 	}
 	if err := a.Templates.Dashboard.Execute(w, data); err != nil {
 		log.Printf("web: render dashboard: %v", err)
@@ -213,7 +220,16 @@ func (a *App) handleInfo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"available": false})
 		return
 	}
-	writeJSON(w, http.StatusOK, data)
+	// An InfoProvider reporting success means the data is available; don't
+	// make every provider remember to say so (the dashboard keys off it).
+	out := make(map[string]any, len(data)+1)
+	for k, v := range data {
+		out[k] = v
+	}
+	if _, set := out["available"]; !set {
+		out["available"] = true
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func (a *App) gameOr404(w http.ResponseWriter, r *http.Request) (games.GameDef, bool) {
@@ -353,4 +369,12 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
 	json.NewEncoder(w).Encode(v)
+}
+
+// initialOf returns the upper-cased first letter of name (or "?" if empty).
+func initialOf(name string) string {
+	for _, r := range name {
+		return strings.ToUpper(string(r))
+	}
+	return "?"
 }

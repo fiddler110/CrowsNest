@@ -127,8 +127,8 @@ func serve() error {
 		case "palworld":
 			// Palworld's dedicated server REST API doubles as both status
 			// probe (reachable == online) and player counter — see
-			// docs/implementation-plan.md phase 10. Not yet exercised
-			// against a real running server.
+			// docs/implementation-plan.md phase 10. Verified against a real
+			// palworld-server-docker container (2026-09-30).
 			if pc := cfg.Games[i].Palworld; pc != nil {
 				client := &palworld.Client{
 					BaseURL:  pc.RESTAPIURL,
@@ -138,7 +138,9 @@ func serve() error {
 				}
 				defs[i].Status = client
 				defs[i].Players = client
+				defs[i].Info = client
 			}
+			defs[i].Startup = palworld.Startup
 		case "valheim":
 			// No first-party API: player count comes from tailing the
 			// container's own log output for join/leave markers — see

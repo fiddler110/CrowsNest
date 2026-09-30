@@ -481,6 +481,30 @@ func TestHandleInfo_Available(t *testing.T) {
 	}
 }
 
+// Regression: Palworld's provider returned plain fields with no "available"
+// key, and the dashboard (which keys off it) showed "no info" forever even
+// though the data was there. The handler now supplies it on success.
+func TestHandleInfo_MarksSuccessfulProviderAvailable(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	provider := fakeInfoProvider{data: map[string]any{"server_name": "Pals"}, ok: true}
+	defs := []games.GameDef{{ID: "palworld", DisplayName: "palworld", ContainerName: "palworld", Info: provider}}
+	h := newHarnessFromDefs(t, docker, defs)
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/palworld/info", nil))
+
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if body["available"] != true || body["server_name"] != "Pals" {
+		t.Fatalf("info = %v, want available=true server_name=Pals", body)
+	}
+	if _, mutated := provider.data["available"]; mutated {
+		t.Error("handler must not mutate the provider's own map")
+	}
+}
+
 func TestHandleInfo_NoInfoProviderWired(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\nexit 0\n")
 	rec := httptest.NewRecorder()
