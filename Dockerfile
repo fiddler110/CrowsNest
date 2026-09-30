@@ -1,6 +1,6 @@
 # Stage 1: grab Docker CLI + compose plugin binaries only (avoids installing
 # the full Docker apt repo and its dependencies).
-FROM docker:27-cli AS docker-cli
+FROM docker:29-cli AS docker-cli
 
 # Stage 2: build the Go binary.
 FROM golang:1.23-alpine AS build
