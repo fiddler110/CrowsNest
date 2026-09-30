@@ -17,6 +17,12 @@ server:
                                                # sits in front of CrowsNest; marks the
                                                # session cookie Secure and adds HSTS
 
+  # max_active_games: 1                       # how many game servers may run at once. 1 (the
+                                               # default) = starting a second one is refused
+                                               # and the UI offers to switch. Raise it on a
+                                               # bigger host; CROWSNEST_MAX_ACTIVE_GAMES in
+                                               # .env overrides this.
+
 idle_shutdown:
   enabled: true
   idle_minutes: 15

@@ -51,6 +51,7 @@ services:
       - "host.docker.internal:host-gateway"
     environment:
       - TZ=${TZ:-UTC}
+      - CROWSNEST_MAX_ACTIVE_GAMES=${CROWSNEST_MAX_ACTIVE_GAMES:-1}
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - WINDROSE_RCON_PASSWORD=${WINDROSE_RCON_PASSWORD:-}
       - PALWORLD_ADMIN_PASSWORD=${PALWORLD_ADMIN_PASSWORD:-}
@@ -111,6 +112,8 @@ services:
     restart: unless-stopped
     stop_grace_period: 30s
     network_mode: host
+    security_opt:
+      - seccomp:unconfined   # required by the image's Wine runtime
     environment:
       - TZ=${TZ:-UTC}
       - P2P_PROXY_ADDRESS=${P2P_PROXY_ADDRESS:-10.0.0.2}

@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"regexp"
+	"strconv"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -63,7 +64,17 @@ type ServerConfig struct {
 	// for plain-HTTP LAN deployments, where a Secure cookie would never be
 	// sent back by the browser at all.
 	SecureCookies bool `yaml:"secure_cookies"`
+
+	// MaxActiveGames caps how many game servers may run at once. Zero
+	// (the default) means 1: starting a second game is refused and the UI
+	// offers to switch instead. Overridden by the CROWSNEST_MAX_ACTIVE_GAMES
+	// environment variable (e.g. from .env) when that is set.
+	MaxActiveGames int `yaml:"max_active_games"`
 }
+
+// MaxActiveGamesEnv names the environment variable that overrides
+// server.max_active_games.
+const MaxActiveGamesEnv = "CROWSNEST_MAX_ACTIVE_GAMES"
 
 // IdleShutdownConfig controls the auto-stop-when-empty policy. A nil
 // *IdleShutdownConfig on Config means "use defaults" (enabled); an explicit
@@ -148,6 +159,13 @@ func Load(path string) (*Config, error) {
 	}
 
 	cfg.applyDefaults()
+	if v := os.Getenv(MaxActiveGamesEnv); v != "" {
+		n, err := strconv.Atoi(v)
+		if err != nil {
+			return nil, fmt.Errorf("config: %s=%q: not a whole number", MaxActiveGamesEnv, v)
+		}
+		cfg.Server.MaxActiveGames = n
+	}
 	if err := cfg.validate(); err != nil {
 		return nil, fmt.Errorf("config: %s: %w", path, err)
 	}
@@ -163,6 +181,9 @@ func (c *Config) applyDefaults() {
 	}
 	if c.Server.TZ == "" {
 		c.Server.TZ = defaultTZ
+	}
+	if c.Server.MaxActiveGames == 0 {
+		c.Server.MaxActiveGames = 1
 	}
 
 	if c.IdleShutdown == nil {
@@ -214,6 +235,9 @@ func (c *Config) validate() error {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("server.trusted_proxies[%d] (%s): %w", i, cidr, err)
 		}
+	}
+	if c.Server.MaxActiveGames < 1 {
+		return fmt.Errorf("max active games (%d): must be >= 1", c.Server.MaxActiveGames)
 	}
 	if _, err := c.Server.Location(); err != nil {
 		return fmt.Errorf("server.tz (%s): %w", c.Server.TZ, err)

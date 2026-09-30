@@ -405,6 +405,10 @@ async function startGame(id, btn) {
       }
       return;
     }
+    if (res.status === 429) {
+      toast((await res.text()).replace(/^exclusivity: /, ""));
+      return;
+    }
     await checkOK(res, "Start");
   });
 }

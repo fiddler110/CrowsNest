@@ -393,3 +393,26 @@ func TestLoad_InvalidYAML(t *testing.T) {
 		t.Fatal("Load() error = nil, want parse error")
 	}
 }
+
+func TestLoad_MaxActiveGames(t *testing.T) {
+	const base = "users_file: /u\ngames:\n  - {id: a, display_name: A, container_name: a, compose_file: /c.yaml, compose_profile: a, compose_service: a}\n"
+	load := func(yaml, env string) (*Config, error) {
+		t.Setenv(MaxActiveGamesEnv, env)
+		return Load(writeConfig(t, yaml))
+	}
+
+	if cfg, err := load(base, ""); err != nil || cfg.Server.MaxActiveGames != 1 {
+		t.Fatalf("default = %v, %v; want 1", cfg, err)
+	}
+	if cfg, err := load("server: {max_active_games: 2}\n"+base, ""); err != nil || cfg.Server.MaxActiveGames != 2 {
+		t.Fatalf("yaml 2 = %v, %v; want 2", cfg, err)
+	}
+	if cfg, err := load("server: {max_active_games: 2}\n"+base, "3"); err != nil || cfg.Server.MaxActiveGames != 3 {
+		t.Fatalf("env override = %v, %v; want 3", cfg, err)
+	}
+	for _, bad := range []string{"0", "-1", "two"} {
+		if _, err := load(base, bad); err == nil {
+			t.Errorf("env %q accepted, want error", bad)
+		}
+	}
+}

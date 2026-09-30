@@ -6,6 +6,31 @@ grouped by priority, not phase; check them off as they land.
 
 ## Done
 
+- [x] **Configurable concurrent-server limit (2026-09-30).** The
+  one-game-at-a-time guard is now `exclusivity.Manager.MaxActive`, default 1,
+  set from `server.max_active_games` or the `CROWSNEST_MAX_ACTIVE_GAMES`
+  env var (`.env` → compose → CrowsNest; env wins). At the limit, Start
+  returns 409 listing the active games and the UI offers to switch. Verified
+  against real containers: Start with Valheim up → 409; Switch Valheim →
+  Palworld stopped one and started the other. Files:
+  `internal/exclusivity/exclusivity.go`, `internal/config/config.go`,
+  `cmd/crowsnest/main.go`, `.env.example`, `compose.yaml.example`.
+
+- [x] **Palworld restart cooldown (2026-09-30).** `GameDef.RestartCooldown`
+  (30s for Palworld) makes Start return 429 + `Retry-After` shortly after a
+  Stop; the UI toasts it. Guards against the segfault seen when Palworld is
+  restarted seconds after stopping.
+
+- [x] **Valheim status, progress bar and log scoping (2026-09-30).** Read
+  from a real `lloesche/valheim-server` run (Valheim l-1.0.16): `Tracker` now
+  implements `StatusChecker` (starting until `Loading: Done.`, then online),
+  `valheim.Startup` drives the progress bar (SteamCMD download lines plus
+  world-load milestones), and log tailing is scoped to the current run via
+  `--since StartedAt` so a previous run's lines can't leak in.
+
+- [x] **Palworld `/info` panel and startup progress; UI redesign
+  (2026-09-30).** See commits `b3e0458` and `416ebbb`.
+
 - [x] **`exclusivity.ActiveGame` fail-open on a status-check error let two
   games start concurrently.** Found during a 2026-09-12 deeper pass over
   cross-service interactions (auth/web/exclusivity/idle-night-shutdown).
@@ -159,12 +184,33 @@ grouped by priority, not phase; check them off as they land.
   a 2026-09-12 review; kept as awareness-only rather than a release gate by
   explicit choice.
 
+## Next up (picked up from the 2026-09-30 session)
+
+- [ ] **Verify Windrose end-to-end in the new stack.** The three-game test
+  stack (`~/projects/crowsnest-test`, scratch copy of the Windrose server
+  files) is built, but the `indifferentbroccoli/windrose-server-docker`
+  image was never pulled there, so Start timed out at the 120s
+  `docker compose up` limit. Pull the image first, then check
+  starting→online, logs, stats, and the Windrose+ player count/info panel
+  (needs the RCON password supplied by hand — deliberately not copied out of
+  the real server's `windrose_plus.json`).
+- [ ] **Consider a longer start timeout (or a separate pull step).** A first
+  start that has to pull a multi-GB image exceeds `defaultStartTimeout`
+  (120s) and returns 502 even though compose may still be working.
+- [ ] **Migration from the Python lab setup**
+  (`/home/plex/docker/compose_includes/CrowsNest`). That stack uses
+  `seccomp:unconfined` and `network_mode: host` for Windrose, a
+  docker-socket-proxy (`dockerproxy-privileged`) and `127.0.0.1:5000`; the
+  compose example now carries `seccomp:unconfined`, the rest is config.
+- [ ] **Real player joins** for Valheim (join/leave log markers) and
+  Palworld, plus a real Start→Switch between two games from the browser UI.
+- [ ] **Restart cooldown only tracks stops made through the panel** and is
+  in-memory; a stop via `docker stop` or idle/night auto-stop isn't counted.
+  Could read the container's `FinishedAt` instead.
+- [ ] Idle/night auto-stop and Discord notifications are still untested
+  against real servers; firewall for `:5001`/game ports not checked.
+
 ## Tracking, not new — already flagged in `docs/implementation-plan.md`
 
-- [ ] Valheim's status detection is still the Phase 3 docker-ps-only
-  baseline (no confirmed ready-log marker), so idle/night-shutdown can
-  never distinguish "starting" from "online" for it via `StatusChecker`
-  the way Windrose/Palworld can.
-- [ ] Valheim's and Palworld's integrations (log markers, REST shapes) are
-  built from public docs/community knowledge, not verified against a real
-  running server — watch the logs on first real use of either.
+- [ ] Valheim's join/leave log markers (`Got handshake from client` /
+  `Closing socket`) are still unverified with a real player.

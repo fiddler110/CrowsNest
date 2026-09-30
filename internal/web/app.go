@@ -8,6 +8,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -316,7 +317,13 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	var conflict *exclusivity.ConflictError
 	if errors.As(err, &conflict) {
-		writeJSON(w, http.StatusConflict, map[string]any{"conflict": true, "active_game": conflict.Active})
+		writeJSON(w, http.StatusConflict, map[string]any{"conflict": true, "active_game": conflict.Active, "active_games": conflict.All})
+		return
+	}
+	var cooldown *exclusivity.CooldownError
+	if errors.As(err, &cooldown) {
+		w.Header().Set("Retry-After", strconv.Itoa(int(cooldown.Remaining.Seconds())+1))
+		http.Error(w, cooldown.Error(), http.StatusTooManyRequests)
 		return
 	}
 	log.Printf("audit: %s start %s failed: %v", actor(r), d.ID, err)

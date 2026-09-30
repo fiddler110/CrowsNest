@@ -141,13 +141,19 @@ func serve() error {
 				defs[i].Info = client
 			}
 			defs[i].Startup = palworld.Startup
+			// Bringing it back up seconds after a stop segfaulted it once.
+			defs[i].RestartCooldown = 30 * time.Second
 		case "valheim":
 			// No first-party API: player count comes from tailing the
 			// container's own log output for join/leave markers — see
-			// docs/implementation-plan.md phase 10. Not yet exercised
-			// against a real running server.
+			// docs/implementation-plan.md phase 10. The same tail also
+			// reports readiness (starting vs. online) and drives the
+			// progress bar; both verified against a real container
+			// (2026-09-30), joins/leaves not yet with a real player.
 			tracker := valheim.NewTracker(docker, d.ContainerName)
 			defs[i].Players = tracker
+			defs[i].Status = tracker
+			defs[i].Startup = valheim.Startup
 			valheimTrackers = append(valheimTrackers, tracker)
 		}
 	}
@@ -192,6 +198,7 @@ func serve() error {
 	}
 
 	exclusivityMgr := exclusivity.NewManager(registry, docker)
+	exclusivityMgr.MaxActive = cfg.Server.MaxActiveGames
 	app := &web.App{
 		Registry:    registry,
 		Docker:      docker,

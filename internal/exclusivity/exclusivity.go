@@ -23,11 +23,23 @@ const (
 // ConflictError means a start was refused because Active is already
 // running or starting. Handlers surface this as HTTP 409.
 type ConflictError struct {
-	Active string
+	Active string   // first active game; what the UI offers to switch away from
+	All    []string // every active game, in registry order
 }
 
 func (e *ConflictError) Error() string {
 	return fmt.Sprintf("exclusivity: %s is already active", e.Active)
+}
+
+// CooldownError means a start was refused because id was stopped too
+// recently. Handlers surface this as HTTP 429.
+type CooldownError struct {
+	Game      string
+	Remaining time.Duration
+}
+
+func (e *CooldownError) Error() string {
+	return fmt.Sprintf("exclusivity: %s was stopped recently; try again in %ds", e.Game, int(e.Remaining.Round(time.Second).Seconds()))
 }
 
 // Manager serializes start/stop/switch across the registered games so at
@@ -37,16 +49,28 @@ type Manager struct {
 	mu       sync.Mutex
 	registry *games.Registry
 	docker   *dockerctl.Client
+	lastStop map[string]time.Time // guarded by mu
 
 	// StopPollInterval/StopPollTimeout bound how long ConfirmSwitch waits
 	// for the stopped game to actually report offline before starting the
 	// next one. Zero means use the package defaults; overridable for tests.
 	StopPollInterval time.Duration
 	StopPollTimeout  time.Duration
+
+	// MaxActive is how many games may run at once; zero or less means 1
+	// (the strict one-at-a-time guarantee). Hosts with headroom can raise it.
+	MaxActive int
+}
+
+func (m *Manager) maxActive() int {
+	if m.MaxActive > 0 {
+		return m.MaxActive
+	}
+	return 1
 }
 
 func NewManager(registry *games.Registry, docker *dockerctl.Client) *Manager {
-	return &Manager{registry: registry, docker: docker}
+	return &Manager{registry: registry, docker: docker, lastStop: map[string]time.Time{}}
 }
 
 func (m *Manager) pollInterval() time.Duration {
@@ -70,19 +94,30 @@ func (m *Manager) pollTimeout() time.Duration {
 // gate starting another game must never take an inconclusive scan as "all
 // clear", since that could let two game servers run at once.
 func (m *Manager) ActiveGame(ctx context.Context) (id string, ok bool, err error) {
+	all, err := m.ActiveGames(ctx)
+	if err != nil || len(all) == 0 {
+		return "", false, err
+	}
+	return all[0], true, nil
+}
+
+// ActiveGames returns every registered game that is online or starting, in
+// registry order, with the same fail-closed error behavior as ActiveGame.
+func (m *Manager) ActiveGames(ctx context.Context) ([]string, error) {
+	var active []string
 	for _, d := range m.registry.All() {
 		if d.Status == nil {
 			continue
 		}
 		status, err := d.Status.Check(ctx, d.ContainerName)
 		if err != nil {
-			return "", false, fmt.Errorf("exclusivity: check %s status: %w", d.ID, err)
+			return nil, fmt.Errorf("exclusivity: check %s status: %w", d.ID, err)
 		}
 		if status == games.StatusOnline || status == games.StatusStarting {
-			return d.ID, true, nil
+			active = append(active, d.ID)
 		}
 	}
-	return "", false, nil
+	return active, nil
 }
 
 // RequestStart starts id, refusing with a *ConflictError if a different
@@ -100,14 +135,28 @@ func (m *Manager) startLocked(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("exclusivity: unknown game %q", id)
 	}
-	active, found, err := m.ActiveGame(ctx)
+	active, err := m.ActiveGames(ctx)
 	if err != nil {
-		// Can't rule out that some other game is active right now — refuse
-		// to start rather than risk two game servers running at once.
+		// Can't rule out that other games are active right now — refuse to
+		// start rather than risk exceeding the limit.
 		return fmt.Errorf("exclusivity: cannot confirm no other game is active: %w", err)
 	}
-	if found && active != id {
-		return &ConflictError{Active: active}
+	alreadyActive := false
+	for _, a := range active {
+		if a == id {
+			alreadyActive = true
+		}
+	}
+	if !alreadyActive && len(active) >= m.maxActive() {
+		return &ConflictError{Active: active[0], All: active}
+	}
+	found := alreadyActive
+	if !found && target.RestartCooldown > 0 {
+		if at, ok := m.lastStop[id]; ok {
+			if rem := target.RestartCooldown - time.Since(at); rem > 0 {
+				return &CooldownError{Game: id, Remaining: rem}
+			}
+		}
 	}
 	return m.docker.Start(ctx, target.DockerTarget())
 }
@@ -124,7 +173,11 @@ func (m *Manager) stopLocked(ctx context.Context, id string) error {
 	if !ok {
 		return fmt.Errorf("exclusivity: unknown game %q", id)
 	}
-	return m.docker.Stop(ctx, d.ContainerName)
+	if err := m.docker.Stop(ctx, d.ContainerName); err != nil {
+		return err
+	}
+	m.lastStop[id] = time.Now()
+	return nil
 }
 
 // ConfirmSwitch stops `from`, waits (bounded) for it to actually report

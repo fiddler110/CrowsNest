@@ -265,3 +265,60 @@ func TestConfirmSwitch_UnknownSource(t *testing.T) {
 		t.Fatal("ConfirmSwitch() error = nil, want error for an unregistered source game")
 	}
 }
+
+func TestRequestStart_RestartCooldown(t *testing.T) {
+	docker := newStaticFakeDocker(t, []string{"a"}, nil)
+	reg := newRegistry(t, docker, "a")
+	def, _ := reg.Get("a")
+	def.RestartCooldown = time.Hour
+	reg, err := games.NewRegistry([]games.GameDef{def})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := NewManager(reg, docker)
+
+	if err := m.RequestStart(context.Background(), "a"); err != nil {
+		t.Fatalf("first start (never stopped) = %v, want nil", err)
+	}
+	if err := m.Stop(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	var cd *CooldownError
+	if err := m.RequestStart(context.Background(), "a"); !errors.As(err, &cd) {
+		t.Fatalf("start right after stop = %v, want *CooldownError", err)
+	}
+	if cd.Remaining <= 0 || cd.Remaining > time.Hour {
+		t.Errorf("Remaining = %v, want within (0, 1h]", cd.Remaining)
+	}
+
+	m.lastStop["a"] = time.Now().Add(-2 * time.Hour)
+	if err := m.RequestStart(context.Background(), "a"); err != nil {
+		t.Fatalf("start after cooldown elapsed = %v, want nil", err)
+	}
+}
+
+func TestRequestStart_MaxActive(t *testing.T) {
+	docker := newStaticFakeDocker(t, []string{"a", "b", "c"}, []string{"a"})
+	reg := newRegistry(t, docker, "a", "b", "c")
+
+	// Default (1): b is refused while a runs.
+	var conflict *ConflictError
+	if err := NewManager(reg, docker).RequestStart(context.Background(), "b"); !errors.As(err, &conflict) || conflict.Active != "a" {
+		t.Fatalf("default limit: RequestStart(b) = %v, want conflict with a", err)
+	}
+
+	// Limit 2: b fits alongside a.
+	m := NewManager(reg, docker)
+	m.MaxActive = 2
+	if err := m.RequestStart(context.Background(), "b"); err != nil {
+		t.Fatalf("limit 2: RequestStart(b) = %v, want nil", err)
+	}
+
+	// Limit 2 with a and b both running: c is refused, listing both.
+	docker2 := newStaticFakeDocker(t, []string{"a", "b", "c"}, []string{"a", "b"})
+	m2 := NewManager(newRegistry(t, docker2, "a", "b", "c"), docker2)
+	m2.MaxActive = 2
+	if err := m2.RequestStart(context.Background(), "c"); !errors.As(err, &conflict) || len(conflict.All) != 2 {
+		t.Fatalf("limit 2 full: RequestStart(c) = %v, want conflict listing 2 games", err)
+	}
+}

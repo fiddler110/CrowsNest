@@ -24,8 +24,9 @@ for the parts that haven't been smoke-tested against a real server.
 - Windrose (`indifferentbroccoli/windrose-server-docker`) — status, start/stop,
   logs, stats; player count/world info/night-shutdown eligibility additionally
   require the optional Windrose+ HTTP/RCON integration
-- Valheim (`lloesche/valheim-server`) — status, start/stop, logs, stats,
-  player count (via log tailing)
+- Valheim (`lloesche/valheim-server`) — status (starting vs. online, read
+  from the log), startup progress, start/stop, logs, stats, player count
+  (via log tailing)
 - Palworld (`thijsvanloef/palworld-server-docker`) — status, start/stop, logs,
   stats, player count (via its REST API)
 
@@ -51,6 +52,21 @@ existing game server images from Docker Hub — no local Go toolchain needed.
    run `--profile <game> up` by hand.
 3. Create at least one login: `docker compose exec crowsnest crowsnest set-password <username>`.
 4. Open `http://<host>:5000`.
+
+### One server at a time
+
+The dashboard shows a card for every game in `config.yaml`, and any of them
+can be started or stopped from it. By default only **one** game may run at a
+time: pressing Start on a second game is refused and the dashboard offers to
+*switch* — stop the running game, wait for it to go offline, then start the
+new one. To allow more than one at once (a host with headroom), set
+`CROWSNEST_MAX_ACTIVE_GAMES` in `.env` (passed through by
+`compose.yaml.example`) or `server.max_active_games` in `config.yaml`; the
+environment variable wins. When the limit is reached, Start still offers to
+switch away from the first running game.
+
+Palworld additionally enforces a 30-second pause between a stop and the next
+start, because bringing it back up within seconds crashed the server.
 
 ### Sessions
 

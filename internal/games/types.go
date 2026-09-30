@@ -7,6 +7,7 @@ package games
 import (
 	"context"
 	"regexp"
+	"time"
 )
 
 // Status is a coarse container/game lifecycle state, independent of how a
@@ -93,6 +94,11 @@ type GameDef struct {
 	ComposeService string
 
 	NightShutdown bool
+
+	// RestartCooldown is the minimum time between stopping this game and
+	// starting it again; zero means no limit. Some servers (Palworld)
+	// crash if brought back up seconds after a shutdown.
+	RestartCooldown time.Duration
 
 	Status       StatusChecker
 	Players      PlayerCounter
