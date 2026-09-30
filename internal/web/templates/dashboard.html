@@ -3,74 +3,129 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <meta name="csrf-token" content="{{.CSRFToken}}">
-<title>CrowsNest</title>
+<title>CrowsNest · Lookout Console</title>
+<link rel="icon" type="image/png" href="/static/brand.png">
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
+<svg xmlns="http://www.w3.org/2000/svg" class="sr-only" aria-hidden="true" focusable="false">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M4 6l6 6-6 6M12 19h8"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></symbol>
+</svg>
+
+<div class="backdrop" aria-hidden="true"><span class="grid"></span><span class="glow glow-a"></span><span class="glow glow-b"></span></div>
+
 <header class="topbar">
-  <h1>CrowsNest</h1>
+  <a class="brand" href="/">
+    <img src="/static/brand.png" alt="" width="38" height="38">
+    <span class="brand-text"><strong>CrowsNest</strong><small>// lookout console</small></span>
+  </a>
   <div class="user-bar">
-    <span>{{.Username}}</span>
-    <button id="logout-btn" type="button">Log out</button>
+    <span class="user-chip"><svg class="icon"><use href="#i-user"/></svg><b>{{.Username}}</b></span>
+    <button id="logout-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-logout"/></svg>Log out</button>
   </div>
 </header>
-<main id="games">
-  {{range .Games}}
-  <section class="game-card" data-id="{{.ID}}">
-    <h2>{{.DisplayName}}</h2>
-    <span class="status status-{{.Status}}">{{.Status}}</span>
-    <span class="player-count" hidden></span>
-    <div class="progress-wrap" hidden>
-      <div class="progress-track"><div class="progress-bar" style="width:0%"></div></div>
-      <span class="progress-label"></span>
+
+<main class="shell">
+  <section class="hero" id="fleet" aria-live="polite">
+    <div class="hero-body">
+      <p class="eyebrow"><i class="beacon"></i>// fleet status</p>
+      <h1 id="fleet-title">Scanning the horizon…</h1>
+      <p class="hero-sub" id="fleet-sub"></p>
+      <dl class="hero-stats">
+        <div><dt>Vessels</dt><dd id="stat-vessels">–</dd></div>
+        <div><dt>Under way</dt><dd id="stat-active">–</dd></div>
+        <div><dt>Crew</dt><dd id="stat-crew">–</dd></div>
+      </dl>
     </div>
-    <div class="actions">
-      <button class="start-btn" type="button">Start</button>
-      <button class="stop-btn" type="button">Stop</button>
-      <button class="logs-btn" type="button">Logs</button>
-      <button class="stats-btn" type="button">Stats</button>
-      <button class="info-btn" type="button">Info</button>
-    </div>
-    <div class="log-panel" hidden>
-      <div class="log-output"></div>
-    </div>
-    <div class="info-panel" hidden>
-      <p class="info-empty" hidden>No additional info available for this game.</p>
-      <dl class="info-fields"></dl>
-    </div>
-    <div class="stats-panel" hidden>
-      <div class="stat-row">
-        <div class="stat-row-head"><span>CPU</span><span class="stat-value stat-cpu-val">—</span></div>
-        <div class="stat-track"><div class="stat-fill stat-cpu-fill"></div></div>
-      </div>
-      <div class="stat-row">
-        <div class="stat-row-head"><span>Memory</span><span class="stat-value stat-mem-val">—</span></div>
-        <div class="stat-track"><div class="stat-fill stat-mem-fill"></div></div>
-      </div>
-      <div class="stat-row stat-gpu-row" hidden>
-        <div class="stat-row-head"><span>GPU</span><span class="stat-value stat-gpu-val">—</span></div>
-        <div class="stat-track"><div class="stat-fill stat-gpu-fill"></div></div>
-      </div>
-      <div class="stat-row stat-gpu-mem-row" hidden>
-        <div class="stat-row-head"><span>GPU Memory</span><span class="stat-value stat-gpu-mem-val">—</span></div>
-        <div class="stat-track"><div class="stat-fill stat-gpu-mem-fill"></div></div>
-      </div>
-    </div>
+    <img class="hero-art" src="/static/emblem.webp" alt="CrowsNest: game server launcher and controller" width="280" height="320">
   </section>
-  {{else}}
-  <p>No games configured.</p>
-  {{end}}
+
+  <h2 class="section-title">// vessels</h2>
+  <div id="games" class="games">
+    {{range .Games}}
+    <article class="game-card" data-id="{{.ID}}" data-game="{{.ID}}" data-name="{{.DisplayName}}" data-status="{{.Status}}">
+      <header class="card-head">
+        <div class="emblem" aria-hidden="true">{{.Initial}}</div>
+        <div class="card-title">
+          <h2>{{.DisplayName}}</h2>
+          <p class="card-sub">{{.ID}}</p>
+        </div>
+        <span class="status status-{{.Status}}"><i class="beacon"></i><span class="status-text">{{.Status}}</span></span>
+      </header>
+
+      <p class="crew" hidden><svg class="icon"><use href="#i-users"/></svg><span class="player-count"></span></p>
+
+      <div class="progress-wrap" hidden>
+        <div class="progress-track"><div class="progress-bar"></div></div>
+        <span class="progress-label"></span>
+      </div>
+
+      <div class="actions">
+        <button class="btn btn-primary start-btn" type="button"><svg class="icon"><use href="#i-play"/></svg>Start</button>
+        <button class="btn btn-danger stop-btn" type="button"><svg class="icon"><use href="#i-stop"/></svg>Stop</button>
+        <div class="tabs" role="group" aria-label="{{.DisplayName}} panels">
+          <button class="tab logs-btn" type="button" aria-pressed="false"><svg class="icon"><use href="#i-terminal"/></svg>Logs</button>
+          <button class="tab stats-btn" type="button" aria-pressed="false"><svg class="icon"><use href="#i-chart"/></svg>Stats</button>
+          <button class="tab info-btn" type="button" aria-pressed="false"><svg class="icon"><use href="#i-info"/></svg>Info</button>
+        </div>
+      </div>
+
+      <div class="log-panel" hidden>
+        <div class="log-output"></div>
+      </div>
+      <div class="info-panel" hidden>
+        <p class="info-empty" hidden>No info right now. The server may still be starting, or this game has none.</p>
+        <dl class="info-fields"></dl>
+      </div>
+      <div class="stats-panel" hidden>
+        <div class="stat-row">
+          <div class="stat-row-head"><span>CPU</span><span class="stat-value stat-cpu-val">—</span></div>
+          <div class="stat-track"><div class="stat-fill stat-cpu-fill"></div></div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-row-head"><span>Memory</span><span class="stat-value stat-mem-val">—</span></div>
+          <div class="stat-track"><div class="stat-fill stat-mem-fill"></div></div>
+        </div>
+        <div class="stat-row stat-gpu-row" hidden>
+          <div class="stat-row-head"><span>GPU</span><span class="stat-value stat-gpu-val">—</span></div>
+          <div class="stat-track"><div class="stat-fill stat-gpu-fill"></div></div>
+        </div>
+        <div class="stat-row stat-gpu-mem-row" hidden>
+          <div class="stat-row-head"><span>GPU Memory</span><span class="stat-value stat-gpu-mem-val">—</span></div>
+          <div class="stat-track"><div class="stat-fill stat-gpu-mem-fill"></div></div>
+        </div>
+      </div>
+    </article>
+    {{else}}
+    <p class="empty">No vessels charted. Add a game to config.yaml.</p>
+    {{end}}
+  </div>
 </main>
 
-<div id="conflict-dialog" class="dialog" hidden>
+<div id="conflict-dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="conflict-title" hidden>
   <div class="dialog-box">
+    <p class="eyebrow">// one ship at a time</p>
+    <h3 id="conflict-title">Another vessel is at sea</h3>
     <p id="conflict-message"></p>
     <div class="dialog-actions">
-      <button id="conflict-confirm" type="button">Switch</button>
-      <button id="conflict-cancel" type="button">Cancel</button>
+      <button id="conflict-cancel" class="btn btn-ghost" type="button">Cancel</button>
+      <button id="conflict-confirm" class="btn btn-primary" type="button">Switch</button>
     </div>
   </div>
+</div>
+
+<div id="toast" class="toast" role="status" hidden>
+  <svg class="icon"><use href="#i-alert"/></svg><span id="toast-text"></span>
 </div>
 
 <script src="/static/app.js"></script>

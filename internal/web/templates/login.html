@@ -3,22 +3,58 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CrowsNest — Log in</title>
+<meta name="color-scheme" content="dark">
+<title>Sign in · CrowsNest</title>
+<link rel="icon" type="image/png" href="/static/brand.png">
 <link rel="stylesheet" href="/static/style.css">
+<link rel="stylesheet" href="/static/login.css">
 </head>
-<body class="login-page">
-<main class="login-card">
-  <h1>CrowsNest</h1>
-  <form id="login-form">
-    <label>Username
-      <input type="text" name="username" autocomplete="username" required autofocus>
-    </label>
-    <label>Password
-      <input type="password" name="password" autocomplete="current-password" required>
-    </label>
-    <button type="submit">Log in</button>
-    <p id="login-error" class="error" hidden></p>
-  </form>
+<body>
+<div class="backdrop" aria-hidden="true"><span class="grid"></span><span class="glow glow-a"></span><span class="glow glow-b"></span></div>
+<div class="login-radar" aria-hidden="true"></div>
+
+<main class="login-stage">
+  <section class="login-card" id="login-card" aria-labelledby="title">
+    <img class="login-art" src="/static/emblem.webp" alt="CrowsNest: game server launcher and controller" width="280" height="320">
+
+    <p class="chip"><span class="beacon"></span>Lookout online</p>
+    <h1 id="title">Welcome aboard</h1>
+    <p class="lede">Identify yourself to take the helm.</p>
+
+    <div class="alert" id="login-alert" role="alert" hidden>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg>
+      <span id="login-error"></span>
+    </div>
+
+    <form id="login-form" autocomplete="on" novalidate>
+      <label class="field">
+        <span class="label">// Username</span>
+        <span class="control">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <input name="username" type="text" autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required autofocus>
+        </span>
+      </label>
+
+      <label class="field">
+        <span class="label">// Passphrase</span>
+        <span class="control">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          <input name="password" type="password" autocomplete="current-password" required>
+          <button type="button" class="reveal" id="reveal" aria-label="Show password" aria-pressed="false" hidden>
+            <svg class="icon eye" viewBox="0 0 24 24" aria-hidden="true"><path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg>
+            <svg class="icon eye-off" viewBox="0 0 24 24" aria-hidden="true"><path d="M17.9 17.9A10.4 10.4 0 0 1 12 19C5.6 19 2 12 2 12a18.5 18.5 0 0 1 5.1-5.9M9.9 5.2A9.6 9.6 0 0 1 12 5c6.4 0 10 7 10 7a18.6 18.6 0 0 1-2.2 3.2M1 1l22 22"/><path d="M14.1 14.1a3 3 0 1 1-4.2-4.2"/></svg>
+          </button>
+        </span>
+        <span class="caps" id="caps" hidden>⚠ Caps Lock is on</span>
+      </label>
+
+      <button class="submit" id="submit" type="submit"><span class="spin" aria-hidden="true"></span><span class="txt">Take the helm</span></button>
+    </form>
+
+    <p class="hint">Authorized crew only · 3-hour sessions</p>
+  </section>
+
+  <p class="prompt" aria-hidden="true"><span class="ps">$</span> crowsnest --watch <span class="ok">horizon</span><span class="caret"></span></p>
 </main>
 <script src="/static/login.js"></script>
 </body>

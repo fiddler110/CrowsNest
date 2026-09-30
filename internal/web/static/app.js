@@ -9,25 +9,83 @@ const progressSources = {};
 const statsTimers = {};
 const infoTimers = {};
 
+function cardFor(id) {
+  return document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+}
+
+function setPressed(btn, pressed) {
+  btn.setAttribute("aria-pressed", String(pressed));
+}
+
 function setStatus(id, status) {
-  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  const card = cardFor(id);
   if (!card) return;
   const badge = card.querySelector(".status");
-  const prevStatus = badge.dataset.status;
-  badge.textContent = status;
+  const prevStatus = card.dataset.status;
   badge.className = `status status-${status}`;
-  badge.dataset.status = status;
+  badge.querySelector(".status-text").textContent = status;
+  card.dataset.status = status;
+
+  // Start makes sense only for a stopped/unknown game; Stop only for one
+  // that's running or coming up. (A game that's up while a *different* one
+  // is chosen still goes through the switch dialog on the server's 409.)
+  card.querySelector(".start-btn").disabled = status === "online" || status === "starting";
+  card.querySelector(".stop-btn").disabled = status === "offline";
 
   if (status === "starting" && prevStatus !== "starting") {
     startProgressTracking(id);
   } else if (status !== "starting") {
     stopProgressTracking(id);
   }
+  updateFleet();
+}
+
+// updateFleet refreshes the hero banner from what the cards currently show.
+function updateFleet() {
+  const cards = [...document.querySelectorAll(".game-card")];
+  const active = cards.filter((c) => ["online", "starting"].includes(c.dataset.status));
+  const crew = cards.reduce((n, c) => n + (parseInt(c.dataset.players, 10) || 0), 0);
+
+  const hero = document.getElementById("fleet");
+  const title = document.getElementById("fleet-title");
+  const sub = document.getElementById("fleet-sub");
+  hero.classList.toggle("is-active", active.length > 0);
+
+  if (cards.length === 0) {
+    title.textContent = "No vessels charted";
+    sub.textContent = "Add a game to config.yaml to see it here.";
+  } else if (active.length === 0) {
+    title.textContent = "All quiet on the horizon";
+    sub.textContent = "No server is running. Pick a vessel below and start it when the crew is ready.";
+  } else {
+    const c = active[0];
+    const name = c.dataset.name;
+    if (c.dataset.status === "starting") {
+      title.textContent = `${name} is getting under way`;
+      sub.textContent = "The server is starting up. It will appear online once it's ready for the crew.";
+    } else {
+      title.textContent = `${name} is under sail`;
+      sub.textContent = crew === 1 ? "1 player aboard." : `${crew} players aboard.`;
+    }
+  }
+
+  document.getElementById("stat-vessels").textContent = cards.length;
+  document.getElementById("stat-active").textContent = active.length;
+  document.getElementById("stat-crew").textContent = crew;
+}
+
+let toastTimer;
+function toast(message) {
+  const el = document.getElementById("toast");
+  document.getElementById("toast-text").textContent = message;
+  el.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { el.hidden = true; }, 6000);
 }
 
 function startProgressTracking(id) {
   if (progressSources[id]) return;
-  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  const card = cardFor(id);
   if (!card) return;
   const wrap = card.querySelector(".progress-wrap");
   const bar = card.querySelector(".progress-bar");
@@ -55,24 +113,35 @@ function stopProgressTracking(id) {
     es.close();
     delete progressSources[id];
   }
-  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  const card = cardFor(id);
   if (card) card.querySelector(".progress-wrap").hidden = true;
 }
 
 function setPlayerCount(id, count) {
-  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  const card = cardFor(id);
   if (!card) return;
+  const row = card.querySelector(".crew");
   const el = card.querySelector(".player-count");
   if (count == null) {
-    el.hidden = true;
-    return;
+    row.hidden = true;
+    delete card.dataset.players;
+  } else {
+    row.hidden = false;
+    card.dataset.players = count;
+    el.textContent = count === 1 ? "1 player online" : `${count} players online`;
   }
-  el.hidden = false;
-  el.textContent = count === 1 ? "1 player" : `${count} players`;
+  updateFleet();
+}
+
+// Game containers often colour their output with ANSI escapes, which a
+// <div> would show as garbage boxes.
+const ANSI_RE = /\u001b\[[0-9;?]*[A-Za-z]/g;
+function stripAnsi(text) {
+  return text.replace(ANSI_RE, "");
 }
 
 function toggleLogs(id) {
-  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  const card = cardFor(id);
   if (!card) return;
   const panel = card.querySelector(".log-panel");
   const output = card.querySelector(".log-output");
@@ -82,29 +151,34 @@ function toggleLogs(id) {
     logSources[id].close();
     delete logSources[id];
     panel.hidden = true;
-    btn.textContent = "Logs";
+    setPressed(btn, false);
     return;
   }
 
   output.textContent = "";
   panel.hidden = false;
-  btn.textContent = "Hide Logs";
+  setPressed(btn, true);
 
   const es = new EventSource(`/api/games/${id}/logs`);
   logSources[id] = es;
-  es.onmessage = (e) => {
+  // Plain lines arrive as default "message" events; games with a log
+  // formatter tag lines warn/error/verbose, which only named listeners see.
+  const addLine = (kind) => (e) => {
     const line = document.createElement("div");
-    line.textContent = e.data;
+    if (kind) line.className = `ln-${kind}`;
+    line.textContent = stripAnsi(e.data);
     output.appendChild(line);
     while (output.children.length > MAX_LOG_LINES) {
       output.removeChild(output.firstChild);
     }
     output.scrollTop = output.scrollHeight;
   };
+  es.onmessage = addLine("");
+  ["warn", "error", "verbose"].forEach((kind) => es.addEventListener(kind, addLine(kind)));
   es.onerror = () => {
     es.close();
     delete logSources[id];
-    btn.textContent = "Logs";
+    setPressed(btn, false);
   };
 }
 
@@ -123,7 +197,7 @@ function clearStatBar(fillEl, valueEl) {
 }
 
 async function fetchStats(id) {
-  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  const card = cardFor(id);
   if (!card) return;
   let res;
   try {
@@ -170,7 +244,7 @@ async function fetchStats(id) {
 }
 
 function toggleStats(id) {
-  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  const card = cardFor(id);
   if (!card) return;
   const panel = card.querySelector(".stats-panel");
   const btn = card.querySelector(".stats-btn");
@@ -179,12 +253,12 @@ function toggleStats(id) {
     clearInterval(statsTimers[id]);
     delete statsTimers[id];
     panel.hidden = true;
-    btn.textContent = "Stats";
+    setPressed(btn, false);
     return;
   }
 
   panel.hidden = false;
-  btn.textContent = "Hide Stats";
+  setPressed(btn, true);
   fetchStats(id);
   statsTimers[id] = setInterval(() => fetchStats(id), STATS_POLL_MS);
 }
@@ -193,7 +267,7 @@ function toggleStats(id) {
 // /api/games/{id}/info. Nested values (players, multipliers) are skipped —
 // the panel is a flat fact sheet, not a full data browser.
 async function fetchInfo(id) {
-  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  const card = cardFor(id);
   if (!card) return;
   let res;
   try {
@@ -225,7 +299,7 @@ async function fetchInfo(id) {
 }
 
 function toggleInfo(id) {
-  const card = document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
+  const card = cardFor(id);
   if (!card) return;
   const panel = card.querySelector(".info-panel");
   const btn = card.querySelector(".info-btn");
@@ -234,12 +308,12 @@ function toggleInfo(id) {
     clearInterval(infoTimers[id]);
     delete infoTimers[id];
     panel.hidden = true;
-    btn.textContent = "Info";
+    setPressed(btn, false);
     return;
   }
 
   panel.hidden = false;
-  btn.textContent = "Hide Info";
+  setPressed(btn, true);
   fetchInfo(id);
   infoTimers[id] = setInterval(() => fetchInfo(id), INFO_POLL_MS);
 }
@@ -273,54 +347,92 @@ function callAPI(path, options = {}) {
 function confirmSwitch(activeId, targetId) {
   return new Promise((resolve) => {
     const dialog = document.getElementById("conflict-dialog");
+    const nameOf = (id) => (cardFor(id) ? cardFor(id).dataset.name : id);
     document.getElementById("conflict-message").textContent =
-      `${activeId} is currently running. Stop it and start ${targetId}?`;
+      `${nameOf(activeId)} is currently running. Stop it and start ${nameOf(targetId)}?`;
     dialog.hidden = false;
 
     const confirmBtn = document.getElementById("conflict-confirm");
     const cancelBtn = document.getElementById("conflict-cancel");
-    const cleanup = () => {
+    confirmBtn.focus();
+    const done = (answer) => {
       dialog.hidden = true;
       confirmBtn.removeEventListener("click", onConfirm);
       cancelBtn.removeEventListener("click", onCancel);
+      document.removeEventListener("keydown", onKey);
+      resolve(answer);
     };
-    const onConfirm = () => { cleanup(); resolve(true); };
-    const onCancel = () => { cleanup(); resolve(false); };
+    const onConfirm = () => done(true);
+    const onCancel = () => done(false);
+    const onKey = (e) => { if (e.key === "Escape") done(false); };
     confirmBtn.addEventListener("click", onConfirm);
     cancelBtn.addEventListener("click", onCancel);
+    document.addEventListener("keydown", onKey);
   });
 }
 
-async function startGame(id) {
-  const res = await callAPI(`/api/games/${id}/start`, { method: "POST" });
-  if (res.status === 409) {
-    const body = await res.json();
-    if (await confirmSwitch(body.active_game, id)) {
-      await callAPI(`/api/games/${id}/switch`, {
-        method: "POST",
-        body: JSON.stringify({ from: body.active_game }),
-      });
-    }
+// withBusy marks a button as working for the duration of an async action.
+async function withBusy(btn, fn) {
+  btn.classList.add("busy");
+  btn.disabled = true;
+  try {
+    await fn();
+  } finally {
+    btn.classList.remove("busy");
+    await refreshStatuses(); // re-derives which buttons should be enabled
   }
-  refreshStatuses();
 }
 
-async function stopGame(id) {
-  await callAPI(`/api/games/${id}/stop`, { method: "POST" });
-  refreshStatuses();
+async function checkOK(res, action) {
+  if (res.ok) return true;
+  if (res.status === 403) toast(`${action} rejected — reload the page and try again.`);
+  else if (res.status === 401) window.location.href = "/login";
+  else toast(`${action} failed (HTTP ${res.status}).`);
+  return false;
+}
+
+async function startGame(id, btn) {
+  await withBusy(btn, async () => {
+    const res = await callAPI(`/api/games/${id}/start`, { method: "POST" });
+    if (res.status === 409) {
+      const body = await res.json();
+      if (await confirmSwitch(body.active_game, id)) {
+        const sw = await callAPI(`/api/games/${id}/switch`, {
+          method: "POST",
+          body: JSON.stringify({ from: body.active_game }),
+        });
+        await checkOK(sw, "Switch");
+      }
+      return;
+    }
+    await checkOK(res, "Start");
+  });
+}
+
+async function stopGame(id, btn) {
+  await withBusy(btn, async () => {
+    await checkOK(await callAPI(`/api/games/${id}/stop`, { method: "POST" }), "Stop");
+  });
 }
 
 document.querySelectorAll(".game-card").forEach((card) => {
   const id = card.dataset.id;
-  card.querySelector(".start-btn").addEventListener("click", () => startGame(id));
-  card.querySelector(".stop-btn").addEventListener("click", () => stopGame(id));
+  const startBtn = card.querySelector(".start-btn");
+  const stopBtn = card.querySelector(".stop-btn");
+  startBtn.addEventListener("click", () => startGame(id, startBtn));
+  stopBtn.addEventListener("click", () => stopGame(id, stopBtn));
   card.querySelector(".logs-btn").addEventListener("click", () => toggleLogs(id));
   card.querySelector(".stats-btn").addEventListener("click", () => toggleStats(id));
   card.querySelector(".info-btn").addEventListener("click", () => toggleInfo(id));
 
-  const status = card.querySelector(".status").textContent.trim();
-  if (status === "starting") startProgressTracking(id);
+  // Paint the initial (server-rendered) status through the same path as
+  // live updates so button states and the hero match from first paint.
+  const status = card.dataset.status;
+  card.dataset.status = "";
+  setStatus(id, status);
 });
+
+refreshStatuses();
 
 document.getElementById("logout-btn").addEventListener("click", async () => {
   await callAPI("/logout", { method: "POST" });
