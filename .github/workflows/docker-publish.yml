@@ -14,7 +14,42 @@ env:
   IMAGE: ghcr.io/${{ github.repository_owner }}/crowsnest
 
 jobs:
+  # Computes the next semver tag from the commits in this push: patch by
+  # default, `#minor` / `#major` anywhere in a commit message bumps higher,
+  # `[skip release]` skips the release. Empty output = nothing to release.
+  version:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.v.outputs.tag }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          fetch-depth: 0
+      - id: v
+        env:
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$GITHUB_REF_TYPE" = tag ]; then echo "tag=$GITHUB_REF_NAME" >> "$GITHUB_OUTPUT"; exit 0; fi
+          latest=$(git tag -l 'v[0-9]*' --sort=-v:refname | head -1)
+          if git tag --points-at HEAD | grep -q '^v'; then echo "HEAD is already released"; exit 0; fi
+          if [ -n "$BEFORE" ] && ! [ "$BEFORE" = 0000000000000000000000000000000000000000 ] && git cat-file -e "$BEFORE" 2>/dev/null; then
+            msgs=$(git log --format=%B "$BEFORE..HEAD")
+          else
+            msgs=$(git log -1 --format=%B)
+          fi
+          if grep -qiF '[skip release]' <<<"$msgs"; then echo "[skip release] found"; exit 0; fi
+          if [ -z "$latest" ]; then echo "tag=v0.1.0" >> "$GITHUB_OUTPUT"; exit 0; fi
+          IFS=. read -r maj min pat <<<"${latest#v}"
+          if grep -qi '#major' <<<"$msgs"; then maj=$((maj+1)); min=0; pat=0
+          elif grep -qi '#minor' <<<"$msgs"; then min=$((min+1)); pat=0
+          else pat=$((pat+1))
+          fi
+          echo "tag=v$maj.$min.$pat" >> "$GITHUB_OUTPUT"
+
   build-push:
+    needs: version
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -40,8 +75,8 @@ jobs:
           images: ${{ env.IMAGE }}
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{version}},value=${{ needs.version.outputs.tag }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ needs.version.outputs.tag }}
 
       - name: Build and push
         id: build
@@ -66,3 +101,16 @@ jobs:
         if: always()
         with:
           sarif_file: trivy-results.sarif
+
+  # Publishes a GitHub release for the version tag once the image is pushed.
+  release:
+    needs: [version, build-push]
+    if: ${{ github.ref_type == 'branch' && needs.version.outputs.tag != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
+        run: gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --generate-notes
