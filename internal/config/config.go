@@ -173,6 +173,13 @@ type PalworldConfig struct {
 	RESTAPIPasswordEnv string `yaml:"rest_api_password_env"`
 }
 
+// ConnectSecret is one labelled value on a game's card, read from the named
+// environment variable.
+type ConnectSecret struct {
+	Label string `yaml:"label"`
+	Env   string `yaml:"env"`
+}
+
 // GameConfig is one entry in the game registry.
 type GameConfig struct {
 	ID             string `yaml:"id"`
@@ -190,6 +197,14 @@ type GameConfig struct {
 	// server password belongs in your group chat, not the panel).
 	ConnectAddress string `yaml:"connect_address"`
 	ConnectNote    string `yaml:"connect_note"`
+
+	// ConnectSecrets are labelled values shown under the address on the
+	// card, each read from an environment variable at startup (so the value
+	// stays in .env, never in config.yaml), e.g. the join password or an
+	// invite code. Like the address they are shown to every logged-in user,
+	// so list only what every signed-in player should see. Never list the
+	// admin/REST password. An unset or empty variable is left out.
+	ConnectSecrets []ConnectSecret `yaml:"connect_secrets"`
 
 	// NightShutdown opts this game out of the global night-shutdown window
 	// when explicitly set to false. Nil (the default) means "included,"
@@ -319,6 +334,13 @@ func (c *Config) validate() error {
 			return fmt.Errorf("auth.google.redirect_url (%s): path must be %s", g.RedirectURL, GoogleCallbackPath)
 		case u.Scheme == "https" && !c.Server.SecureCookies:
 			return fmt.Errorf("auth.google.redirect_url is https, so server.secure_cookies must be true")
+		}
+	}
+	for _, g := range c.Games {
+		for j, s := range g.ConnectSecrets {
+			if strings.TrimSpace(s.Label) == "" || strings.TrimSpace(s.Env) == "" {
+				return fmt.Errorf("games[%s].connect_secrets[%d]: label and env are both required", g.ID, j)
+			}
 		}
 	}
 	if c.Server.MaxActiveGames < 1 {

@@ -101,6 +101,11 @@ type GameDef struct {
 	ConnectAddress string
 	ConnectNote    string
 
+	// ConnectSecrets are labelled values (join password, invite code) shown
+	// under the address, already resolved from the environment. Entries whose
+	// variable is unset or empty are dropped.
+	ConnectSecrets []ConnectSecret
+
 	// RestartCooldown is the minimum time between stopping this game and
 	// starting it again; zero means no limit. Some servers (Palworld)
 	// crash if brought back up seconds after a shutdown.
@@ -111,4 +116,10 @@ type GameDef struct {
 	Startup      *StartupMatcher
 	LogFormatter LogLineFormatter
 	Info         InfoProvider
+}
+
+// ConnectSecret is a labelled value shown on a game's dashboard card.
+type ConnectSecret struct {
+	Label string
+	Value string
 }

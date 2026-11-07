@@ -665,6 +665,22 @@ func TestHandleDashboard_ConnectDetails(t *testing.T) {
 	}
 }
 
+func TestHandleDashboard_ConnectSecrets(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	h := newHarnessFromDefs(t, docker, []games.GameDef{{
+		ID: "palworld", DisplayName: "Palworld", ContainerName: "palworld",
+		Status:         &games.DockerStatusChecker{Docker: docker},
+		Players:        games.UnknownPlayerCounter{},
+		ConnectSecrets: []games.ConnectSecret{{Label: "Join password", Value: `pa"ss<1>`}},
+	}})
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, "Join password") || !strings.Contains(body, `data-copy="pa&#34;ss&lt;1&gt;"`) {
+		t.Errorf("dashboard missing escaped secret with copy button: %s", body)
+	}
+}
+
 // A user's start request reaches the notifier with their session username.
 func TestHandleStart_NotifiesWithActor(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\nexit 0\n")

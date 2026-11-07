@@ -1,6 +1,7 @@
 package config
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -414,6 +415,30 @@ func TestLoad_MaxActiveGames(t *testing.T) {
 		if _, err := load(base, bad); err == nil {
 			t.Errorf("env %q accepted, want error", bad)
 		}
+	}
+}
+
+func TestLoad_ConnectSecrets(t *testing.T) {
+	base := `
+users_file: /app/users.env
+games:
+  - id: palworld
+    display_name: Palworld
+    container_name: palworld
+    compose_file: /palworld/compose.yaml
+    compose_profile: palworld
+    compose_service: palworld
+    connect_secrets:
+%s`
+	cfg, err := Load(writeConfig(t, fmt.Sprintf(base, "      - {label: Join password, env: PALWORLD_SERVER_PASSWORD}\n")))
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if got := cfg.Games[0].ConnectSecrets; len(got) != 1 || got[0].Label != "Join password" || got[0].Env != "PALWORLD_SERVER_PASSWORD" {
+		t.Errorf("ConnectSecrets = %+v", got)
+	}
+	if _, err := Load(writeConfig(t, fmt.Sprintf(base, "      - {label: Join password}\n"))); err == nil {
+		t.Error("connect_secrets entry without env accepted, want error")
 	}
 }
 

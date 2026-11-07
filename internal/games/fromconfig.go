@@ -1,6 +1,9 @@
 package games
 
 import (
+	"log"
+	"os"
+
 	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 )
@@ -22,6 +25,7 @@ func FromConfig(cfgs []config.GameConfig, docker *dockerctl.Client) []GameDef {
 			ComposeService: g.ComposeService,
 			ConnectAddress: g.ConnectAddress,
 			ConnectNote:    g.ConnectNote,
+			ConnectSecrets: connectSecrets(g),
 			NightShutdown:  g.NightShutdown == nil || *g.NightShutdown,
 			Status:         &DockerStatusChecker{Docker: docker},
 			Players:        UnknownPlayerCounter{},
@@ -39,4 +43,20 @@ func (d GameDef) DockerTarget() dockerctl.Target {
 		ComposeProfile: d.ComposeProfile,
 		ComposeService: d.ComposeService,
 	}
+}
+
+// connectSecrets resolves a game's connect_secrets from the environment.
+// A variable that is unset or empty is skipped with a log line naming the
+// variable (never a value), so a typo doesn't silently show nothing.
+func connectSecrets(g config.GameConfig) []ConnectSecret {
+	var out []ConnectSecret
+	for _, s := range g.ConnectSecrets {
+		v := os.Getenv(s.Env)
+		if v == "" {
+			log.Printf("games: %s: %s is unset or empty; %q not shown on the card", g.ID, s.Env, s.Label)
+			continue
+		}
+		out = append(out, ConnectSecret{Label: s.Label, Value: v})
+	}
+	return out
 }
