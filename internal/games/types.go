@@ -6,6 +6,7 @@ package games
 
 import (
 	"context"
+	"errors"
 	"regexp"
 	"time"
 )
@@ -19,6 +20,9 @@ const (
 	StatusStarting
 	StatusOnline
 	StatusUnknown
+	// StatusStopping is reported by the web layer while a stop is in
+	// progress; no StatusChecker returns it.
+	StatusStopping
 )
 
 func (s Status) String() string {
@@ -29,6 +33,8 @@ func (s Status) String() string {
 		return "starting"
 	case StatusOnline:
 		return "online"
+	case StatusStopping:
+		return "stopping"
 	default:
 		return "unknown"
 	}
@@ -82,6 +88,46 @@ type InfoProvider interface {
 	Info(ctx context.Context) (map[string]any, bool)
 }
 
+// StopPreparer is run just before a game's container is stopped on purpose
+// (manual stop, switch, idle or night shutdown): warn players and save the
+// world, so a stop never relies on the container's own SIGTERM handling
+// alone. It is best-effort — an error is logged and the stop goes ahead.
+type StopPreparer interface {
+	PrepareStop(ctx context.Context) error
+}
+
+// ConsoleField is one argument of a ConsoleAction.
+type ConsoleField struct {
+	Name     string `json:"name"`
+	Label    string `json:"label"`
+	Optional bool   `json:"optional,omitempty"`
+}
+
+// ConsoleAction is one fixed admin command a game offers on the dashboard:
+// the server decides what runs, the admin only fills in the arguments.
+type ConsoleAction struct {
+	ID     string         `json:"id"`
+	Label  string         `json:"label"`
+	Fields []ConsoleField `json:"fields,omitempty"`
+	Danger bool           `json:"danger,omitempty"`
+}
+
+// ErrBadInput marks a console argument the game rejected (as opposed to the
+// game being unreachable); its message is safe to show to the admin.
+var ErrBadInput = errors.New("bad input")
+
+// Console is a game's set of fixed admin actions. Run validates args itself.
+type Console interface {
+	Actions() []ConsoleAction
+	Run(ctx context.Context, action string, args map[string]string) (string, error)
+}
+
+// RawConsole sends an arbitrary command line to the game (RCON). The web
+// layer only exposes it when an admin has switched the raw console on.
+type RawConsole interface {
+	Raw(ctx context.Context, command string) (string, error)
+}
+
 // GameDef is one game's static identity plus its pluggable strategies.
 type GameDef struct {
 	ID            string
@@ -116,6 +162,19 @@ type GameDef struct {
 	Startup      *StartupMatcher
 	LogFormatter LogLineFormatter
 	Info         InfoProvider
+	PreStop      StopPreparer
+	Console      Console
+	RawConsole   RawConsole
+
+	// Backup is how to back this game up, nil if it isn't configured.
+	Backup *BackupSpec
+}
+
+// BackupSpec mirrors config.BackupConfig.
+type BackupSpec struct {
+	Exec       []string
+	ListDir    string
+	BeforeStop bool
 }
 
 // ConnectSecret is a labelled value shown on a game's dashboard card.

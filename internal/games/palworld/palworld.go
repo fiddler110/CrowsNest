@@ -10,10 +10,12 @@
 package palworld
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -40,6 +42,15 @@ type Client struct {
 	// HTTP overrides the http.Client used for requests. Intended for tests;
 	// production callers should leave it unset.
 	HTTP *http.Client
+
+	// RCONAddr (host:port) and RCONPassword enable Raw. Empty RCONAddr means
+	// the raw console is unavailable.
+	RCONAddr     string
+	RCONPassword string
+
+	// NoticePause overrides how long PrepareStop waits after announcing a
+	// shutdown (tests); zero means the default, negative means no wait.
+	NoticePause time.Duration
 
 	// authWarned is set once a 401/403 has been logged, so a wrong
 	// password produces one clear warning rather than one per poll.
@@ -89,6 +100,62 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 		return nil
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+// post sends a JSON body to the REST API; the response body is ignored.
+func (c *Client) post(ctx context.Context, path string, body any) error {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.BaseURL+path, rdr)
+	if err != nil {
+		return err
+	}
+	req.SetBasicAuth(c.User, c.Password)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		return errStatus(resp.StatusCode)
+	}
+	return nil
+}
+
+// stopNoticePause is how long players get to read the shutdown notice
+// before the container is stopped.
+const stopNoticePause = 5 * time.Second
+
+// PrepareStop implements games.StopPreparer: tell anyone connected the
+// server is going down, then force a world save. Given Palworld's history of
+// crashing around restarts, the explicit save is the point.
+func (c *Client) PrepareStop(ctx context.Context) error {
+	if count, _, ok := c.PlayerCount(ctx); ok && count > 0 {
+		if err := c.post(ctx, "/v1/api/announce", map[string]string{"message": "Server is shutting down now. Saving the world."}); err == nil {
+			select {
+			case <-time.After(max(c.noticePause(), 0)):
+			case <-ctx.Done():
+			}
+		}
+	}
+	return c.post(ctx, "/v1/api/save", nil)
+}
+
+func (c *Client) noticePause() time.Duration {
+	if c.NoticePause != 0 {
+		return c.NoticePause
+	}
+	return stopNoticePause
 }
 
 type errStatus int

@@ -19,6 +19,9 @@ import (
 const (
 	defaultAddr                 = ":5000"
 	defaultSessionSecretFile    = "/app/.session_secret"
+	defaultSettingsFile         = "/app/data/settings.json"
+	defaultHistoryFile          = "/app/data/events.jsonl"
+	defaultHistoryRetentionDays = 180
 	defaultTZ                   = "UTC"
 	defaultIdleMinutes          = 15
 	defaultCheckIntervalSeconds = 60
@@ -26,6 +29,7 @@ const (
 	defaultNightShutdownStartHour            = 23
 	defaultNightShutdownEndHour              = 5
 	defaultNightShutdownCheckIntervalMinutes = 30
+	defaultNightShutdownMinUptimeMinutes     = 30
 )
 
 var gameIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]*$`)
@@ -46,6 +50,27 @@ type ServerConfig struct {
 	Addr              string `yaml:"addr"`
 	SessionSecretFile string `yaml:"session_secret_file"`
 	TZ                string `yaml:"tz"`
+
+	// SettingsFile is where options changed from the dashboard (idle
+	// timeout, night window, max active games, auto-update) are saved. It
+	// must be on a writable mount that survives container recreation, and
+	// the mount should be a directory: the file is replaced atomically, which
+	// a single-file bind mount does not allow. config.yaml supplies the
+	// defaults until something is saved here. Default /app/data/settings.json.
+	SettingsFile string `yaml:"settings_file"`
+
+	// HistoryFile is the activity log (who started/stopped what, auto-stops,
+	// joins and leaves) as JSON lines; keep it on the same persistent mount
+	// as SettingsFile. Default /app/data/events.jsonl. Entries older than
+	// HistoryRetentionDays (default 180) are pruned.
+	// HostDiskPaths are mounted paths whose free space the dashboard shows
+	// (one entry per filesystem). Default: /app/data and /data. Mount the
+	// disk your game saves and images live on (read-only is fine) and list it
+	// here to watch it.
+	HostDiskPaths []string `yaml:"host_disk_paths"`
+
+	HistoryFile          string `yaml:"history_file"`
+	HistoryRetentionDays int    `yaml:"history_retention_days"`
 
 	// TrustedProxies lists CIDRs of reverse proxies allowed to set
 	// X-Forwarded-For; the client IP used for rate limiting is only taken
@@ -73,6 +98,11 @@ type ServerConfig struct {
 	// offers to switch instead. Overridden by the CROWSNEST_MAX_ACTIVE_GAMES
 	// environment variable (e.g. from .env) when that is set.
 	MaxActiveGames int `yaml:"max_active_games"`
+
+	// AutoUpdate pulls the latest image for a game every time it is started
+	// (`docker compose pull`), so restarts pick up new server versions.
+	// Default false. Changeable at runtime from the dashboard.
+	AutoUpdate bool `yaml:"auto_update"`
 }
 
 // AuthConfig chooses how people sign in.
@@ -146,6 +176,9 @@ type NightShutdownConfig struct {
 	StartHour            int `yaml:"start_hour"`
 	EndHour              int `yaml:"end_hour"`
 	CheckIntervalMinutes int `yaml:"check_interval_minutes"`
+	// MinUptimeMinutes protects a game started inside the window: it is not
+	// stopped until it has been up this long. Defaults to 30.
+	MinUptimeMinutes int `yaml:"min_uptime_minutes"`
 }
 
 // NotificationsConfig holds outbound-notification settings shared by
@@ -156,6 +189,15 @@ type NotificationsConfig struct {
 	// secret in this config (rcon_password_env, rest_api_password_env).
 	// Empty (the default) means notifications are disabled.
 	DiscordWebhookURLEnv string `yaml:"discord_webhook_url_env"`
+
+	// PlayerEvents posts a message when a player joins or leaves a game
+	// (needs the webhook above). On by default; set false to silence it.
+	PlayerEvents *bool `yaml:"player_events"`
+}
+
+// PlayerEventsEnabled reports whether join/leave messages are on.
+func (n NotificationsConfig) PlayerEventsEnabled() bool {
+	return n.PlayerEvents == nil || *n.PlayerEvents
 }
 
 // WindroseConfig holds Windrose-specific integration settings (Windrose+
@@ -171,6 +213,14 @@ type PalworldConfig struct {
 	RESTAPIURL         string `yaml:"rest_api_url"`
 	RESTAPIUser        string `yaml:"rest_api_user"`
 	RESTAPIPasswordEnv string `yaml:"rest_api_password_env"`
+
+	// RCONAddr (host:port, e.g. palworld:25575) enables the admin-only raw
+	// console, once an admin switches it on in settings. Optional.
+	// RCONPasswordEnv names the env var holding the RCON password; it
+	// defaults to RESTAPIPasswordEnv because palworld-server-docker uses
+	// ADMIN_PASSWORD for both.
+	RCONAddr        string `yaml:"rcon_addr"`
+	RCONPasswordEnv string `yaml:"rcon_password_env"`
 }
 
 // ConnectSecret is one labelled value on a game's card, read from the named
@@ -213,6 +263,27 @@ type GameConfig struct {
 
 	Windrose *WindroseConfig `yaml:"windrose,omitempty"`
 	Palworld *PalworldConfig `yaml:"palworld,omitempty"`
+
+	// Backup, when set, lets admins back the game up from the dashboard.
+	Backup *BackupConfig `yaml:"backup,omitempty"`
+}
+
+// BackupConfig describes how to back one game up. Everything runs inside the
+// game's container with `docker exec`, so it works with whatever the image
+// ships (palworld-server-docker has a backup script; otherwise a tar
+// command). The docker-socket-proxy needs EXEC=1 for this.
+type BackupConfig struct {
+	// Exec is the command and arguments run in the container, e.g.
+	// ["/bin/sh", "-c", "backup"]. Required.
+	Exec []string `yaml:"exec"`
+	// ListDir is a directory inside the container holding the backup files,
+	// listed newest first on the dashboard. Optional; the container needs GNU
+	// find.
+	ListDir string `yaml:"list_dir"`
+	// BeforeStop also takes a backup each time the game is stopped on purpose
+	// (manual, switch, idle or night), after the world is saved, so a fresh
+	// backup always exists before an update-on-start pull.
+	BeforeStop bool `yaml:"before_stop"`
 }
 
 // Load reads, defaults, and validates the config.yaml at path.
@@ -248,6 +319,18 @@ func (c *Config) applyDefaults() {
 	if c.Server.SessionSecretFile == "" {
 		c.Server.SessionSecretFile = defaultSessionSecretFile
 	}
+	if len(c.Server.HostDiskPaths) == 0 {
+		c.Server.HostDiskPaths = []string{"/app/data", "/data"}
+	}
+	if c.Server.HistoryFile == "" {
+		c.Server.HistoryFile = defaultHistoryFile
+	}
+	if c.Server.HistoryRetentionDays == 0 {
+		c.Server.HistoryRetentionDays = defaultHistoryRetentionDays
+	}
+	if c.Server.SettingsFile == "" {
+		c.Server.SettingsFile = defaultSettingsFile
+	}
 	if c.Server.TZ == "" {
 		c.Server.TZ = defaultTZ
 	}
@@ -277,6 +360,9 @@ func (c *Config) applyDefaults() {
 	if c.NightShutdown.StartHour == 0 && c.NightShutdown.EndHour == 0 {
 		c.NightShutdown.StartHour = defaultNightShutdownStartHour
 		c.NightShutdown.EndHour = defaultNightShutdownEndHour
+	}
+	if c.NightShutdown.MinUptimeMinutes == 0 {
+		c.NightShutdown.MinUptimeMinutes = defaultNightShutdownMinUptimeMinutes
 	}
 	if c.NightShutdown.CheckIntervalMinutes == 0 {
 		c.NightShutdown.CheckIntervalMinutes = defaultNightShutdownCheckIntervalMinutes
@@ -337,6 +423,14 @@ func (c *Config) validate() error {
 		}
 	}
 	for _, g := range c.Games {
+		if b := g.Backup; b != nil {
+			if len(b.Exec) == 0 || strings.TrimSpace(b.Exec[0]) == "" {
+				return fmt.Errorf("games[%s].backup.exec: a command is required", g.ID)
+			}
+			if b.ListDir != "" && !strings.HasPrefix(b.ListDir, "/") {
+				return fmt.Errorf("games[%s].backup.list_dir (%s): must be an absolute path inside the container", g.ID, b.ListDir)
+			}
+		}
 		for j, s := range g.ConnectSecrets {
 			if strings.TrimSpace(s.Label) == "" || strings.TrimSpace(s.Env) == "" {
 				return fmt.Errorf("games[%s].connect_secrets[%d]: label and env are both required", g.ID, j)
@@ -355,6 +449,12 @@ func (c *Config) validate() error {
 	}
 	if h := c.NightShutdown.EndHour; h < 0 || h > 23 {
 		return fmt.Errorf("night_shutdown.end_hour (%d): must be 0-23", h)
+	}
+	if c.Server.HistoryRetentionDays < 0 {
+		return fmt.Errorf("server.history_retention_days (%d): must be >= 0", c.Server.HistoryRetentionDays)
+	}
+	if c.NightShutdown.MinUptimeMinutes < 0 {
+		return fmt.Errorf("night_shutdown.min_uptime_minutes (%d): must be >= 0", c.NightShutdown.MinUptimeMinutes)
 	}
 	if c.NightShutdown.CheckIntervalMinutes < 1 {
 		return fmt.Errorf("night_shutdown.check_interval_minutes (%d): must be >= 1", c.NightShutdown.CheckIntervalMinutes)

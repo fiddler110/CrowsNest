@@ -329,3 +329,39 @@ func TestRun_Timeout(t *testing.T) {
 		t.Fatalf("error = %q, want a timeout error", err.Error())
 	}
 }
+
+func TestStart_PullRunsBeforeUp(t *testing.T) {
+	c, logPath := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+"exit 0\n")
+	tgt := Target{ContainerName: "w", ComposeFile: "/c.yaml", ComposeService: "w", Pull: true}
+	if err := c.Start(context.Background(), tgt); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	got := readInvocations(t, logPath)
+	want := []string{"compose -f /c.yaml pull w", "compose -f /c.yaml up -d w"}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("invocations = %v, want %v", got, want)
+	}
+}
+
+func TestStart_FailedPullStillStarts(t *testing.T) {
+	c, logPath := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+"[ \"$4\" = pull ] && exit 1\nexit 0\n")
+	tgt := Target{ContainerName: "w", ComposeFile: "/c.yaml", ComposeService: "w", Pull: true}
+	if err := c.Start(context.Background(), tgt); err != nil {
+		t.Fatalf("Start() error = %v, want a failed pull to be tolerated", err)
+	}
+	got := readInvocations(t, logPath)
+	if len(got) != 2 || got[1] != "compose -f /c.yaml up -d w" {
+		t.Fatalf("invocations = %v, want up after the failed pull", got)
+	}
+}
+
+func TestPing(t *testing.T) {
+	c, _ := newFakeDocker(t, "#!/bin/sh\necho 29.0.0\n")
+	if err := c.Ping(context.Background()); err != nil {
+		t.Fatalf("Ping() = %v, want nil", err)
+	}
+	down, _ := newFakeDocker(t, "#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n")
+	if err := down.Ping(context.Background()); err == nil {
+		t.Fatal("Ping() = nil against a failing daemon, want an error")
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/auth"
+	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/exclusivity"
@@ -25,9 +26,12 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games/palworld"
 	"github.com/fiddler110/crowsnest/internal/games/valheim"
 	"github.com/fiddler110/crowsnest/internal/games/windrose"
+	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/idleshutdown"
 	"github.com/fiddler110/crowsnest/internal/nightshutdown"
 	"github.com/fiddler110/crowsnest/internal/notify"
+	"github.com/fiddler110/crowsnest/internal/playerwatch"
+	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/web"
 )
 
@@ -40,6 +44,10 @@ func main() {
 	switch cmd {
 	case "serve":
 		if err := serve(); err != nil {
+			log.Fatal(err)
+		}
+	case "execguard":
+		if err := runExecGuard(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
 	case "healthcheck":
@@ -60,8 +68,16 @@ func main() {
 		if err := revokeSessions(os.Args[2]); err != nil {
 			log.Fatal(err)
 		}
+	case "set-role":
+		if len(os.Args) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: crowsnest set-role <username> <admin|player>")
+			os.Exit(2)
+		}
+		if err := setRole(os.Args[2], os.Args[3]); err != nil {
+			log.Fatal(err)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, healthcheck, set-password, revoke-sessions)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -136,9 +152,20 @@ func serve() error {
 					Password: os.Getenv(pc.RESTAPIPasswordEnv),
 					Docker:   docker,
 				}
+				if pc.RCONAddr != "" {
+					env := pc.RCONPasswordEnv
+					if env == "" {
+						env = pc.RESTAPIPasswordEnv
+					}
+					client.RCONAddr = pc.RCONAddr
+					client.RCONPassword = os.Getenv(env)
+					defs[i].RawConsole = client
+				}
 				defs[i].Status = client
 				defs[i].Players = client
 				defs[i].Info = client
+				defs[i].PreStop = client
+				defs[i].Console = client
 			}
 			defs[i].Startup = palworld.Startup
 			// Bringing it back up seconds after a stop segfaulted it once.
@@ -161,15 +188,21 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("build game registry: %w", err)
 	}
+	for _, d := range defs {
+		if !games.CanCountPlayers(d) {
+			log.Printf("warning: %s has no player counter configured — idle and night shutdown will never stop it", d.ID)
+		}
+	}
 	for _, tr := range valheimTrackers {
 		go tr.Run(ctx)
 	}
 
-	users, err := auth.LoadUsers(cfg.UsersFile)
+	userStore, err := auth.NewUserStore(cfg.UsersFile)
 	if err != nil {
 		return fmt.Errorf("load users: %w", err)
 	}
-	if len(users) == 0 {
+	go userStore.Watch(ctx, 3*time.Second)
+	if len(userStore.Snapshot()) == 0 {
 		log.Printf("warning: no users configured yet in %s — run `crowsnest set-password <username>` to create one", cfg.UsersFile)
 	}
 	secret, err := auth.LoadOrCreateSecret(cfg.Server.SessionSecretFile)
@@ -183,9 +216,9 @@ func serve() error {
 	loginLimiter := auth.NewLimiter(10, 5*time.Minute)
 	go loginLimiter.RunPruner(ctx, 10*time.Minute)
 	sessions := auth.NewSessionManager(secret, auth.DefaultSessionTTL)
-	sessions.Users = users // enables per-user revocation; see `revoke-sessions`
+	sessions.Store = userStore // per-user revocation; follows `revoke-sessions` live
 	authSvc := &auth.Service{
-		Users:                users,
+		Store:                userStore,
 		Sessions:             sessions,
 		LoginLimiter:         loginLimiter,
 		TrustedProxies:       trustedProxies,
@@ -200,15 +233,39 @@ func serve() error {
 		log.Printf("auth: Google sign-in enabled for %d account(s); password sign-in %s",
 			len(google.Users), map[bool]string{true: "disabled", false: "enabled"}[authSvc.DisablePasswordLogin])
 	}
-	sessions.Allowed = sessionAllowed(users, google, authSvc.DisablePasswordLogin)
+	sessions.Allowed = sessionAllowed(userStore.Snapshot, google, authSvc.DisablePasswordLogin)
 
 	templates, err := web.LoadTemplates()
 	if err != nil {
 		return fmt.Errorf("load templates: %w", err)
 	}
 
+	settingsStore, err := settings.New(settings.Values{
+		IdleEnabled:    cfg.IdleShutdown.Enabled,
+		IdleMinutes:    cfg.IdleShutdown.IdleMinutes,
+		NightEnabled:   cfg.NightShutdown.Enabled,
+		NightStartHour: cfg.NightShutdown.StartHour,
+		NightEndHour:   cfg.NightShutdown.EndHour,
+		MaxActiveGames: cfg.Server.MaxActiveGames,
+		AutoUpdate:     cfg.Server.AutoUpdate,
+	}, cfg.Server.SettingsFile)
+	if err != nil {
+		return fmt.Errorf("load settings: %w", err)
+	}
+	log.Printf("settings: %+v (changes saved to %s)", settingsStore.Get(), cfg.Server.SettingsFile)
+
+	activity, err := history.Open(cfg.Server.HistoryFile, time.Duration(cfg.Server.HistoryRetentionDays)*24*time.Hour)
+	if err != nil {
+		return fmt.Errorf("open activity log: %w", err)
+	}
+	go activity.RunPruner(ctx)
+
 	exclusivityMgr := exclusivity.NewManager(registry, docker)
-	exclusivityMgr.MaxActive = cfg.Server.MaxActiveGames
+	exclusivityMgr.History = activity
+	backups := &backup.Manager{Docker: docker, History: activity, BaseContext: ctx}
+	exclusivityMgr.Backups = backups
+	exclusivityMgr.MaxActiveFunc = func() int { return settingsStore.Get().MaxActiveGames }
+	exclusivityMgr.AutoUpdate = func() bool { return settingsStore.Get().AutoUpdate }
 	// Background starts (compose pull/up) belong to the process, not to the
 	// HTTP request that asked for them; shutdown cancels them.
 	exclusivityMgr.BaseContext = ctx
@@ -218,6 +275,10 @@ func serve() error {
 		Exclusivity: exclusivityMgr,
 		Auth:        authSvc,
 		Google:      google,
+		Settings:    settingsStore,
+		History:     activity,
+		HostPaths:   cfg.Server.HostDiskPaths,
+		Backups:     backups,
 		Templates:   templates,
 	}
 
@@ -235,42 +296,56 @@ func serve() error {
 	// call Stop without an actor, so they don't double up with idle/night's
 	// own messages.
 	exclusivityMgr.Notifier = discordNotifier
+	backups.Notifier = discordNotifier
 
-	if cfg.IdleShutdown.Enabled {
-		idle := idleshutdown.New(
-			registry,
-			exclusivityMgr,
-			time.Duration(cfg.IdleShutdown.IdleMinutes)*time.Minute,
-			time.Duration(cfg.IdleShutdown.CheckIntervalSeconds)*time.Second,
-		)
-		idle.Notifier = discordNotifier
-		go idle.Run(ctx)
-		log.Printf("idleshutdown: enabled, stopping games after %dm with no players (checked every %ds)",
-			cfg.IdleShutdown.IdleMinutes, cfg.IdleShutdown.CheckIntervalSeconds)
-	} else {
-		log.Printf("idleshutdown: disabled via config")
+	// Both auto-stop loops always run and re-read the settings store each
+	// tick, so toggling or retuning them from the dashboard applies at once.
+	idle := idleshutdown.New(
+		registry,
+		exclusivityMgr,
+		time.Duration(settingsStore.Get().IdleMinutes)*time.Minute,
+		time.Duration(cfg.IdleShutdown.CheckIntervalSeconds)*time.Second,
+	)
+	idle.Settings = func() (bool, time.Duration) {
+		v := settingsStore.Get()
+		return v.IdleEnabled, time.Duration(v.IdleMinutes) * time.Minute
 	}
+	idle.Notifier = discordNotifier
+	idle.History = activity
+	app.IdleTimer = idle
+	go idle.Run(ctx)
 
-	if cfg.NightShutdown.Enabled {
-		loc, err := cfg.Server.Location()
-		if err != nil {
-			return fmt.Errorf("night shutdown: %w", err)
-		}
-		night := nightshutdown.New(
-			registry,
-			exclusivityMgr,
-			cfg.NightShutdown.StartHour,
-			cfg.NightShutdown.EndHour,
-			time.Duration(cfg.NightShutdown.CheckIntervalMinutes)*time.Minute,
-			loc,
-		)
-		night.Notifier = discordNotifier
-		go night.Run(ctx)
-		log.Printf("nightshutdown: enabled, stopping empty games between %02d:00 and %02d:00 %s (checked every %dm)",
-			cfg.NightShutdown.StartHour, cfg.NightShutdown.EndHour, cfg.Server.TZ, cfg.NightShutdown.CheckIntervalMinutes)
-	} else {
-		log.Printf("nightshutdown: disabled via config")
+	loc, err := cfg.Server.Location()
+	if err != nil {
+		return fmt.Errorf("night shutdown: %w", err)
 	}
+	night := nightshutdown.New(
+		registry,
+		exclusivityMgr,
+		settingsStore.Get().NightStartHour,
+		settingsStore.Get().NightEndHour,
+		time.Duration(cfg.NightShutdown.CheckIntervalMinutes)*time.Minute,
+		loc,
+	)
+	night.Settings = func() (bool, int, int) {
+		v := settingsStore.Get()
+		return v.NightEnabled, v.NightStartHour, v.NightEndHour
+	}
+	night.Notifier = discordNotifier
+	night.History = activity
+	night.StartedAt = docker.StartedAt
+	night.MinUptime = time.Duration(cfg.NightShutdown.MinUptimeMinutes) * time.Minute
+	go night.Run(ctx)
+
+	// Always runs: it feeds the activity log's playtime totals, and only posts
+	// join/leave messages when a webhook is set and player_events isn't off.
+	var joinLeave playerwatch.Notifier
+	if discordNotifier.WebhookURL != "" && cfg.Notifications.PlayerEventsEnabled() {
+		joinLeave = discordNotifier
+	}
+	watcher := playerwatch.New(registry, joinLeave, 30*time.Second)
+	watcher.History = activity
+	go watcher.Run(ctx)
 
 	// Header/idle timeouts bound slow or idle clients (slowloris). No
 	// Read/WriteTimeout: the log and startup-progress SSE streams stay open
@@ -305,6 +380,16 @@ func serve() error {
 	defer cancel()
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("graceful shutdown: %w", err)
+	}
+	// Let cancelled background starts unwind (and report) before exiting. A
+	// stop already under way is not interrupted: it runs on the docker
+	// daemon, and the process only waits briefly for it.
+	waited := make(chan struct{})
+	go func() { exclusivityMgr.Wait(); close(waited) }()
+	select {
+	case <-waited:
+	case <-time.After(10 * time.Second):
+		log.Printf("shutdown: background operations still running; exiting anyway")
 	}
 	return <-serveErr
 }
@@ -344,29 +429,57 @@ func setPassword(username string) error {
 // every session currently issued for username invalid, forcing a fresh
 // login on every device — e.g. after a lost/compromised device, or when
 // offboarding a user. Like set-password, this edits the users file but
-// doesn't hot-reload a running server; restart crowsnest for it to take
-// effect.
+// is picked up by a running server within a few seconds.
 func revokeSessions(username string) error {
 	cfg, err := config.Load(configPath())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	// A Google-only user has no users-file entry yet; allow creating just the
-	// revocation marker for names on the Google allowlist (a typo still fails).
-	allowNew := false
-	if g := cfg.Auth.Google; g != nil {
-		if users, err := auth.ParseGoogleUsers(os.Getenv(g.UsersEnv)); err == nil {
-			for _, name := range users {
-				if name == strings.ToLower(username) {
-					allowNew = true
-				}
-			}
-		}
-	}
+	allowNew := googleAllowed(cfg, username)
 	if err := auth.RevokeSessions(cfg.UsersFile, username, allowNew); err != nil {
 		return err
 	}
-	fmt.Printf("Revoked sessions for %s in %s — restart crowsnest for it to take effect\n", strings.ToLower(username), cfg.UsersFile)
+	fmt.Printf("Revoked sessions for %s in %s — a running server picks this up within a few seconds\n", strings.ToLower(username), cfg.UsersFile)
+	return nil
+}
+
+// googleAllowed reports whether username is on the Google sign-in allowlist.
+// Such a user may have no users-file entry yet (no password), so commands that
+// only write a marker for them (revoke-sessions, set-role) allow creating one;
+// a typo'd name still fails.
+func googleAllowed(cfg *config.Config, username string) bool {
+	g := cfg.Auth.Google
+	if g == nil {
+		return false
+	}
+	users, err := auth.ParseGoogleUsers(os.Getenv(g.UsersEnv))
+	if err != nil {
+		return false
+	}
+	for _, name := range users {
+		if name == strings.ToLower(username) {
+			return true
+		}
+	}
+	return false
+}
+
+// setRole implements `crowsnest set-role <username> <admin|player>`. Admins
+// can change settings; players can start, stop and switch games. A running
+// server picks the change up within a few seconds.
+func setRole(username, roleName string) error {
+	role, err := auth.ParseRole(roleName)
+	if err != nil {
+		return err
+	}
+	cfg, err := config.Load(configPath())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	if err := auth.SetRole(cfg.UsersFile, username, role, googleAllowed(cfg, username)); err != nil {
+		return err
+	}
+	fmt.Printf("%s is now %s (a running server picks this up within a few seconds)\n", strings.ToLower(username), role)
 	return nil
 }
 
@@ -420,22 +533,23 @@ func healthcheck() int {
 // sessionAllowed reports whether a session's user may still be signed in: a
 // password user while password sign-in is on, or a name on the Google
 // allowlist. Sessions are stateless, so this is what ends a removed user's
-// session (after a restart) instead of letting it run out its TTL.
-func sessionAllowed(users auth.Users, google *auth.GoogleLogin, passwordDisabled bool) func(string) bool {
-	allowed := map[string]bool{}
-	if !passwordDisabled {
-		for name, rec := range users {
-			if rec.Hash != "" {
-				allowed[name] = true
+// session (within seconds, as the users file is watched) instead of letting
+// it run out its TTL.
+func sessionAllowed(users func() auth.Users, google *auth.GoogleLogin, passwordDisabled bool) func(string) bool {
+	return func(name string) bool {
+		if google != nil {
+			for _, g := range google.Users {
+				if g == name {
+					return true
+				}
 			}
 		}
-	}
-	if google != nil {
-		for _, name := range google.Users {
-			allowed[name] = true
+		if passwordDisabled {
+			return false
 		}
+		rec, ok := users()[name]
+		return ok && rec.Hash != ""
 	}
-	return func(name string) bool { return allowed[name] }
 }
 
 // googleLogin builds Google sign-in from config and the environment, or

@@ -217,3 +217,63 @@ func TestTick_NoNotifierIsSafe(t *testing.T) {
 		t.Fatalf("stopped = %v, want [windrose]", stopper.stopped)
 	}
 }
+
+func TestTick_LiveSettings(t *testing.T) {
+	status := &fakeStatus{status: games.StatusOnline}
+	players := &fakePlayers{count: 0, ok: true}
+	m, stopper, clock := newTestManager(t, status, players, 15*time.Minute)
+	enabled, idle := false, 30*time.Minute
+	m.Settings = func() (bool, time.Duration) { return enabled, idle }
+
+	// Disabled: never stops, however long it sits empty.
+	m.Tick(context.Background())
+	*clock = clock.Add(2 * time.Hour)
+	m.Tick(context.Background())
+	if len(stopper.stopped) != 0 {
+		t.Fatalf("stopped %v while disabled", stopper.stopped)
+	}
+
+	// Enabling starts a fresh grace period; the new 30m value applies.
+	enabled = true
+	m.Tick(context.Background())
+	*clock = clock.Add(20 * time.Minute)
+	m.Tick(context.Background())
+	if len(stopper.stopped) != 0 {
+		t.Fatalf("stopped %v before the 30m setting elapsed", stopper.stopped)
+	}
+	*clock = clock.Add(11 * time.Minute)
+	m.Tick(context.Background())
+	if len(stopper.stopped) != 1 {
+		t.Fatalf("stopped = %v, want one stop after 30m", stopper.stopped)
+	}
+}
+
+func TestIdleRemaining(t *testing.T) {
+	status := &fakeStatus{status: games.StatusOnline}
+	players := &fakePlayers{count: 0, ok: true}
+	m, _, clock := newTestManager(t, status, players, 15*time.Minute)
+
+	if _, ok := m.IdleRemaining("windrose"); ok {
+		t.Fatal("countdown before the game was ever observed")
+	}
+	m.Tick(context.Background()) // seeds the grace period
+	m.Tick(context.Background()) // first empty reading
+	if left, ok := m.IdleRemaining("windrose"); !ok || left != 15*time.Minute {
+		t.Fatalf("remaining = %v, %v; want 15m, true", left, ok)
+	}
+	*clock = clock.Add(5 * time.Minute)
+	if left, _ := m.IdleRemaining("windrose"); left != 10*time.Minute {
+		t.Fatalf("remaining = %v, want 10m", left)
+	}
+
+	players.count = 2
+	m.Tick(context.Background())
+	if _, ok := m.IdleRemaining("windrose"); ok {
+		t.Fatal("countdown while players are connected")
+	}
+	players.count, players.ok = 0, false
+	m.Tick(context.Background())
+	if _, ok := m.IdleRemaining("windrose"); ok {
+		t.Fatal("countdown with an unreadable player count")
+	}
+}

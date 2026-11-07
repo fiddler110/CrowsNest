@@ -18,6 +18,7 @@ import (
 const (
 	passwordHashSuffix = "_PASSWORD_HASH"
 	validAfterSuffix   = "_VALID_AFTER"
+	roleSuffix         = "_ROLE"
 )
 
 // UserRecord is one user's stored credential plus revocation state.
@@ -29,6 +30,9 @@ type UserRecord struct {
 	// sets it to "now" to force every outstanding session for this user to
 	// re-authenticate.
 	ValidAfter time.Time
+
+	// Role is "admin" or "player"; empty means admin (see EffectiveRole).
+	Role Role
 }
 
 // Users maps username (lowercased) to their stored record.
@@ -80,8 +84,17 @@ func LoadUsers(path string) (Users, error) {
 			rec := users[username]
 			rec.ValidAfter = time.Unix(ts, 0).UTC()
 			users[username] = rec
+		case strings.HasSuffix(key, roleSuffix):
+			username := strings.ToLower(strings.TrimSuffix(key, roleSuffix))
+			role, err := ParseRole(value)
+			if err != nil {
+				return nil, fmt.Errorf("auth: %s:%d: %w", path, lineNo, err)
+			}
+			rec := users[username]
+			rec.Role = role
+			users[username] = rec
 		default:
-			return nil, fmt.Errorf("auth: %s:%d: key %q must end with %s or %s", path, lineNo, key, passwordHashSuffix, validAfterSuffix)
+			return nil, fmt.Errorf("auth: %s:%d: key %q must end with %s, %s or %s", path, lineNo, key, passwordHashSuffix, validAfterSuffix, roleSuffix)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -107,9 +120,8 @@ func SetUserHash(path, username, hash string) error {
 
 // RevokeSessions sets username's ValidAfter marker to now, persisted to the
 // users file at path — every session issued for them before this call will
-// fail SessionManager.Decode from that point on. Like SetUserHash, this
-// only takes effect once the running server reloads the file (i.e. on
-// restart); there's no hot-reload.
+// fail SessionManager.Decode from that point on. A running server watches
+// the file (see UserStore), so this applies within a few seconds.
 //
 // A name with no entry in the file is an error unless allowNew is set: the
 // caller passes true for a Google sign-in user (who has no password, so no
@@ -129,6 +141,27 @@ func RevokeSessions(path, username string, allowNew bool) error {
 	return writeUsers(path, existing)
 }
 
+// SetRole sets username's role in the users file at path. Like
+// RevokeSessions, a name with no entry is an error unless allowNew is set
+// (a Google-only user, who has no password entry).
+func SetRole(path, username string, role Role, allowNew bool) error {
+	if _, err := ParseRole(string(role)); err != nil {
+		return err
+	}
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(username)
+	rec, ok := existing[key]
+	if !ok && !allowNew {
+		return fmt.Errorf("auth: no such user %q in %s", username, path)
+	}
+	rec.Role = role
+	existing[key] = rec
+	return writeUsers(path, existing)
+}
+
 // writeUsers rewrites path from scratch with entries sorted by username for
 // a stable diff.
 func writeUsers(path string, users Users) error {
@@ -143,6 +176,9 @@ func writeUsers(path string, users Users) error {
 		rec := users[name]
 		if rec.Hash != "" {
 			fmt.Fprintf(&b, "%s%s=%s\n", strings.ToUpper(name), passwordHashSuffix, rec.Hash)
+		}
+		if rec.Role != "" {
+			fmt.Fprintf(&b, "%s%s=%s\n", strings.ToUpper(name), roleSuffix, rec.Role)
 		}
 		if !rec.ValidAfter.IsZero() {
 			fmt.Fprintf(&b, "%s%s=%d\n", strings.ToUpper(name), validAfterSuffix, rec.ValidAfter.Unix())

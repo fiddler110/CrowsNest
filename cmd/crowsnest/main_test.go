@@ -248,8 +248,31 @@ func TestSessionAllowed(t *testing.T) {
 		{"revoked-only", false, false},
 		{"stranger", false, false},
 	} {
-		if got := sessionAllowed(users, google, tc.passwordDisabled)(tc.name); got != tc.want {
+		if got := sessionAllowed(func() auth.Users { return users }, google, tc.passwordDisabled)(tc.name); got != tc.want {
 			t.Errorf("sessionAllowed(%q, passwordDisabled=%v) = %v, want %v", tc.name, tc.passwordDisabled, got, tc.want)
 		}
+	}
+}
+
+func TestSetRole(t *testing.T) {
+	cfgPath := writeTestConfig(t, ":5000")
+	t.Setenv("CROWSNEST_CONFIG", cfgPath)
+	withStdin(t, "hunter2\n")
+	if err := setPassword("alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := setRole("Alice", "player"); err != nil {
+		t.Fatalf("setRole: %v", err)
+	}
+	cfg, _ := config.Load(cfgPath)
+	users, _ := auth.LoadUsers(cfg.UsersFile)
+	if users["alice"].Role != auth.RolePlayer || users["alice"].Hash == "" {
+		t.Fatalf("alice = %+v, want player role with the password kept", users["alice"])
+	}
+	if err := setRole("alice", "root"); err == nil {
+		t.Fatal("setRole accepted an unknown role")
+	}
+	if err := setRole("nobody", "player"); err == nil {
+		t.Fatal("setRole accepted an unknown user")
 	}
 }

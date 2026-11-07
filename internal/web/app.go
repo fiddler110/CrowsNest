@@ -4,19 +4,29 @@
 package web
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/auth"
+	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/exclusivity"
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/hoststats"
+	"github.com/fiddler110/crowsnest/internal/memo"
+	"github.com/fiddler110/crowsnest/internal/settings"
 )
 
 // App holds the dependencies HTTP handlers need.
@@ -26,7 +36,18 @@ type App struct {
 	Exclusivity *exclusivity.Manager
 	Auth        *auth.Service
 	// Google, when set, adds "Sign in with Google" (see auth.GoogleLogin).
-	Google    *auth.GoogleLogin
+	Google *auth.GoogleLogin
+	// Settings backs the dashboard's settings dialog (/api/settings).
+	Settings *settings.Store
+	// IdleTimer, when set, supplies each game's idle-shutdown countdown.
+	IdleTimer IdleTimer
+	// History backs the activity feed (/api/activity) and records settings
+	// changes. Optional.
+	History *history.Store
+	// Backups runs and lists per-game backups (admin only). Optional.
+	Backups *backup.Manager
+	// HostPaths are the mounted paths whose free space /api/host reports.
+	HostPaths []string
 	Templates *Templates
 
 	// KeepaliveInterval overrides the SSE keepalive-comment interval.
@@ -41,6 +62,89 @@ type App struct {
 	// defaultMaxConcurrentStreams).
 	MaxConcurrentStreams int
 	streamCount          atomic.Int32
+
+	// StatusTTL is how long a game's checked status, player count, stats and
+	// info are shared between requests; however many tabs poll, the docker
+	// and game-API probes behind them run at most once per TTL per game. Zero
+	// means defaultStatusTTL; negative disables sharing (tests).
+	StatusTTL time.Duration
+
+	hostMemo   memo.Memo[hoststats.Snapshot]
+	healthMemo memo.Memo[bool]
+	snapshots  memo.Memo[snapshot]
+	statsMemo  memo.Memo[statsResponse]
+	infoMemo   memo.Memo[infoResult]
+}
+
+const defaultStatusTTL = 2 * time.Second
+
+func (a *App) statusTTL() time.Duration {
+	if a.StatusTTL == 0 {
+		return defaultStatusTTL
+	}
+	return a.StatusTTL
+}
+
+// snapshot is one game's observed state: what its StatusChecker and
+// PlayerCounter reported at the same moment.
+type snapshot struct {
+	Status    games.Status
+	Count     int
+	Names     []string
+	PlayersOK bool
+}
+
+// observe returns d's snapshot, sharing one probe among concurrent and
+// near-in-time callers. Players are only asked for when the game could be
+// up, so an offline or booting game doesn't cost a failing HTTP call.
+func (a *App) observe(ctx context.Context, d games.GameDef) snapshot {
+	snap, err := a.snapshots.Do(ctx, d.ID, a.statusTTL(), func(ctx context.Context) snapshot {
+		var s snapshot
+		s.Status = games.StatusUnknown
+		if d.Status != nil {
+			if st, err := d.Status.Check(ctx, d.ContainerName); err == nil {
+				s.Status = st
+			}
+		}
+		if d.Players != nil && (s.Status == games.StatusOnline || s.Status == games.StatusUnknown) {
+			s.Count, s.Names, s.PlayersOK = d.Players.PlayerCount(ctx)
+		}
+		return s
+	})
+	if err != nil {
+		return snapshot{Status: games.StatusUnknown}
+	}
+	return snap
+}
+
+// observeAll observes every game in parallel (a slow probe on one game must
+// not delay the rest), preserving order.
+func (a *App) observeAll(ctx context.Context, defs []games.GameDef) []snapshot {
+	out := make([]snapshot, len(defs))
+	var wg sync.WaitGroup
+	for i, d := range defs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			out[i] = a.observe(ctx, d)
+		}()
+	}
+	wg.Wait()
+	return out
+}
+
+// forgetGame drops a game's shared observations after an action that changes
+// them, so the next poll reflects it.
+func (a *App) forgetGame(id string) {
+	a.snapshots.Forget(id)
+	a.statsMemo.Forget(id)
+	a.infoMemo.Forget(id)
+}
+
+// IdleTimer reports time left before a game is auto-stopped for being
+// empty; satisfied by *idleshutdown.Manager.
+type IdleTimer interface {
+	IdleRemaining(id string) (time.Duration, bool)
 }
 
 // maxSwitchBodyBytes caps the /api/games/{id}/switch request body — it's a
@@ -67,6 +171,16 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/games/{id}/stats", a.requireSession(http.HandlerFunc(a.handleStats)))
 	mux.Handle("GET /api/games/{id}/players", a.requireSession(http.HandlerFunc(a.handlePlayers)))
 	mux.Handle("GET /api/games/{id}/info", a.requireSession(http.HandlerFunc(a.handleInfo)))
+	mux.Handle("GET /api/activity", a.requireSession(http.HandlerFunc(a.handleActivity)))
+	mux.Handle("GET /api/games/{id}/console", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleConsole))))
+	mux.Handle("POST /api/games/{id}/console/action", a.requireAdmin(http.HandlerFunc(a.handleConsoleAction)))
+	mux.Handle("POST /api/games/{id}/console/raw", a.requireAdmin(http.HandlerFunc(a.handleConsoleRaw)))
+	mux.Handle("POST /api/games/{id}/backup", a.requireAdmin(http.HandlerFunc(a.handleBackup)))
+	mux.Handle("GET /api/games/{id}/backups", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackups))))
+	mux.Handle("GET /api/host", a.requireSession(http.HandlerFunc(a.handleHost)))
+	mux.Handle("GET /api/health", a.requireSession(http.HandlerFunc(a.handleHealth)))
+	mux.Handle("GET /api/settings", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleGetSettings))))
+	mux.Handle("PUT /api/settings", a.requireAdmin(http.HandlerFunc(a.handlePutSettings)))
 	mux.Handle("POST /api/games/{id}/start", a.requireSessionAndCSRF(http.HandlerFunc(a.handleStart)))
 	mux.Handle("POST /api/games/{id}/switch", a.requireSessionAndCSRF(http.HandlerFunc(a.handleSwitch)))
 	mux.Handle("POST /api/games/{id}/stop", a.requireSessionAndCSRF(http.HandlerFunc(a.handleStop)))
@@ -80,6 +194,11 @@ func (a *App) Routes(mux *http.ServeMux) {
 
 func (a *App) requireSession(next http.Handler) http.Handler {
 	return auth.RequireSession(a.Auth.Sessions, next)
+}
+
+// requireAdmin is requireSessionAndCSRF plus an admin-role check.
+func (a *App) requireAdmin(next http.Handler) http.Handler {
+	return auth.RequireSession(a.Auth.Sessions, auth.RequireCSRF(auth.RequireAdmin(a.Auth.Sessions, next)))
 }
 
 func (a *App) requireSessionAndCSRF(next http.Handler) http.Handler {
@@ -109,6 +228,15 @@ type gameSummary struct {
 	// count is currently undeterminable — never a guessed zero.
 	PlayerCount *int `json:"player_count"`
 
+	// AutoStop is false for a game with no way to count players, which idle
+	// and night shutdown therefore never stop (they won't guess it's empty).
+	AutoStop bool `json:"auto_stop"`
+
+	// IdleSecondsLeft is the seconds until idle shutdown stops this game,
+	// or nil when no countdown is running (idle shutdown off, game not
+	// online, players aboard, or count unreadable).
+	IdleSecondsLeft *int `json:"idle_seconds_left"`
+
 	// StartError is the error from this game's most recent background
 	// start, if it failed; StartErrorAt is when (unix seconds), so the UI
 	// can tell a new failure from one it has already shown.
@@ -116,38 +244,21 @@ type gameSummary struct {
 	StartErrorAt int64  `json:"start_error_at,omitempty"`
 }
 
-// playerCount reports d's current player count, if determinable.
-func playerCount(r *http.Request, d games.GameDef) *int {
-	if d.Players == nil {
-		return nil
+// gameStatus overlays the exclusivity manager's in-memory view on an
+// observed status: a game being stopped reports stopping, and one whose
+// start was accepted but is still pulling/creating its container reports
+// starting even though docker doesn't show it running yet. The overlay is
+// never cached, so it flips the moment an action is accepted.
+func (a *App) gameStatus(d games.GameDef, observed games.Status) games.Status {
+	if a.Exclusivity != nil {
+		if a.Exclusivity.Stopping(d.ID) {
+			return games.StatusStopping
+		}
+		if a.Exclusivity.Starting(d.ID) && observed != games.StatusOnline {
+			return games.StatusStarting
+		}
 	}
-	count, _, ok := d.Players.PlayerCount(r.Context())
-	if !ok {
-		return nil
-	}
-	return &count
-}
-
-// gameStatus is checkStatus plus the exclusivity manager's view: a game
-// whose start was accepted but is still pulling/creating its container
-// reports starting even though docker doesn't show it running yet.
-func (a *App) gameStatus(r *http.Request, d games.GameDef) games.Status {
-	st := checkStatus(r, d)
-	if a.Exclusivity != nil && a.Exclusivity.Starting(d.ID) && st != games.StatusOnline {
-		return games.StatusStarting
-	}
-	return st
-}
-
-func checkStatus(r *http.Request, d games.GameDef) games.Status {
-	if d.Status == nil {
-		return games.StatusUnknown
-	}
-	status, err := d.Status.Check(r.Context(), d.ContainerName)
-	if err != nil {
-		return games.StatusUnknown
-	}
-	return status
+	return observed
 }
 
 // loginPage is the login template's data. Error is one of a fixed set of
@@ -187,10 +298,18 @@ type dashboardGame struct {
 	ConnectAddress string
 	ConnectNote    string
 	ConnectSecrets []games.ConnectSecret
+
+	// HasBackup is true when a backup is configured and the viewer is an
+	// admin, which is the only role that sees the Backups panel.
+	HasBackup bool
+
+	// HasConsole is true for admins on games that offer console actions.
+	HasConsole bool
 }
 
 type dashboardData struct {
 	Username  string
+	IsAdmin   bool
 	CSRFToken string
 	Games     []dashboardGame
 }
@@ -198,17 +317,24 @@ type dashboardData struct {
 func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	session, _ := auth.FromContext(r.Context())
 	defs := a.Registry.All()
-	data := dashboardData{Username: session.Username, CSRFToken: session.CSRFToken}
-	for _, d := range defs {
+	data := dashboardData{
+		Username:  session.Username,
+		IsAdmin:   a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
+		CSRFToken: session.CSRFToken,
+	}
+	snaps := a.observeAll(r.Context(), defs)
+	for i, d := range defs {
 		data.Games = append(data.Games, dashboardGame{
 			ID:          d.ID,
 			DisplayName: d.DisplayName,
 			Initial:     initialOf(d.DisplayName),
-			Status:      a.gameStatus(r, d).String(),
+			Status:      a.gameStatus(d, snaps[i].Status).String(),
 
 			ConnectAddress: d.ConnectAddress,
 			ConnectNote:    d.ConnectNote,
 			ConnectSecrets: d.ConnectSecrets,
+			HasBackup:      data.IsAdmin && d.Backup != nil && a.Backups != nil,
+			HasConsole:     data.IsAdmin && d.Console != nil,
 		})
 	}
 	if err := a.Templates.Dashboard.Execute(w, data); err != nil {
@@ -219,12 +345,23 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
 	defs := a.Registry.All()
 	out := make([]gameSummary, len(defs))
+	snaps := a.observeAll(r.Context(), defs)
 	for i, d := range defs {
 		out[i] = gameSummary{
 			ID:          d.ID,
 			DisplayName: d.DisplayName,
-			Status:      a.gameStatus(r, d).String(),
-			PlayerCount: playerCount(r, d),
+			Status:      a.gameStatus(d, snaps[i].Status).String(),
+			AutoStop:    games.CanCountPlayers(d),
+		}
+		if snaps[i].PlayersOK {
+			c := snaps[i].Count
+			out[i].PlayerCount = &c
+		}
+		if a.IdleTimer != nil && out[i].Status == games.StatusOnline.String() {
+			if left, ok := a.IdleTimer.IdleRemaining(d.ID); ok {
+				secs := int(left.Seconds())
+				out[i].IdleSecondsLeft = &secs
+			}
 		}
 		if a.Exclusivity != nil {
 			if res, ok := a.Exclusivity.LastStart(d.ID); ok && res.Err != "" {
@@ -250,16 +387,119 @@ func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if d.Players == nil {
+	snap := a.observe(r.Context(), d)
+	if d.Players == nil || !snap.PlayersOK {
 		writeJSON(w, http.StatusOK, playersResponse{})
 		return
 	}
-	count, names, avail := d.Players.PlayerCount(r.Context())
-	if !avail {
-		writeJSON(w, http.StatusOK, playersResponse{})
+	names := snap.Names
+	if names == nil {
+		names = []string{}
+	}
+	writeJSON(w, http.StatusOK, playersResponse{Available: true, Count: snap.Count, Names: names})
+}
+
+const (
+	defaultActivityLimit = 40
+	maxActivityLimit     = 500
+)
+
+// handleActivity returns the newest activity events (optionally for one
+// game) and the playtime totals derived from join/leave events.
+func (a *App) handleActivity(w http.ResponseWriter, r *http.Request) {
+	if a.History == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []history.Event{}, "playtime": []history.Playtime{}})
 		return
 	}
-	writeJSON(w, http.StatusOK, playersResponse{Available: true, Count: count, Names: names})
+	limit := defaultActivityLimit
+	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
+		limit = min(n, maxActivityLimit)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events":   a.History.Recent(limit, r.URL.Query().Get("game")),
+		"playtime": a.History.Playtime(),
+	})
+}
+
+// handleBackup starts a backup of one game in the background.
+func (a *App) handleBackup(w http.ResponseWriter, r *http.Request) {
+	d, ok := a.gameOr404(w, r)
+	if !ok {
+		return
+	}
+	if a.Backups == nil {
+		http.Error(w, "backups are not configured", http.StatusNotFound)
+		return
+	}
+	switch err := a.Backups.Request(r.Context(), d, actor(r)); {
+	case err == nil:
+		log.Printf("audit: %s requested backup of %s", actor(r), d.ID)
+		w.WriteHeader(http.StatusAccepted)
+	case errors.Is(err, backup.ErrNotConfigured):
+		http.Error(w, "this game has no backup configured", http.StatusNotFound)
+	case errors.Is(err, backup.ErrNotRunning), errors.Is(err, backup.ErrBusy):
+		http.Error(w, strings.TrimPrefix(err.Error(), "backup: "), http.StatusConflict)
+	default:
+		log.Printf("audit: %s backup %s failed: %v", actor(r), d.ID, err)
+		http.Error(w, publicError(err), http.StatusBadGateway)
+	}
+}
+
+// handleBackups lists a game's backup files, newest first.
+func (a *App) handleBackups(w http.ResponseWriter, r *http.Request) {
+	d, ok := a.gameOr404(w, r)
+	if !ok {
+		return
+	}
+	if a.Backups == nil {
+		http.Error(w, "backups are not configured", http.StatusNotFound)
+		return
+	}
+	files, err := a.Backups.List(r.Context(), d)
+	switch {
+	case errors.Is(err, backup.ErrNotConfigured):
+		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": a.Backups.Running(d.ID)})
+	case err != nil:
+		// Usually just "the container isn't running".
+		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": a.Backups.Running(d.ID), "unavailable": true})
+	default:
+		writeJSON(w, http.StatusOK, map[string]any{"files": files, "running": a.Backups.Running(d.ID)})
+	}
+}
+
+// handleHost reports host memory, load and disk space.
+func (a *App) handleHost(w http.ResponseWriter, r *http.Request) {
+	snap, err := a.hostMemo.Do(r.Context(), "host", 5*time.Second, func(context.Context) hoststats.Snapshot {
+		return hoststats.Read(a.HostPaths)
+	})
+	if err != nil {
+		http.Error(w, "host stats unavailable", http.StatusGatewayTimeout)
+		return
+	}
+	if snap.Disks == nil {
+		snap.Disks = []hoststats.Disk{}
+	}
+	writeJSON(w, http.StatusOK, snap)
+}
+
+// handleHealth reports whether CrowsNest can reach Docker. It's separate from
+// /healthz, the container liveness probe: a restart wouldn't fix a stopped
+// daemon, so liveness stays green while this goes red and the dashboard warns.
+// The reason is logged, not returned.
+func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
+	ok, err := a.healthMemo.Do(r.Context(), "docker", a.statusTTL(), func(ctx context.Context) bool {
+		if err := a.Docker.Ping(ctx); err != nil {
+			log.Printf("web: docker unreachable: %v", err)
+			return false
+		}
+		return true
+	})
+	writeJSON(w, http.StatusOK, map[string]bool{"docker": err == nil && ok})
+}
+
+type infoResult struct {
+	data map[string]any
+	ok   bool
 }
 
 // handleInfo reports a game's optional rich info panel data (world
@@ -275,8 +515,12 @@ func (a *App) handleInfo(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"available": false})
 		return
 	}
-	data, ok := d.Info.Info(r.Context())
-	if !ok {
+	res, err := a.infoMemo.Do(r.Context(), d.ID, a.statusTTL(), func(ctx context.Context) infoResult {
+		data, ok := d.Info.Info(ctx)
+		return infoResult{data: data, ok: ok}
+	})
+	data, ok := res.data, res.ok
+	if err != nil || !ok {
 		writeJSON(w, http.StatusOK, map[string]any{"available": false})
 		return
 	}
@@ -307,7 +551,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": a.gameStatus(r, d).String()})
+	writeJSON(w, http.StatusOK, map[string]string{"status": a.gameStatus(d, a.observe(r.Context(), d).Status).String()})
 }
 
 // statsResponse mirrors the original Python CrowsNest's /api/stats shape:
@@ -338,17 +582,26 @@ func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var resp statsResponse
-	if s, err := a.Docker.Stats(r.Context(), d.ContainerName); err == nil {
-		resp.CPU = strPtr(s.CPUPercent)
-		resp.MemUsed = strPtr(s.MemUsed)
-		resp.MemTotal = strPtr(s.MemTotal)
-		resp.MemPercent = strPtr(s.MemPercent)
-	}
-	if g, ok := a.Docker.GPUStats(r.Context()); ok {
-		resp.GPUUtil = strPtr(g.UtilPercent)
-		resp.GPUMemUsed = strPtr(g.MemUsedMiB + " MiB")
-		resp.GPUMemTotal = strPtr(g.MemTotalMiB + " MiB")
+	// `docker stats --no-stream` takes a second or more, so it is shared
+	// between tabs like everything else (and 3s of staleness is invisible).
+	resp, err := a.statsMemo.Do(r.Context(), d.ID, a.statusTTL(), func(ctx context.Context) statsResponse {
+		var resp statsResponse
+		if s, err := a.Docker.Stats(ctx, d.ContainerName); err == nil {
+			resp.CPU = strPtr(s.CPUPercent)
+			resp.MemUsed = strPtr(s.MemUsed)
+			resp.MemTotal = strPtr(s.MemTotal)
+			resp.MemPercent = strPtr(s.MemPercent)
+		}
+		if g, ok := a.Docker.GPUStats(ctx); ok {
+			resp.GPUUtil = strPtr(g.UtilPercent)
+			resp.GPUMemUsed = strPtr(g.MemUsedMiB + " MiB")
+			resp.GPUMemTotal = strPtr(g.MemTotalMiB + " MiB")
+		}
+		return resp
+	})
+	if err != nil {
+		http.Error(w, "stats unavailable", http.StatusGatewayTimeout)
+		return
 	}
 	writeJSON(w, http.StatusOK, resp)
 }
@@ -370,6 +623,7 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	err := a.Exclusivity.RequestStart(exclusivity.WithActor(r.Context(), actor(r)), d.ID)
 	if err == nil {
+		a.forgetGame(d.ID)
 		log.Printf("audit: %s started %s", actor(r), d.ID)
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -379,6 +633,11 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"conflict": true, "active_game": conflict.Active, "active_games": conflict.All})
 		return
 	}
+	var busy *exclusivity.BusyError
+	if errors.As(err, &busy) {
+		writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
+		return
+	}
 	var cooldown *exclusivity.CooldownError
 	if errors.As(err, &cooldown) {
 		w.Header().Set("Retry-After", strconv.Itoa(int(cooldown.Remaining.Seconds())+1))
@@ -386,7 +645,7 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("audit: %s start %s failed: %v", actor(r), d.ID, err)
-	http.Error(w, err.Error(), http.StatusBadGateway)
+	http.Error(w, publicError(err), http.StatusBadGateway)
 }
 
 func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
@@ -394,12 +653,15 @@ func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.Exclusivity.Stop(exclusivity.WithActor(r.Context(), actor(r)), d.ID); err != nil {
+	// Accepted, not finished: the stop runs in the background (a save can
+	// outlast any proxy timeout); progress shows as the "stopping" status.
+	if err := a.Exclusivity.RequestStop(exclusivity.WithActor(r.Context(), actor(r)), d.ID); err != nil {
 		log.Printf("audit: %s stop %s failed: %v", actor(r), d.ID, err)
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		http.Error(w, publicError(err), http.StatusBadGateway)
 		return
 	}
-	log.Printf("audit: %s stopped %s", actor(r), d.ID)
+	a.forgetGame(d.ID)
+	log.Printf("audit: %s requested stop of %s", actor(r), d.ID)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -422,13 +684,107 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown source game", http.StatusBadRequest)
 		return
 	}
-	if err := a.Exclusivity.ConfirmSwitch(exclusivity.WithActor(r.Context(), actor(r)), req.From, to.ID); err != nil {
+	if err := a.Exclusivity.RequestSwitch(exclusivity.WithActor(r.Context(), actor(r)), req.From, to.ID); err != nil {
 		log.Printf("audit: %s switch %s->%s failed: %v", actor(r), req.From, to.ID, err)
-		http.Error(w, err.Error(), http.StatusBadGateway)
+		var busy *exclusivity.BusyError
+		if errors.As(err, &busy) {
+			writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
+			return
+		}
+		http.Error(w, publicError(err), http.StatusBadGateway)
 		return
 	}
-	log.Printf("audit: %s switched %s->%s", actor(r), req.From, to.ID)
+	a.forgetGame(req.From)
+	a.forgetGame(to.ID)
+	log.Printf("audit: %s requested switch %s->%s", actor(r), req.From, to.ID)
 	w.WriteHeader(http.StatusAccepted)
+}
+
+const maxSettingsBodyBytes = 4096
+
+func (a *App) handleGetSettings(w http.ResponseWriter, r *http.Request) {
+	if a.Settings == nil {
+		http.NotFound(w, r)
+		return
+	}
+	writeJSON(w, http.StatusOK, a.Settings.Get())
+}
+
+func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request) {
+	if a.Settings == nil {
+		http.NotFound(w, r)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxSettingsBodyBytes)
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, "invalid settings: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	// Applied under the store's lock on top of the current values, so a
+	// partial body only changes what it names and two simultaneous saves
+	// can't overwrite each other.
+	before := a.Settings.Get()
+	var invalid error
+	v, err := a.Settings.Modify(func(v *settings.Values) error {
+		dec := json.NewDecoder(bytes.NewReader(body))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(v); err != nil {
+			invalid = errors.New("invalid settings: " + err.Error())
+			return invalid
+		}
+		if err := v.Validate(); err != nil {
+			invalid = err
+			return err
+		}
+		return nil
+	})
+	if invalid != nil {
+		http.Error(w, invalid.Error(), http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		log.Printf("audit: %s settings update failed: %v", actor(r), err)
+		http.Error(w, "could not save settings", http.StatusInternalServerError)
+		return
+	}
+	if a.History != nil {
+		a.History.Record(history.KindSettings, "", actor(r), settingsChanges(before, v))
+	}
+	log.Printf("audit: %s updated settings: %+v", actor(r), v)
+	writeJSON(w, http.StatusOK, v)
+}
+
+// publicError is what a client is told about an internal failure: the
+// details (docker command lines, compose paths, stderr) stay in the log.
+func publicError(err error) string {
+	var busy *exclusivity.BusyError
+	if errors.As(err, &busy) {
+		return err.Error()
+	}
+	return "the request could not be completed; see the CrowsNest log for details"
+}
+
+// settingsChanges describes which settings differ, e.g. "idle_minutes 15→30".
+func settingsChanges(before, after settings.Values) string {
+	var parts []string
+	add := func(name string, b, a any) {
+		if b != a {
+			parts = append(parts, fmt.Sprintf("%s %v→%v", name, b, a))
+		}
+	}
+	add("idle_enabled", before.IdleEnabled, after.IdleEnabled)
+	add("idle_minutes", before.IdleMinutes, after.IdleMinutes)
+	add("night_enabled", before.NightEnabled, after.NightEnabled)
+	add("night_start_hour", before.NightStartHour, after.NightStartHour)
+	add("night_end_hour", before.NightEndHour, after.NightEndHour)
+	add("max_active_games", before.MaxActiveGames, after.MaxActiveGames)
+	add("auto_update", before.AutoUpdate, after.AutoUpdate)
+	add("raw_console", before.RawConsole, after.RawConsole)
+	if len(parts) == 0 {
+		return "no changes"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

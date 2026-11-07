@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/history"
 )
 
 // Stopper stops a registered game by ID — satisfied directly by
@@ -51,6 +52,21 @@ type Manager struct {
 	// Notifier, when set, is told about every stop this manager triggers.
 	Notifier Notifier
 
+	// History, when set, records each automatic stop.
+	History history.Recorder
+
+	// Settings, when set, is consulted on every tick and overrides the fixed
+	// window from New, so runtime settings changes apply without a restart.
+	Settings func() (enabled bool, startHour, endHour int)
+
+	// StartedAt, with MinUptime, protects a game that was only just started
+	// inside the window (a late-night session nobody has joined yet): it is
+	// left alone until it has been up MinUptime. If StartedAt errors the game
+	// is skipped, like any other undeterminable reading. Optional — nil
+	// disables the check.
+	StartedAt func(ctx context.Context, containerName string) (time.Time, error)
+	MinUptime time.Duration
+
 	// Now overrides time.Now. Intended for tests; production callers should
 	// leave it unset.
 	Now func() time.Time
@@ -77,13 +93,13 @@ func (m *Manager) now() time.Time {
 	return time.Now()
 }
 
-func (m *Manager) inWindow(t time.Time) bool {
+func (m *Manager) inWindow(t time.Time, startHour, endHour int) bool {
 	hour := t.In(m.loc).Hour()
-	if m.startHour <= m.endHour {
-		return hour >= m.startHour && hour < m.endHour
+	if startHour <= endHour {
+		return hour >= startHour && hour < endHour
 	}
 	// Wraps midnight, e.g. 23 -> 5.
-	return hour >= m.startHour || hour < m.endHour
+	return hour >= startHour || hour < endHour
 }
 
 // Run ticks every checkInterval, checking every registered game, until ctx
@@ -105,7 +121,15 @@ func (m *Manager) Run(ctx context.Context) {
 // does anything while the current time is inside the configured window.
 // Exported so Run's ticker and tests can both drive it directly.
 func (m *Manager) Tick(ctx context.Context) {
-	if !m.inWindow(m.now()) {
+	start, end := m.startHour, m.endHour
+	if m.Settings != nil {
+		enabled, s, e := m.Settings()
+		if !enabled {
+			return
+		}
+		start, end = s, e
+	}
+	if !m.inWindow(m.now(), start, end) {
 		return
 	}
 	for _, d := range m.registry.All() {
@@ -137,11 +161,25 @@ func (m *Manager) checkGame(ctx context.Context, d games.GameDef) {
 		return
 	}
 
+	if m.StartedAt != nil && m.MinUptime > 0 {
+		started, err := m.StartedAt(ctx, d.ContainerName)
+		if err != nil {
+			log.Printf("nightshutdown: %s start time unavailable — skipping for safety: %v", d.ID, err)
+			return
+		}
+		if up := m.now().Sub(started); up < m.MinUptime {
+			return // freshly started: give the crew time to join
+		}
+	}
+
 	now := m.now().In(m.loc)
 	log.Printf("nightshutdown: stopping %s at %s with no players", d.ID, now.Format("15:04"))
 	if err := m.stopper.Stop(ctx, d.ID); err != nil {
 		log.Printf("nightshutdown: stop %s: %v", d.ID, err)
 		return
+	}
+	if m.History != nil {
+		m.History.Record(history.KindAutoStop, d.ID, "", "night shutdown: no players at "+now.Format("15:04"))
 	}
 	if m.Notifier != nil {
 		m.Notifier.Notify(ctx, fmt.Sprintf(
