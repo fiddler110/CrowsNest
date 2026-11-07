@@ -186,6 +186,7 @@ type dashboardGame struct {
 	// details; the template renders nothing when both are empty.
 	ConnectAddress string
 	ConnectNote    string
+	ConnectSecrets []games.ConnectSecret
 }
 
 type dashboardData struct {
@@ -207,6 +208,7 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 
 			ConnectAddress: d.ConnectAddress,
 			ConnectNote:    d.ConnectNote,
+			ConnectSecrets: d.ConnectSecrets,
 		})
 	}
 	if err := a.Templates.Dashboard.Execute(w, data); err != nil {

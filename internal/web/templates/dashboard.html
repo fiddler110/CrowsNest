@@ -63,12 +63,20 @@
         <span class="status status-{{.Status}}"><i class="beacon"></i><span class="status-text">{{.Status}}</span></span>
       </header>
 
-      {{if or .ConnectAddress .ConnectNote}}
+      {{$name := .DisplayName}}
+      {{if or .ConnectAddress .ConnectNote .ConnectSecrets}}
       <div class="connect">
         {{if .ConnectAddress}}
         <span class="connect-label">Connect</span>
         <code class="connect-address">{{.ConnectAddress}}</code>
         <button class="btn btn-ghost copy-btn" type="button" data-copy="{{.ConnectAddress}}" aria-label="Copy {{.DisplayName}} address to clipboard">Copy</button>
+        {{end}}
+        {{range .ConnectSecrets}}
+        <div class="connect-row">
+          <span class="connect-label">{{.Label}}</span>
+          <code class="connect-address">{{.Value}}</code>
+          <button class="btn btn-ghost copy-btn" type="button" data-copy="{{.Value}}" aria-label="Copy {{$name}} {{.Label}} to clipboard">Copy</button>
+        </div>
         {{end}}
         {{if .ConnectNote}}<p class="connect-note">{{.ConnectNote}}</p>{{end}}
       </div>

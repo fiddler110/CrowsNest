@@ -7,6 +7,23 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 )
 
+func TestFromConfig_ConnectSecrets(t *testing.T) {
+	t.Setenv("TEST_JOIN_PASS", "hunter2")
+	t.Setenv("TEST_EMPTY", "")
+	defs := FromConfig([]config.GameConfig{{
+		ID: "g", DisplayName: "G", ContainerName: "g",
+		ConnectSecrets: []config.ConnectSecret{
+			{Label: "Join password", Env: "TEST_JOIN_PASS"},
+			{Label: "Empty", Env: "TEST_EMPTY"},
+			{Label: "Unset", Env: "TEST_DEFINITELY_UNSET"},
+		},
+	}}, &dockerctl.Client{})
+	got := defs[0].ConnectSecrets
+	if len(got) != 1 || got[0].Label != "Join password" || got[0].Value != "hunter2" {
+		t.Errorf("ConnectSecrets = %+v, want only the set variable", got)
+	}
+}
+
 func TestFromConfig(t *testing.T) {
 	optedOut := false
 	cfgs := []config.GameConfig{

@@ -141,6 +141,26 @@ Google need outbound HTTPS from the container. If the login page is
 reached on another hostname that proxies to CrowsNest, the Google button
 still goes through the redirect URL's host, and you land there.
 
+### Showing join details on the cards
+
+A game's card can show where to connect and what to type, each with a copy
+button. In `config.yaml`:
+
+```yaml
+games:
+  - id: palworld
+    connect_address: "10.0.0.2:8211"
+    connect_note: "Turn on Tailscale first"
+    connect_secrets:
+      - {label: Join password, env: PALWORLD_SERVER_PASSWORD}
+```
+
+`connect_secrets` values come from environment variables, so they stay in
+`.env`; pass each variable to the crowsnest service in `compose.yaml`. An
+unset or empty variable is left out (and logged by name). Everything here
+is shown to every signed-in user, so list only what any player should see:
+the join password or an invite code, never the admin or REST password.
+
 ### Docker socket access
 
 By default `compose.yaml.example` mounts `/var/run/docker.sock` straight

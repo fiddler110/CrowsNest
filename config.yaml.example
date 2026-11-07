@@ -80,11 +80,18 @@ games:
     compose_profile: palworld
     compose_service: palworld
     # Optional connection details shown on the game's card, with a copy
-    # button for the address. Shown to every logged-in user, so never put a
-    # password here. See docs/connecting.md for reaching the game without a
-    # router port forward (e.g. a LAN address routed over Tailscale).
+    # button for each value. All of it is shown to every logged-in user.
+    # See docs/connecting.md for reaching the game without a router port
+    # forward (e.g. a LAN address routed over Tailscale).
     # connect_address: play.example.com:8211
-    # connect_note: Password is in our group chat
+    # connect_note: Turn on Tailscale first
+    # connect_secrets: values read from env vars (so they stay in .env, not
+    # here) and shown under the address. List only what every signed-in
+    # player may see, such as the join password. NEVER the admin/REST
+    # password. The env var must also be passed to the crowsnest container
+    # in compose.yaml. An unset or empty variable is left out.
+    # connect_secrets:
+    #   - {label: Join password, env: PALWORLD_SERVER_PASSWORD}
     # Palworld's dedicated server REST API (enable REST_API_ENABLED on the
     # server container) doubles as status probe and player counter.
     palworld:

@@ -518,7 +518,7 @@ document.querySelectorAll(".copy-btn").forEach((btn) => {
       btn.textContent = "Copied";
       setTimeout(() => { btn.textContent = "Copy"; }, 1500);
     } catch (err) {
-      toast("Couldn't copy automatically. Select the address and copy it by hand.");
+      toast("Couldn't copy automatically. Select the text and copy it by hand.");
     }
   });
 });
