@@ -16,7 +16,7 @@ func newTestService(t *testing.T) *Service {
 		t.Fatalf("HashPassword() error = %v", err)
 	}
 	return &Service{
-		Users:        Users{"scott": {Hash: hash}},
+		Users:        Users{"alice": {Hash: hash}},
 		Sessions:     NewSessionManager([]byte("test-secret"), time.Hour),
 		LoginLimiter: NewLimiter(100, time.Minute),
 	}
@@ -33,7 +33,7 @@ func doLogin(t *testing.T, svc *Service, username, password string) *httptest.Re
 
 func TestServeLogin_Success(t *testing.T) {
 	svc := newTestService(t)
-	rec := doLogin(t, svc, "Scott", "s3cret-password")
+	rec := doLogin(t, svc, "Alice", "s3cret-password")
 
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d, body=%s", rec.Code, http.StatusOK, rec.Body)
@@ -56,14 +56,14 @@ func TestServeLogin_Success(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if session.Username != "scott" || session.CSRFToken != resp.CSRFToken {
-		t.Fatalf("session = %+v, want username scott matching returned csrf token", session)
+	if session.Username != "alice" || session.CSRFToken != resp.CSRFToken {
+		t.Fatalf("session = %+v, want username alice matching returned csrf token", session)
 	}
 }
 
 func TestServeLogin_WrongPassword(t *testing.T) {
 	svc := newTestService(t)
-	rec := doLogin(t, svc, "scott", "wrong-password")
+	rec := doLogin(t, svc, "alice", "wrong-password")
 	if rec.Code != http.StatusUnauthorized {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusUnauthorized)
 	}
@@ -81,11 +81,11 @@ func TestServeLogin_RateLimited(t *testing.T) {
 	svc := newTestService(t)
 	svc.LoginLimiter = NewLimiter(1, time.Minute)
 
-	first := doLogin(t, svc, "scott", "wrong-password")
+	first := doLogin(t, svc, "alice", "wrong-password")
 	if first.Code != http.StatusUnauthorized {
 		t.Fatalf("first attempt status = %d, want %d", first.Code, http.StatusUnauthorized)
 	}
-	second := doLogin(t, svc, "scott", "s3cret-password")
+	second := doLogin(t, svc, "alice", "s3cret-password")
 	if second.Code != http.StatusTooManyRequests {
 		t.Fatalf("second attempt status = %d, want %d", second.Code, http.StatusTooManyRequests)
 	}
@@ -95,7 +95,7 @@ func TestServeLogin_BodyTooLarge(t *testing.T) {
 	svc := newTestService(t)
 
 	oversized := bytes.Repeat([]byte("a"), maxLoginBodyBytes+1)
-	body, _ := json.Marshal(loginRequest{Username: "scott", Password: string(oversized)})
+	body, _ := json.Marshal(loginRequest{Username: "alice", Password: string(oversized)})
 	req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
 	rec := httptest.NewRecorder()
 	svc.ServeLogin(rec, req)

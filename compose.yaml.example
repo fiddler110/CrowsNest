@@ -135,7 +135,7 @@ services:
       - seccomp:unconfined   # required by the image's Wine runtime
     environment:
       - TZ=${TZ:-UTC}
-      - P2P_PROXY_ADDRESS=${P2P_PROXY_ADDRESS:-10.0.0.2}
+      - P2P_PROXY_ADDRESS=${P2P_PROXY_ADDRESS:-}   # host LAN IP, set in .env
     volumes:
       - ${USERDIR}/Windrose:/home/steam/server-files
       - ${USERDIR}/Windrose/Saved:/server/R5/Saved

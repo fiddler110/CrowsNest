@@ -69,7 +69,8 @@ games:
     compose_service: palworld
     # Optional connection details shown on the game's card, with a copy
     # button for the address. Shown to every logged-in user, so never put a
-    # password here.
+    # password here. See docs/connecting.md for reaching the game without a
+    # router port forward (e.g. a LAN address routed over Tailscale).
     # connect_address: play.example.com:8211
     # connect_note: Password is in our group chat
     # Palworld's dedicated server REST API (enable REST_API_ENABLED on the

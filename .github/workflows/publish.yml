@@ -1,4 +1,4 @@
-# Publishes ghcr.io/<owner>/crowsnest and cuts a GitHub Release — the same scheme as labctl and Assay.
+# Publishes ghcr.io/<owner>/crowsnest and cuts a GitHub Release.
 #
 # Every push to main:
 #   1. runs ci.yml (tests + SAST/SCA + image scan) as the gate;

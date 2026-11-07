@@ -8,7 +8,7 @@ import (
 func TestSessionRoundTrip(t *testing.T) {
 	mgr := NewSessionManager([]byte("test-secret-32-bytes-long-enough"), time.Hour)
 
-	session, err := mgr.New("scott")
+	session, err := mgr.New("alice")
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -25,14 +25,14 @@ func TestSessionRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Decode() error = %v", err)
 	}
-	if got.Username != "scott" || got.CSRFToken != session.CSRFToken {
-		t.Fatalf("Decode() = %+v, want username scott with matching csrf token", got)
+	if got.Username != "alice" || got.CSRFToken != session.CSRFToken {
+		t.Fatalf("Decode() = %+v, want username alice with matching csrf token", got)
 	}
 }
 
 func TestSessionDecode_TamperedSignature(t *testing.T) {
 	mgr := NewSessionManager([]byte("secret-a"), time.Hour)
-	session, _ := mgr.New("scott")
+	session, _ := mgr.New("alice")
 	token, _ := mgr.Encode(session)
 
 	tampered := token + "x"
@@ -45,7 +45,7 @@ func TestSessionDecode_WrongSecret(t *testing.T) {
 	signed := NewSessionManager([]byte("secret-a"), time.Hour)
 	verifier := NewSessionManager([]byte("secret-b"), time.Hour)
 
-	session, _ := signed.New("scott")
+	session, _ := signed.New("alice")
 	token, _ := signed.Encode(session)
 
 	if _, err := verifier.Decode(token); err == nil {
@@ -55,7 +55,7 @@ func TestSessionDecode_WrongSecret(t *testing.T) {
 
 func TestSessionDecode_Expired(t *testing.T) {
 	mgr := NewSessionManager([]byte("test-secret"), -time.Hour)
-	session, _ := mgr.New("scott")
+	session, _ := mgr.New("alice")
 	token, _ := mgr.Encode(session)
 
 	_, err := mgr.Decode(token)
@@ -66,10 +66,10 @@ func TestSessionDecode_Expired(t *testing.T) {
 
 func TestSessionDecode_RevokedByValidAfter(t *testing.T) {
 	mgr := NewSessionManager([]byte("test-secret"), time.Hour)
-	session, _ := mgr.New("scott")
+	session, _ := mgr.New("alice")
 	token, _ := mgr.Encode(session)
 
-	mgr.Users = Users{"scott": {Hash: "irrelevant", ValidAfter: time.Now().Add(time.Minute)}}
+	mgr.Users = Users{"alice": {Hash: "irrelevant", ValidAfter: time.Now().Add(time.Minute)}}
 
 	_, err := mgr.Decode(token)
 	if err != ErrSessionRevoked {
@@ -79,10 +79,10 @@ func TestSessionDecode_RevokedByValidAfter(t *testing.T) {
 
 func TestSessionDecode_ValidAfterInPastStillAllowed(t *testing.T) {
 	mgr := NewSessionManager([]byte("test-secret"), time.Hour)
-	session, _ := mgr.New("scott")
+	session, _ := mgr.New("alice")
 	token, _ := mgr.Encode(session)
 
-	mgr.Users = Users{"scott": {Hash: "irrelevant", ValidAfter: time.Now().Add(-time.Minute)}}
+	mgr.Users = Users{"alice": {Hash: "irrelevant", ValidAfter: time.Now().Add(-time.Minute)}}
 
 	if _, err := mgr.Decode(token); err != nil {
 		t.Fatalf("Decode() error = %v, want nil when the session was issued after ValidAfter", err)

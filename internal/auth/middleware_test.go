@@ -24,7 +24,7 @@ func TestRequireSession_NoCookie(t *testing.T) {
 
 func TestRequireSession_ValidCookie(t *testing.T) {
 	mgr := NewSessionManager([]byte("secret"), time.Hour)
-	session, _ := mgr.New("scott")
+	session, _ := mgr.New("alice")
 	token, _ := mgr.Encode(session)
 
 	var gotUser string
@@ -44,14 +44,14 @@ func TestRequireSession_ValidCookie(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
 	}
-	if gotUser != "scott" {
-		t.Fatalf("session username = %q, want scott", gotUser)
+	if gotUser != "alice" {
+		t.Fatalf("session username = %q, want alice", gotUser)
 	}
 }
 
 func TestRequireCSRF(t *testing.T) {
 	mgr := NewSessionManager([]byte("secret"), time.Hour)
-	session, _ := mgr.New("scott")
+	session, _ := mgr.New("alice")
 	token, _ := mgr.Encode(session)
 
 	handler := RequireSession(mgr, RequireCSRF(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

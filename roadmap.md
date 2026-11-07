@@ -38,7 +38,7 @@ grouped by priority, not phase; check them off as they land.
   weekly, and the gate inside `publish.yml`) runs gosec, govulncheck,
   gitleaks, Trivy fs and a Trivy image scan, with SARIF to code scanning;
   CodeQL stays in `codeql.yml`. `publish.yml` replaces `docker-publish.yml`
-  with the labctl/Assay scheme: scan before push (fixable HIGH/CRITICAL
+  with an auto-versioned release scheme: scan before push (fixable HIGH/CRITICAL
   blocks the release), multi-arch, SBOM + provenance, cosign keyless
   signature, attestation, GitHub Release. See `docs/publishing.md`.
   Supersedes the earlier "not gating on Trivy" decision.
@@ -229,32 +229,33 @@ grouped by priority, not phase; check them off as they land.
 
 ## Next up (picked up from the 2026-09-30 session)
 
-- [ ] **Verify Windrose end-to-end in the new stack.** The three-game test
-  stack (`~/projects/crowsnest-test`, scratch copy of the Windrose server
-  files) is built, but the `indifferentbroccoli/windrose-server-docker`
-  image was never pulled there, so Start timed out at the 120s
-  `docker compose up` limit. Pull the image first, then check
-  starting→online, logs, stats, and the Windrose+ player count/info panel
-  (needs the RCON password supplied by hand — deliberately not copied out of
-  the real server's `windrose_plus.json`).
-- [ ] **Migration from the Python lab setup**
-  (`/home/plex/docker/compose_includes/CrowsNest`). That stack uses
+- [ ] **Verify Windrose end-to-end in the new stack.** A three-game test
+  stack is built, but the `indifferentbroccoli/windrose-server-docker` image
+  was never pulled there, so Start timed out at the 120s `docker compose up`
+  limit. Pull the image first, then check starting→online, logs, stats, and
+  the Windrose+ player count/info panel (needs the RCON password from
+  `windrose_plus.json`).
+- [ ] **Migration from the Python version.** That stack uses
   `seccomp:unconfined` and `network_mode: host` for Windrose, a
-  docker-socket-proxy (`dockerproxy-privileged`) and `127.0.0.1:5000`; the
-  compose example now carries `seccomp:unconfined`, the rest is config.
+  docker-socket-proxy and `127.0.0.1:5000`. The compose example now carries
+  `seccomp:unconfined`; the rest is config.
 - [ ] **Real player joins** for Valheim (join/leave log markers) and
   Palworld, plus a real Start→Switch between two games from the browser UI.
-- [ ] **Multi-game behind the lab's scoped API guard.** Production
-  (`~/docker/compose_includes/crowsnest`) goes through labdash's `guard.py`
-  in scoped mode, which allows exactly one container name (now `palworld`)
+- [ ] **Multi-game behind a scoped Docker API guard.** A deployment can put
+  CrowsNest behind a Docker API filter that allows only one container name
   and denies network create, container delete and rename. Running all three
-  games needs guard.py to accept a list of scopes (name → images/binds/
-  netmodes/secopts). Windrose also needs `network_mode: host` +
+  games that way needs the guard to accept a list of scopes (name →
+  images/binds/netmodes/secopts). Windrose also needs `network_mode: host` +
   `seccomp:unconfined` in its scope, and Valheim a bind under its own dir.
 - [ ] **Drop the compose-from-source Dockerfile stage** once a docker/compose
   release ships `golang.org/x/net` >= v0.62.0.
 - [ ] Idle/night auto-stop and Discord notifications are still untested
   against real servers; firewall for `:5001`/game ports not checked.
+- [ ] **Player access without router port forwards**, documented in
+  [`docs/connecting.md`](docs/connecting.md): Palworld over a private overlay
+  network (e.g. Tailscale), Valheim via `-crossplay` join codes, Windrose via
+  its invite code. Follow-up idea: read the Valheim/Windrose codes out of the
+  server logs and show them on the game cards.
 
 ## Tracking, not new — already flagged in `docs/implementation-plan.md`
 

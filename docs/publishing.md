@@ -1,8 +1,7 @@
 # Publishing and security scanning
 
 The image is published to `ghcr.io/fiddler110/crowsnest` (public package) by
-`.github/workflows/publish.yml`. It uses the same release scheme as labctl and
-Assay.
+`.github/workflows/publish.yml`.
 
 ## Automatic releases
 
@@ -22,14 +21,14 @@ Tags on every release: `:X.Y.Z`, `:X.Y`, `:latest`, `:sha-<short>`, and `:dev`
 
 ## Running a released image
 
-`~/docker/compose_includes/crowsnest/compose.yaml` pulls
+Point your compose file at
 `ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG:-latest}`. To update:
 
 ```sh
-cd ~/docker && docker compose pull crowsnest && docker compose up -d crowsnest
+docker compose pull crowsnest && docker compose up -d crowsnest
 ```
 
-Pin `CROWSNEST_TAG=0.2.0` in that folder's `.env` to stay on one version. Set it
+Pin `CROWSNEST_TAG=0.2.0` in your `.env` to stay on one version. Set it
 back to `latest` to follow releases. Watchtower is fine for CrowsNest itself,
 but keep it off the game containers. Their labels already opt them out.
 

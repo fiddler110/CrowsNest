@@ -250,7 +250,7 @@ flagged below where that's still unverified against a real running server.
    yet (`internal/games/windrose`, `GET /api/games/{id}/startup-progress`).
 8. ~~`docker stats` resource panel (+ GPU via `nvidia-smi` if present).~~ —
    done: ported from `_get_stats_uncached()` in
-   `/home/plex/projects/Windrose/CrowsNest/app.py` (lines ~1107-1181),
+   the original Python `app.py` (lines ~1107-1181),
    generalized to per-game containers with host-wide GPU stats
    (`internal/dockerctl.GPUStats`, `GET /api/games/{id}/stats`). No TTL
    cache — unlike the original, nothing else in this Go rewrite caches
