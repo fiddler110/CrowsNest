@@ -6,6 +6,42 @@ grouped by priority, not phase; check them off as they land.
 
 ## Done
 
+- [x] **Roles, activity log, host health, backups (2026-11-07).** Roles:
+  `<NAME>_ROLE=admin|player` in the users file (no role = admin),
+  `crowsnest set-role`, players can't open settings or backups, role looked up
+  per request so demotion is immediate. Activity log: `internal/history`
+  JSONL (`server.history_file`, 180-day retention), logbook + playtime on the
+  dashboard, `/api/activity`. Host strip: memory/load/disk
+  (`server.host_disk_paths`, `/api/host`). Backups: per-game
+  `backup: {exec, list_dir, before_stop}` run via `docker exec`
+  (`internal/backup`), admin-only panel, optional backup after the pre-stop
+  save. **Untested against real containers:** the Palworld `backup` command and
+  `/palworld/backups` path in the example are from memory; the socket proxy
+  needs `EXEC=1`.
+  Still open from the review list: scheduled starts and Discord slash commands
+  (both deferred).
+
+- [x] **Exec guard and admin console (2026-11-07).** `crowsnest execguard`
+  allowlists `docker exec` to exactly the commands config implies, in front of
+  docker-socket-proxy. Palworld gets an admin-only Console tab: fixed REST
+  actions plus a raw RCON box behind an admin setting (`raw_console`, off by
+  default); every command is audited. **Untested against a real daemon/server:**
+  exec upgrade through the guard, Palworld RCON replies.
+
+- [x] **Review follow-up (2026-11-07).** (1) Stop and Switch are background
+  operations like Start (`RequestStop`/`RequestSwitch`, new `stopping` status,
+  the decision lock is no longer held across `docker stop`, switch target is
+  reserved so a third game can't take its slot). (2) Night shutdown spares a
+  game up for less than `night_shutdown.min_uptime_minutes` (30). (3) Status,
+  players, stats and info probes are shared per game for 2s across tabs
+  (`internal/memo`). (4) `/api/health` + dashboard banner when Docker is
+  unreachable; clients no longer get raw docker/compose errors. (5) Users file
+  hot-reloads (`set-password`/`revoke-sessions` apply in seconds), settings
+  saves are atomic (`Store.Modify`), games with no player counter log a
+  warning, shutdown waits for background operations. Features: Palworld
+  announces and saves before any stop (`games.StopPreparer`); Discord
+  join/leave messages (`internal/playerwatch`, `notifications.player_events`).
+
 - [x] **Production blockers for running compose from inside the container
   (2026-11-06).** Confirmed with `docker compose config` run the way
   CrowsNest runs it: (1) `${VALHEIM_SERVER_PASS:?}` aborted *every* game's

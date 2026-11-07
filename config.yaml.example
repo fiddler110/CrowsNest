@@ -23,6 +23,16 @@ server:
                                                # bigger host; CROWSNEST_MAX_ACTIVE_GAMES in
                                                # .env overrides this.
 
+  # host_disk_paths: [/app/data, /data]      # free space shown on the dashboard; mount the disk
+                                               # your game data lives on and list it here
+  # history_file: /app/data/events.jsonl      # activity log (who did what, joins/leaves, playtime)
+  # history_retention_days: 180               # older entries are pruned
+  # settings_file: /app/data/settings.json   # where changes made from the dashboard's Settings
+                                               # dialog are saved (mount the directory, writable
+                                               # by uid 1000). They override the values in this
+                                               # file; delete it to reset.
+  # auto_update: false                        # pull the latest image every time a game starts
+
 idle_shutdown:
   enabled: true
   idle_minutes: 15
@@ -33,9 +43,12 @@ night_shutdown:                # off by default — a preset curfew is a stronge
   start_hour: 23                # 0-23, local to server.tz; wraps midnight if > end_hour
   end_hour: 5
   check_interval_minutes: 30
+  min_uptime_minutes: 30        # a game started inside the window is left alone until it
+                                # has been up this long, so a late session can get going
 
 notifications:                 # Discord webhook, posted on both idle and night auto-stop
   discord_webhook_url_env: DISCORD_WEBHOOK_URL   # names an env var; unset/empty = disabled
+  # player_events: false          # join/leave messages are on whenever a webhook is set
 
 users_file: /app/users.env     # <NAME>_PASSWORD_HASH entries; managed by `crowsnest set-password`
 
@@ -98,3 +111,16 @@ games:
       rest_api_url: http://palworld:8212
       rest_api_user: admin
       rest_api_password_env: PALWORLD_ADMIN_PASSWORD
+      # Optional: lets an admin enable the raw RCON console in Settings.
+      # Needs RCON_ENABLED=true on the game; the password defaults to the
+      # REST API one (palworld-server-docker uses ADMIN_PASSWORD for both).
+      # rcon_addr: palworld:25575
+      # rcon_password_env: PALWORLD_ADMIN_PASSWORD
+    # Admin-only "Backups" panel. Runs inside the container with `docker exec`
+    # (the socket proxy needs EXEC=1, behind
+    # `crowsnest execguard`, which only allows the commands set here). palworld-server-docker ships a `backup`
+    # command and writes to /palworld/backups; check both against your image.
+    # backup:
+    #   exec: ["backup"]
+    #   list_dir: /palworld/backups
+    #   before_stop: true      # also back up every time CrowsNest stops it on purpose

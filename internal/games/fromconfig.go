@@ -27,11 +27,19 @@ func FromConfig(cfgs []config.GameConfig, docker *dockerctl.Client) []GameDef {
 			ConnectNote:    g.ConnectNote,
 			ConnectSecrets: connectSecrets(g),
 			NightShutdown:  g.NightShutdown == nil || *g.NightShutdown,
+			Backup:         backupSpec(g.Backup),
 			Status:         &DockerStatusChecker{Docker: docker},
 			Players:        UnknownPlayerCounter{},
 		})
 	}
 	return defs
+}
+
+func backupSpec(b *config.BackupConfig) *BackupSpec {
+	if b == nil {
+		return nil
+	}
+	return &BackupSpec{Exec: b.Exec, ListDir: b.ListDir, BeforeStop: b.BeforeStop}
 }
 
 // DockerTarget converts a GameDef's container/compose identity into a

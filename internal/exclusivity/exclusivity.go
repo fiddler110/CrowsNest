@@ -16,6 +16,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/history"
 )
 
 const (
@@ -30,6 +31,9 @@ const (
 	// to unwind before stopping the container.
 	cancelWait = 15 * time.Second
 )
+
+// prepareStopTimeout bounds a game's pre-stop warning and save.
+const prepareStopTimeout = 30 * time.Second
 
 // notifyTimeout bounds one notification so a slow webhook can't pile up
 // goroutines; notifications are best-effort and never affect the action.
@@ -82,10 +86,28 @@ func (e *CooldownError) Error() string {
 	return fmt.Sprintf("exclusivity: %s was stopped recently; try again in %ds", e.Game, int(e.Remaining.Round(time.Second).Seconds()))
 }
 
-// StartResult is the outcome of the most recent background start of a game.
+// BusyError means a start was refused because id is being stopped right now.
+// Handlers surface this as HTTP 409 with busy=true (distinct from a limit
+// conflict, which offers a switch).
+type BusyError struct{ Game string }
+
+func (e *BusyError) Error() string {
+	return fmt.Sprintf("exclusivity: %s is still stopping; try again once it has stopped", e.Game)
+}
+
+// StartResult is the outcome of the most recent background operation (start,
+// stop or switch) that finished for a game. Err is prefixed with the
+// operation when it wasn't a plain start.
 type StartResult struct {
 	Err string    // empty on success
-	At  time.Time // when the start finished
+	At  time.Time // when the operation finished
+}
+
+// pendingStop is a stop (or the stop half of a switch) in progress. err is
+// written before done is closed.
+type pendingStop struct {
+	done chan struct{}
+	err  error
 }
 
 // pendingStart is a start that has been accepted and is running in the
@@ -106,15 +128,17 @@ type pendingStart struct {
 // tab or a proxy timeout must not kill a half-finished image pull. A game
 // whose start is still in flight counts as active for the limit.
 type Manager struct {
-	mu       sync.Mutex // serializes start/stop/switch decisions
+	mu       sync.Mutex // serializes start/stop/switch decisions; never held across a docker stop
 	registry *games.Registry
 	docker   *dockerctl.Client
-	lastStop map[string]time.Time // guarded by mu
 
-	stateMu sync.Mutex // guards pending and results; never held while waiting
-	pending map[string]*pendingStart
-	results map[string]StartResult
-	wg      sync.WaitGroup
+	stateMu  sync.Mutex // guards the fields below; never held while waiting
+	lastStop map[string]time.Time
+	pending  map[string]*pendingStart
+	stopping map[string]*pendingStop
+	incoming map[string]bool // switch targets reserved while their predecessor stops
+	results  map[string]StartResult
+	wg       sync.WaitGroup
 
 	// BaseContext is the parent of every background start; cancel it on
 	// shutdown. Nil means context.Background().
@@ -134,10 +158,40 @@ type Manager struct {
 	// (the strict one-at-a-time guarantee). Hosts with headroom can raise it.
 	MaxActive int
 
+	// MaxActiveFunc, when set, is consulted instead of MaxActive each time
+	// the limit is checked, so it can change at runtime.
+	MaxActiveFunc func() int
+
+	// AutoUpdate, when set and true, makes every start pull the game's
+	// latest image first (`compose pull`) so a restart picks up new server
+	// versions. A failed pull is logged and the start proceeds with the
+	// image already on disk.
+	AutoUpdate func() bool
+
 	// Notifier, when set, is told about user-initiated starts, stops and
 	// switches and about failed background starts. Optional — nil disables
 	// notifications. Delivery is asynchronous and best-effort.
 	Notifier Notifier
+
+	// Backups, when set, takes the backup of games configured with
+	// backup.before_stop, between the pre-stop save and the stop itself.
+	Backups Backuper
+
+	// History, when set, records user-initiated starts, stops and switches
+	// and failed operations in the activity log. Automatic stops record
+	// themselves (idle/night), so only calls with an actor are logged here.
+	History history.Recorder
+}
+
+func (m *Manager) record(kind, game, actor, detail string) {
+	if m.History != nil {
+		m.History.Record(kind, game, actor, detail)
+	}
+}
+
+// Backuper runs a game's backup; satisfied by *backup.Manager.
+type Backuper interface {
+	RunBackup(ctx context.Context, d games.GameDef, actor string) error
 }
 
 // notify sends message in the background with a short timeout, so a slow or
@@ -174,6 +228,11 @@ func shortErr(msg string) string {
 }
 
 func (m *Manager) maxActive() int {
+	if m.MaxActiveFunc != nil {
+		if n := m.MaxActiveFunc(); n > 0 {
+			return n
+		}
+	}
 	if m.MaxActive > 0 {
 		return m.MaxActive
 	}
@@ -186,6 +245,8 @@ func NewManager(registry *games.Registry, docker *dockerctl.Client) *Manager {
 		docker:   docker,
 		lastStop: map[string]time.Time{},
 		pending:  map[string]*pendingStart{},
+		stopping: map[string]*pendingStop{},
+		incoming: map[string]bool{},
 		results:  map[string]StartResult{},
 	}
 }
@@ -209,6 +270,14 @@ func (m *Manager) Starting(id string) bool {
 	m.stateMu.Lock()
 	defer m.stateMu.Unlock()
 	_, ok := m.pending[id]
+	return ok
+}
+
+// Stopping reports whether a stop of id is in progress.
+func (m *Manager) Stopping(id string) bool {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	_, ok := m.stopping[id]
 	return ok
 }
 
@@ -256,9 +325,15 @@ func (m *Manager) ActiveGame(ctx context.Context) (id string, ok bool, err error
 // ActiveGames returns every registered game that is online or starting, in
 // registry order, with the same fail-closed error behavior as ActiveGame.
 func (m *Manager) ActiveGames(ctx context.Context) ([]string, error) {
+	return m.activeGames(ctx, "")
+}
+
+// activeGames is ActiveGames, except a switch reservation for skipIncoming is
+// not counted (the switch is asking to start exactly that game).
+func (m *Manager) activeGames(ctx context.Context, skipIncoming string) ([]string, error) {
 	var active []string
 	for _, d := range m.registry.All() {
-		if m.Starting(d.ID) {
+		if m.Starting(d.ID) || m.isIncoming(d.ID, skipIncoming) {
 			// Accepted but still pulling/creating: the container may not
 			// even exist yet, so a status check would say offline.
 			active = append(active, d.ID)
@@ -278,6 +353,15 @@ func (m *Manager) ActiveGames(ctx context.Context) ([]string, error) {
 	return active, nil
 }
 
+func (m *Manager) isIncoming(id, skip string) bool {
+	if id == skip {
+		return false
+	}
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	return m.incoming[id]
+}
+
 // RequestStart accepts a start of id and runs it in the background,
 // refusing with a *ConflictError if the active-game limit is already
 // reached by other games, or a *CooldownError if id was stopped too
@@ -287,17 +371,20 @@ func (m *Manager) ActiveGames(ctx context.Context) ([]string, error) {
 func (m *Manager) RequestStart(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	return m.startLocked(ctx, id, true)
+	return m.startLocked(ctx, id, true, "")
 }
 
 // startLocked is RequestStart's body; announce is false when the caller
 // (a switch) reports the whole operation itself.
-func (m *Manager) startLocked(ctx context.Context, id string, announce bool) error {
+func (m *Manager) startLocked(ctx context.Context, id string, announce bool, switchTarget string) error {
 	target, ok := m.registry.Get(id)
 	if !ok {
 		return fmt.Errorf("exclusivity: unknown game %q", id)
 	}
-	active, err := m.ActiveGames(ctx)
+	if m.Stopping(id) {
+		return &BusyError{Game: id}
+	}
+	active, err := m.activeGames(ctx, switchTarget)
 	if err != nil {
 		// Can't rule out that other games are active right now — refuse to
 		// start rather than risk exceeding the limit.
@@ -332,7 +419,9 @@ func (m *Manager) startLocked(ctx context.Context, id string, announce bool) err
 // State.FinishedAt — so a crash, an external `docker stop`, or a stop from
 // before a CrowsNest restart all count too.
 func (m *Manager) cooldownRemaining(ctx context.Context, d games.GameDef) time.Duration {
+	m.stateMu.Lock()
 	last := m.lastStop[d.ID]
+	m.stateMu.Unlock()
 	if fin, err := m.docker.FinishedAt(ctx, d.ContainerName); err == nil && fin.After(last) {
 		last = fin
 	}
@@ -361,11 +450,16 @@ func (m *Manager) launchStart(target games.GameDef, actor string, announce bool)
 		defer close(p.done)
 		defer cancel()
 
-		err := m.docker.Start(ctx, target.DockerTarget())
+		dt := target.DockerTarget()
+		dt.Pull = m.AutoUpdate != nil && m.AutoUpdate()
+		err := m.docker.Start(ctx, dt)
 		res := StartResult{At: time.Now()}
 		switch {
 		case err == nil:
 			log.Printf("exclusivity: %s started", target.ID)
+			if actor != "" {
+				m.record(history.KindStart, target.ID, actor, "")
+			}
 			if announce && actor != "" {
 				m.notify(fmt.Sprintf("**%s** is starting (requested by %s).", target.DisplayName, actor))
 			}
@@ -374,6 +468,7 @@ func (m *Manager) launchStart(target games.GameDef, actor string, announce bool)
 		default:
 			log.Printf("exclusivity: start %s failed: %v", target.ID, err)
 			res.Err = err.Error()
+			m.record(history.KindStartFailed, target.ID, actor, shortErr(res.Err))
 			msg := fmt.Sprintf("**%s** failed to start", target.DisplayName)
 			if actor != "" {
 				msg += " (requested by " + actor + ")"
@@ -392,27 +487,108 @@ func (m *Manager) launchStart(target games.GameDef, actor string, announce bool)
 	}()
 }
 
-// Stop stops id. No conflict is possible — stopping is always safe. When
-// ctx carries an actor (see WithActor) a successful stop is announced; a
-// plain ctx (idle/night auto-stop) is not, since those notify themselves.
+// Stop stops id and waits for it to finish. No conflict is possible —
+// stopping is always safe. When ctx carries an actor (see WithActor) a
+// successful stop is announced; a plain ctx (idle/night auto-stop) is not,
+// since those notify themselves. The decision lock is held only to register
+// the stop, never across `docker stop`, so other games stay controllable
+// while a slow save runs. Use RequestStop for the non-blocking form.
 func (m *Manager) Stop(ctx context.Context, id string) error {
+	d, ok := m.registry.Get(id)
+	if !ok {
+		return fmt.Errorf("exclusivity: unknown game %q", id)
+	}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if err := m.stopLocked(ctx, id); err != nil {
+	p, owner := m.beginStop(id)
+	m.mu.Unlock()
+	if err := m.finishOrJoinStop(ctx, d, p, owner); err != nil {
 		return err
 	}
 	if actor := actorFrom(ctx); actor != "" {
+		m.record(history.KindStop, id, actor, "")
 		m.notify(fmt.Sprintf("**%s** was stopped by %s.", m.displayName(id), actor))
 	}
 	return nil
 }
 
-func (m *Manager) stopLocked(ctx context.Context, id string) error {
+// RequestStop accepts a stop of id and runs it in the background under
+// BaseContext (a closed tab or a proxy timeout must not interrupt a save in
+// progress). A nil return means accepted; see Stopping and LastStart for the
+// outcome. A failure is recorded and notified.
+func (m *Manager) RequestStop(ctx context.Context, id string) error {
 	d, ok := m.registry.Get(id)
 	if !ok {
 		return fmt.Errorf("exclusivity: unknown game %q", id)
 	}
-	cancelled := m.cancelPending(id)
+	actor := actorFrom(ctx)
+	m.mu.Lock()
+	p, owner := m.beginStop(id)
+	m.mu.Unlock()
+	if !owner {
+		return nil // already stopping
+	}
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		err := m.finishOrJoinStop(m.baseContext(), d, p, true)
+		if err != nil {
+			log.Printf("exclusivity: stop %s failed: %v", id, err)
+			m.recordFailure(id, "stop failed: "+err.Error())
+			m.record(history.KindStopFailed, id, actor, shortErr(err.Error()))
+			m.notify(fmt.Sprintf("**%s** failed to stop: %s", d.DisplayName, shortErr(err.Error())))
+			return
+		}
+		if actor != "" {
+			m.record(history.KindStop, id, actor, "")
+			m.notify(fmt.Sprintf("**%s** was stopped by %s.", d.DisplayName, actor))
+		}
+	}()
+	return nil
+}
+
+func (m *Manager) recordFailure(id, msg string) {
+	m.stateMu.Lock()
+	m.results[id] = StartResult{Err: msg, At: time.Now()}
+	m.stateMu.Unlock()
+}
+
+// beginStop registers a stop of id. owner is true when the caller must run
+// it (finishOrJoinStop); false means one is already running and p is it.
+// Caller holds m.mu, which orders this against startLocked so a start either
+// precedes the stop (and is cancelled by it) or is refused while it runs.
+func (m *Manager) beginStop(id string) (p *pendingStop, owner bool) {
+	m.stateMu.Lock()
+	defer m.stateMu.Unlock()
+	if p, ok := m.stopping[id]; ok {
+		return p, false
+	}
+	p = &pendingStop{done: make(chan struct{})}
+	m.stopping[id] = p
+	return p, true
+}
+
+// finishOrJoinStop runs the stop when owner, else waits for the running one.
+func (m *Manager) finishOrJoinStop(ctx context.Context, d games.GameDef, p *pendingStop, owner bool) error {
+	if !owner {
+		select {
+		case <-p.done:
+			return p.err
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	p.err = m.doStop(ctx, d)
+	m.stateMu.Lock()
+	delete(m.stopping, d.ID)
+	m.stateMu.Unlock()
+	close(p.done)
+	return p.err
+}
+
+// doStop cancels any in-flight start of d and stops its container.
+func (m *Manager) doStop(ctx context.Context, d games.GameDef) error {
+	cancelled := m.cancelPending(d.ID)
+	m.prepareStop(ctx, d)
 	if err := m.docker.Stop(ctx, d.ContainerName); err != nil {
 		// Stopping a start that was still pulling the image: compose never
 		// created the container, so there is nothing to stop — that's a
@@ -424,8 +600,37 @@ func (m *Manager) stopLocked(ctx context.Context, id string) error {
 			return err
 		}
 	}
-	m.lastStop[id] = time.Now()
+	m.stateMu.Lock()
+	m.lastStop[d.ID] = time.Now()
+	m.stateMu.Unlock()
 	return nil
+}
+
+// prepareStop gives the game its chance to warn players and save before the
+// container is stopped. Best-effort and time-boxed: a game that isn't up
+// (or whose API is down) must never hold up or fail a stop.
+func (m *Manager) prepareStop(ctx context.Context, d games.GameDef) {
+	wantBackup := d.Backup != nil && d.Backup.BeforeStop && m.Backups != nil
+	if d.PreStop == nil && !wantBackup {
+		return
+	}
+	if up, err := m.docker.Running(ctx, d.ContainerName); err != nil || !up {
+		return
+	}
+	if d.PreStop != nil {
+		pctx, cancel := context.WithTimeout(ctx, prepareStopTimeout)
+		defer cancel()
+		if err := d.PreStop.PrepareStop(pctx); err != nil {
+			log.Printf("exclusivity: prepare stop of %s: %v (stopping anyway)", d.ID, err)
+		}
+	}
+	// After the save, so the backup holds the world as it was just written;
+	// before the stop, so an update-on-start pull always has a fresh one behind it.
+	if wantBackup {
+		if err := m.Backups.RunBackup(ctx, d, ""); err != nil {
+			log.Printf("exclusivity: backup of %s before stop: %v (stopping anyway)", d.ID, err)
+		}
+	}
 }
 
 // cancelPending aborts an in-flight background start of id, if any, and
@@ -452,30 +657,99 @@ func (m *Manager) cancelPending(id string) bool {
 	return true
 }
 
-// ConfirmSwitch stops `from`, waits (bounded) for it to actually report
-// offline, then starts `to`. Serialized by the same lock as
-// RequestStart/Stop so two concurrent requests (two browser tabs) can't
-// race into both containers running at once.
-func (m *Manager) ConfirmSwitch(ctx context.Context, from, to string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
+// switchOp is a reserved switch: `from` is stopping and `to` is held as
+// active so nothing else can take its slot in between.
+type switchOp struct {
+	from, to games.GameDef
+	p        *pendingStop
+	owner    bool
+}
 
+// beginSwitch validates a switch and reserves it. Caller must pass the
+// result to runSwitch exactly once.
+func (m *Manager) beginSwitch(from, to string) (*switchOp, error) {
 	fromDef, ok := m.registry.Get(from)
 	if !ok {
-		return fmt.Errorf("exclusivity: unknown game %q", from)
+		return nil, fmt.Errorf("exclusivity: unknown game %q", from)
 	}
-	if err := m.stopLocked(ctx, from); err != nil {
-		return fmt.Errorf("exclusivity: stop %s: %w", from, err)
+	toDef, ok := m.registry.Get(to)
+	if !ok {
+		return nil, fmt.Errorf("exclusivity: unknown game %q", to)
 	}
-	if err := m.waitOffline(ctx, fromDef); err != nil {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.Stopping(to) {
+		return nil, &BusyError{Game: to}
+	}
+	m.stateMu.Lock()
+	m.incoming[to] = true
+	m.stateMu.Unlock()
+	op := &switchOp{from: fromDef, to: toDef}
+	op.p, op.owner = m.beginStop(from)
+	return op, nil
+}
+
+// runSwitch stops the source, waits (bounded) for it to report offline, then
+// starts the target.
+func (m *Manager) runSwitch(ctx context.Context, op *switchOp) error {
+	release := func() {
+		m.stateMu.Lock()
+		delete(m.incoming, op.to.ID)
+		m.stateMu.Unlock()
+	}
+	if err := m.finishOrJoinStop(ctx, op.from, op.p, op.owner); err != nil {
+		release()
+		return fmt.Errorf("exclusivity: stop %s: %w", op.from.ID, err)
+	}
+	if err := m.waitOffline(ctx, op.from); err != nil {
+		release()
 		return err
 	}
-	if err := m.startLocked(ctx, to, false); err != nil {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	release() // under mu: nobody can slip in between release and the start
+	if err := m.startLocked(ctx, op.to.ID, false, ""); err != nil {
 		return err
 	}
 	if actor := actorFrom(ctx); actor != "" {
-		m.notify(fmt.Sprintf("%s switched from **%s** to **%s**.", actor, fromDef.DisplayName, m.displayName(to)))
+		m.record(history.KindStop, op.from.ID, actor, "switching to "+op.to.DisplayName)
+		m.notify(fmt.Sprintf("%s switched from **%s** to **%s**.", actor, op.from.DisplayName, op.to.DisplayName))
 	}
+	return nil
+}
+
+// ConfirmSwitch stops `from`, waits (bounded) for it to actually report
+// offline, then starts `to`, blocking until the start has been accepted. The
+// target is reserved for the duration, so two concurrent requests (two
+// browser tabs) can't race into exceeding the limit. Use RequestSwitch for
+// the non-blocking form.
+func (m *Manager) ConfirmSwitch(ctx context.Context, from, to string) error {
+	op, err := m.beginSwitch(from, to)
+	if err != nil {
+		return err
+	}
+	return m.runSwitch(ctx, op)
+}
+
+// RequestSwitch reserves a switch and runs it in the background under
+// BaseContext. Validation errors return synchronously; a failure later is
+// recorded against the target (see LastStart) and notified.
+func (m *Manager) RequestSwitch(ctx context.Context, from, to string) error {
+	op, err := m.beginSwitch(from, to)
+	if err != nil {
+		return err
+	}
+	bg := WithActor(m.baseContext(), actorFrom(ctx))
+	m.wg.Add(1)
+	go func() {
+		defer m.wg.Done()
+		if err := m.runSwitch(bg, op); err != nil {
+			log.Printf("exclusivity: switch %s->%s failed: %v", op.from.ID, op.to.ID, err)
+			m.recordFailure(op.to.ID, "switch from "+op.from.DisplayName+" failed: "+err.Error())
+			m.record(history.KindStartFailed, op.to.ID, actorFrom(bg), "switch from "+op.from.DisplayName+": "+shortErr(err.Error()))
+			m.notify(fmt.Sprintf("Switch from **%s** to **%s** failed: %s", op.from.DisplayName, op.to.DisplayName, shortErr(err.Error())))
+		}
+	}()
 	return nil
 }
 

@@ -15,6 +15,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log"
 	"os/exec"
 	"strings"
 	"syscall"
@@ -74,6 +75,9 @@ type Target struct {
 	ComposeFile    string
 	ComposeProfile string
 	ComposeService string
+	// Pull makes Start run `compose pull <service>` first, fetching a newer
+	// image if one has been published. Ignored without a compose file.
+	Pull bool
 }
 
 // Stats is a snapshot of `docker stats` for one container.
@@ -165,6 +169,14 @@ func (c *Client) exists(ctx context.Context, name string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// Ping reports whether the Docker daemon (or the socket proxy in front of it)
+// answers. Unlike the status checks it says nothing about any one container;
+// it is how the dashboard tells "docker is down" from "every game is offline".
+func (c *Client) Ping(ctx context.Context) error {
+	_, err := c.run(ctx, defaultShortTimeout, "version", "--format", "{{.Server.Version}}")
+	return err
+}
+
 // Exists reports whether a container by this name exists, running or not.
 func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 	return c.exists(ctx, name)
@@ -200,6 +212,17 @@ func (c *Client) Start(ctx context.Context, t Target) error {
 	args := []string{"compose", "-f", t.ComposeFile}
 	if t.ComposeProfile != "" {
 		args = append(args, "--profile", t.ComposeProfile)
+	}
+	if t.Pull {
+		pull := append(append([]string{}, args...), "pull", t.ComposeService)
+		if _, err := c.run(ctx, defaultStartTimeout, pull...); err != nil {
+			// Offline registry or rate limit shouldn't stop a server that
+			// can run fine on its existing image.
+			if ctx.Err() != nil {
+				return err
+			}
+			log.Printf("dockerctl: pull %s failed, starting with the existing image: %v", t.ComposeService, err)
+		}
 	}
 	args = append(args, "up", "-d", t.ComposeService)
 	_, err := c.run(ctx, defaultStartTimeout, args...)
@@ -250,6 +273,13 @@ func (c *Client) FinishedAt(ctx context.Context, name string) (time.Time, error)
 func (c *Client) Exec(ctx context.Context, name string, args ...string) (string, error) {
 	full := append([]string{"exec", name}, args...)
 	return c.run(ctx, defaultShortTimeout, full...)
+}
+
+// ExecTimeout is Exec with its own time limit, for long jobs such as a backup.
+// The limit applies unless the client's Timeout override is set.
+func (c *Client) ExecTimeout(ctx context.Context, name string, timeout time.Duration, args ...string) (string, error) {
+	full := append([]string{"exec", name}, args...)
+	return c.run(ctx, timeout, full...)
 }
 
 // Logs streams `docker logs -f` for the named container. since and tail are

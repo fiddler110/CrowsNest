@@ -51,6 +51,10 @@ type SessionManager struct {
 	// RevokeSessions. Left nil (the zero value) by default; nil-safe.
 	Users Users
 
+	// Store, when set, takes the place of Users and follows changes to the
+	// users file while running.
+	Store *UserStore
+
 	// Allowed, when set, must return true for a session's username or Decode
 	// rejects it as revoked. CrowsNest sets it to "has a password (and password
 	// sign-in is on) or is on the Google allowlist", so taking someone off the
@@ -115,7 +119,7 @@ func (m *SessionManager) Decode(token string) (Session, error) {
 	if time.Now().UTC().After(s.ExpiresAt) {
 		return Session{}, ErrSessionExpired
 	}
-	if rec, ok := m.Users[s.Username]; ok && !rec.ValidAfter.IsZero() && s.IssuedAt.Before(rec.ValidAfter) {
+	if rec, ok := m.lookupUser(s.Username); ok && !rec.ValidAfter.IsZero() && s.IssuedAt.Before(rec.ValidAfter) {
 		return Session{}, ErrSessionRevoked
 	}
 	if m.Allowed != nil && !m.Allowed(s.Username) {
@@ -128,4 +132,12 @@ func (m *SessionManager) sign(encodedPayload string) []byte {
 	mac := hmac.New(sha256.New, m.secret)
 	mac.Write([]byte(encodedPayload))
 	return mac.Sum(nil)
+}
+
+func (m *SessionManager) lookupUser(name string) (UserRecord, bool) {
+	if m.Store != nil {
+		return m.Store.Lookup(name)
+	}
+	rec, ok := m.Users[name]
+	return rec, ok
 }

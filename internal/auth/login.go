@@ -30,7 +30,10 @@ func mustHash(password string) string {
 // Service bundles the pieces needed to serve login/logout: the user store,
 // session signer, and a login-attempt rate limiter.
 type Service struct {
-	Users          Users
+	Users Users
+	// Store, when set, takes the place of Users and follows changes to the
+	// users file while running.
+	Store          *UserStore
 	Sessions       *SessionManager
 	LoginLimiter   *Limiter
 	TrustedProxies []*net.IPNet
@@ -79,7 +82,13 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	username := strings.ToLower(strings.TrimSpace(req.Username))
 
-	record, known := s.Users[username]
+	var record UserRecord
+	var known bool
+	if s.Store != nil {
+		record, known = s.Store.Lookup(username)
+	} else {
+		record, known = s.Users[username]
+	}
 	// A user with no hash (e.g. a Google-only user with just a revocation
 	// marker) has no password: treat them exactly like an unknown name.
 	known = known && record.Hash != ""

@@ -27,6 +27,10 @@ const (
 )
 
 // StatusChecker implements games.StatusChecker for Windrose.
+// ReadyArgs is the exact command the status check runs in the container,
+// exported so the exec guard can allowlist it.
+func ReadyArgs() []string { return []string{"grep", "-q", ReadyMarker, LogPath} }
+
 type StatusChecker struct {
 	Docker *dockerctl.Client
 }
@@ -40,7 +44,7 @@ func (c *StatusChecker) Check(ctx context.Context, containerName string) (games.
 		return games.StatusOffline, nil
 	}
 
-	_, err = c.Docker.Exec(ctx, containerName, "grep", "-q", ReadyMarker, LogPath)
+	_, err = c.Docker.Exec(ctx, containerName, ReadyArgs()...)
 	if err == nil {
 		return games.StatusOnline, nil
 	}

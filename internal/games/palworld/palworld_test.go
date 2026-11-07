@@ -3,10 +3,15 @@ package palworld
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
@@ -234,5 +239,89 @@ func TestStartup_MilestonesAscending(t *testing.T) {
 	// Download progress must land between the pre-download and post-download milestones.
 	if pct, _, _ := parseDownload("Update state (0x61) downloading, progress: 100.00"); pct >= 86 {
 		t.Errorf("100%% download maps to %d, must stay below the post-download milestones", pct)
+	}
+}
+
+func TestPrepareStop_AnnouncesToPlayersThenSaves(t *testing.T) {
+	var mu sync.Mutex
+	var calls []string
+	players := 2
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		if r.URL.Path == "/v1/api/players" {
+			fmt.Fprintf(w, `{"players":[%s]}`, strings.TrimSuffix(strings.Repeat(`{"name":"p"},`, players), ","))
+			return
+		}
+		calls = append(calls, r.Method+" "+r.URL.Path)
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, User: "admin", Password: "x", NoticePause: -1}
+
+	if err := c.PrepareStop(context.Background()); err != nil {
+		t.Fatalf("PrepareStop = %v", err)
+	}
+	if got := strings.Join(calls, ","); got != "POST /v1/api/announce,POST /v1/api/save" {
+		t.Fatalf("calls with players aboard = %s, want announce then save", got)
+	}
+
+	calls, players = nil, 0
+	if err := c.PrepareStop(context.Background()); err != nil {
+		t.Fatalf("PrepareStop (empty) = %v", err)
+	}
+	if got := strings.Join(calls, ","); got != "POST /v1/api/save" {
+		t.Fatalf("calls with nobody aboard = %s, want save only", got)
+	}
+}
+
+func TestConsole_ActionsHitTheRESTAPI(t *testing.T) {
+	var got []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got = append(got, r.Method+" "+r.URL.Path+" "+string(body))
+		if r.URL.Path == "/v1/api/players" {
+			io.WriteString(w, `{"players":[{"name":"Ann","userId":"steam_1","level":5,"ping":23.4}]}`)
+		}
+	}))
+	defer srv.Close()
+	c := &Client{BaseURL: srv.URL, User: "admin", Password: "pw"}
+
+	out, err := c.Run(context.Background(), "players", nil)
+	if err != nil || !strings.Contains(out, "Ann  [steam_1]  level 5") {
+		t.Fatalf("players = %q, %v", out, err)
+	}
+	if _, err := c.Run(context.Background(), "kick", map[string]string{"userid": "steam_1", "message": "bye"}); err != nil {
+		t.Fatal(err)
+	}
+	if want := `POST /v1/api/kick {"message":"bye","userid":"steam_1"}`; got[len(got)-1] != want {
+		t.Fatalf("kick request = %q, want %q", got[len(got)-1], want)
+	}
+	for _, bad := range []struct {
+		action string
+		args   map[string]string
+	}{
+		{"kick", nil},
+		{"announce", map[string]string{"message": ""}},
+		{"announce", map[string]string{"message": "line\nbreak"}},
+		{"announce", map[string]string{"message": strings.Repeat("x", 201)}},
+		{"shutdown", nil}, // lifecycle belongs to CrowsNest
+		{"stop", nil},
+	} {
+		n := len(got)
+		if _, err := c.Run(context.Background(), bad.action, bad.args); err == nil {
+			t.Errorf("%s %v: want error", bad.action, bad.args)
+		}
+		if len(got) != n {
+			t.Errorf("%s %v: rejected input still reached the server", bad.action, bad.args)
+		}
+	}
+}
+
+func TestConsole_RawNeedsRCONAddr(t *testing.T) {
+	if _, err := (&Client{}).Raw(context.Background(), "Info"); err == nil {
+		t.Fatal("want error without rcon_addr")
+	}
+	if _, err := (&Client{RCONAddr: "127.0.0.1:1"}).Raw(context.Background(), "a\nb"); !errors.Is(err, games.ErrBadInput) {
+		t.Fatalf("multi-line command: %v", err)
 	}
 }

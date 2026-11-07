@@ -46,13 +46,15 @@
 #      calls (ps/inspect/stats) work unchanged, and the proxy correctly
 #      403s any call outside the allowlisted set below.
 #
-#      Note the EXEC=1 permission below: Windrose's status check greps a
-#      log file inside its own container via `docker exec`, so the proxy
-#      must allow exec to preserve that "starting vs. online" detection.
-#      That's real exec access to the Windrose container (not root on the
-#      host, but real code-execution-in-container reach) — drop EXEC=1 if
-#      you'd rather lose Windrose's fine-grained status in exchange for not
-#      exposing exec at all; docker-ps-only status still works either way.
+#      Exec access (Windrose's status check and per-game backups use
+#      `docker exec`): the proxy can only switch exec on or off, not say
+#      which commands may run, so EXEC=1 alone is code execution in every
+#      container it can see. Put the `execguard` service below in front of
+#      it instead: crowsnest talks only to execguard, which allows exactly
+#      the commands config.yaml implies (each game's backup `exec`, its
+#      `list_dir` listing, Windrose's readiness grep) and 403s any other
+#      exec. The two-network layout keeps crowsnest from reaching the proxy
+#      directly. Drop EXEC=1 and execguard if you use neither feature.
 
 name: crowsnest
 
@@ -100,6 +102,9 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./users.env:/app/users.env
       - ./session_secret:/app/.session_secret
+      # Settings saved from the dashboard. A directory, not a file, and writable by uid 1000
+      # (`mkdir -p ${USERDIR}/crowsnest/config && chown 1000 ${USERDIR}/crowsnest/config`).
+      - ${USERDIR}/crowsnest/config:/app/data
       - ./compose.yaml:/data/compose.yaml:ro
       - ./.env:/data/.env:ro   # compose in the container interpolates from this
       - /var/run/docker.sock:/var/run/docker.sock
@@ -134,11 +139,32 @@ services:
   #     - START=1
   #     - STOP=1
   #     - CREATE=1
-  #     # Needed only for Windrose's in-container log-marker status check —
-  #     # see the caveat above. Every other feature works with this at 0.
+  #     # Needed only for Windrose's status check and backups. Reachable only
+  #     # through execguard below, which restricts which commands run.
   #     - EXEC=1
   #     # Leave everything else at the proxy's secure-by-default 0: no
   #     # BUILD, DELETE, SECRETS, SERVICES, SWARM, SYSTEM, etc.
+
+  # Exec allowlist in front of dockerproxy (see the note at the top). Same image as
+  # crowsnest; reads the same config.yaml to learn which commands are allowed, and
+  # must be restarted when backup settings change. Give it a `networks:` block with
+  # `crowsnest_front` (shared with crowsnest) and `crowsnest_back` (shared with
+  # dockerproxy), put crowsnest on `crowsnest_front` only, dockerproxy on
+  # `crowsnest_back` only, and set `server.docker_host: tcp://execguard:2375`.
+  # execguard:
+  #   image: ghcr.io/fiddler110/crowsnest:latest
+  #   container_name: crowsnest-execguard
+  #   restart: unless-stopped
+  #   command: ["execguard", "--listen", ":2375", "--upstream", "tcp://dockerproxy:2375"]
+  #   read_only: true
+  #   cap_drop: [ALL]
+  #   security_opt: ["no-new-privileges:true"]
+  #   volumes:
+  #     - ./config.yaml:/app/config.yaml:ro
+  #   networks: [crowsnest_front, crowsnest_back]
+  # networks (top level):
+  #   crowsnest_front: {}
+  #   crowsnest_back: {internal: true}
 
   # Windrose: host networking and an invite code (the game's own P2P relay), so players need no port forward.
   # Everything lives in one directory, ${USERDIR}/Windrose, which is the server's install folder: the world
@@ -215,6 +241,8 @@ services:
       - MULTITHREADING=true
       - REST_API_ENABLED=true
       - REST_API_PORT=8212
+      - RCON_ENABLED=true   # only for crowsnest's optional raw console (rcon_addr); not published
+      - RCON_PORT=25575
       - ADMIN_PASSWORD=${PALWORLD_ADMIN_PASSWORD:-}   # required: REST API password, also used to save on stop
       - SERVER_PASSWORD=${PALWORLD_SERVER_PASSWORD:-}
       - SERVER_NAME=${PALWORLD_SERVER_NAME:-CrowsNest Palworld}

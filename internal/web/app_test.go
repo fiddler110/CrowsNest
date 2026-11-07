@@ -4,18 +4,24 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/auth"
+	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/exclusivity"
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/settings"
 )
 
 // testHarness bundles an App with a pre-authenticated session cookie and
@@ -129,6 +135,74 @@ func (h *testHarness) authedReq(method, path string, body []byte) *http.Request 
 	r := h.req(method, path, body)
 	r.Header.Set("X-CSRF-Token", h.CSRFToken)
 	return r
+}
+
+type fakeIdleTimer struct{ left time.Duration }
+
+func (f fakeIdleTimer) IdleRemaining(string) (time.Duration, bool) { return f.left, true }
+
+func TestListGames_IdleCountdownOnlyWhenOnline(t *testing.T) {
+	for _, tc := range []struct {
+		running string
+		want    bool
+	}{{"windrose", true}, {"", false}} {
+		t.Setenv("RUNNING_CONTAINER", tc.running)
+		h := newHarness(t, psOnlyRunning)
+		h.App.IdleTimer = fakeIdleTimer{left: 90 * time.Second}
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games", nil))
+		body := rec.Body.String()
+		if online := strings.Contains(body, `"status":"online"`); online != tc.want {
+			t.Fatalf("running=%q: online=%v, want %v: %s", tc.running, online, tc.want, body)
+		}
+		if has := strings.Contains(body, `"idle_seconds_left":90`); has != tc.want {
+			t.Fatalf("running=%q: countdown present=%v, want %v: %s", tc.running, has, tc.want, body)
+		}
+	}
+}
+
+func TestSettingsAPI(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	store, err := settings.New(settings.Values{IdleEnabled: true, IdleMinutes: 15, NightStartHour: 23, NightEndHour: 5, MaxActiveGames: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.Settings = store
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/settings", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"idle_minutes":15`) {
+		t.Fatalf("GET = %d %s", rec.Code, rec.Body)
+	}
+
+	// Partial update changes only what it names.
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPut, "/api/settings", []byte(`{"idle_minutes":20,"auto_update":true}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT = %d %s", rec.Code, rec.Body)
+	}
+	if v := store.Get(); v.IdleMinutes != 20 || !v.AutoUpdate || !v.IdleEnabled {
+		t.Fatalf("store = %+v", v)
+	}
+
+	// Invalid and unknown fields are rejected without changing anything.
+	for _, body := range []string{`{"idle_minutes":0}`, `{"bogus":1}`} {
+		rec = httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(http.MethodPut, "/api/settings", []byte(body)))
+		if rec.Code != http.StatusBadRequest {
+			t.Fatalf("PUT %s = %d, want 400", body, rec.Code)
+		}
+	}
+	if store.Get().IdleMinutes != 20 {
+		t.Fatal("rejected update changed the store")
+	}
+
+	// CSRF is required to change settings.
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodPut, "/api/settings", []byte(`{"idle_minutes":30}`)))
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("PUT without CSRF = %d, want 403", rec.Code)
+	}
 }
 
 const psOnlyRunning = `#!/bin/sh
@@ -758,5 +832,282 @@ func TestLoginPage_PasswordOnlyByDefault(t *testing.T) {
 	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, auth.GoogleStartPath, nil))
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("GET %s without Google configured = %d, want 404", auth.GoogleStartPath, rec.Code)
+	}
+}
+
+type countingStatus struct{ calls atomic.Int32 }
+
+func (c *countingStatus) Check(context.Context, string) (games.Status, error) {
+	c.calls.Add(1)
+	return games.StatusOffline, nil
+}
+
+// Many tabs polling at once must cost one status probe per game, not one
+// per request.
+func TestListGames_SharesProbesAcrossRequests(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	cs := &countingStatus{}
+	h := newHarnessFromDefs(t, docker, []games.GameDef{
+		{ID: "a", DisplayName: "a", ContainerName: "a", Status: cs},
+	})
+	var wg sync.WaitGroup
+	for i := 0; i < 25; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			rec := httptest.NewRecorder()
+			h.mux().ServeHTTP(rec, h.req("GET", "/api/games", nil))
+			if rec.Code != http.StatusOK {
+				t.Errorf("GET /api/games = %d", rec.Code)
+			}
+		}()
+	}
+	wg.Wait()
+	if n := cs.calls.Load(); n != 1 {
+		t.Fatalf("status checked %d times for 25 concurrent polls, want 1", n)
+	}
+}
+
+// An accepted stop must show immediately, not after the cache expires.
+func TestStop_ReportsStoppingImmediately(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\ncase \"$1\" in ps) echo windrose ;; stop) sleep 1 ;; esac\n")
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/api/games/windrose/status", nil)) // warm the cache: online
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq("POST", "/api/games/windrose/stop", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("stop = %d, want 202", rec.Code)
+	}
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/api/games/windrose/status", nil))
+	if !strings.Contains(rec.Body.String(), `"stopping"`) {
+		t.Fatalf("status right after stop = %s, want stopping", rec.Body.String())
+	}
+	h.App.Exclusivity.Wait()
+}
+
+func TestHealth_ReportsDockerReachability(t *testing.T) {
+	up := newHarness(t, "#!/bin/sh\necho 29.0.0\n")
+	rec := httptest.NewRecorder()
+	up.mux().ServeHTTP(rec, up.req("GET", "/api/health", nil))
+	if !strings.Contains(rec.Body.String(), `"docker":true`) {
+		t.Fatalf("health with docker up = %s", rec.Body.String())
+	}
+	down := newHarness(t, "#!/bin/sh\necho 'secret path /var/run' >&2\nexit 1\n")
+	rec = httptest.NewRecorder()
+	down.mux().ServeHTTP(rec, down.req("GET", "/api/health", nil))
+	if !strings.Contains(rec.Body.String(), `"docker":false`) || strings.Contains(rec.Body.String(), "secret") {
+		t.Fatalf("health with docker down = %s, want docker:false and no detail", rec.Body.String())
+	}
+	rec = httptest.NewRecorder()
+	up.mux().ServeHTTP(rec, httptest.NewRequest("GET", "/api/health", nil))
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthenticated health = %d, want 401", rec.Code)
+	}
+}
+
+func TestRoles_PlayersCannotTouchSettingsButCanControlGames(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	// Production points both at one UserStore; the harness has plain maps.
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+
+	for _, tc := range []struct{ method, path string }{
+		{"GET", "/api/settings"}, {"PUT", "/api/settings"},
+	} {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(tc.method, tc.path, []byte(`{}`)))
+		if rec.Code != http.StatusForbidden {
+			t.Errorf("player %s %s = %d, want 403", tc.method, tc.path, rec.Code)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq("POST", "/api/games/windrose/start", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Errorf("player start = %d, want 202", rec.Code)
+	}
+	h.App.Exclusivity.Wait()
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/", nil))
+	if strings.Contains(rec.Body.String(), "settings-btn") {
+		t.Error("dashboard shows the settings button to a player")
+	}
+
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/", nil))
+	if !strings.Contains(rec.Body.String(), "settings-btn") {
+		t.Error("dashboard hides the settings button from an admin")
+	}
+}
+
+func TestActivity_FeedAndSettingsAudit(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	store, err := history.Open(filepath.Join(t.TempDir(), "events.jsonl"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.History = store
+	h.App.Settings, _ = settings.New(settings.Values{IdleMinutes: 15, MaxActiveGames: 1, NightStartHour: 23, NightEndHour: 5}, "")
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq("PUT", "/api/settings", []byte(`{"idle_minutes":30}`)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("PUT settings = %d: %s", rec.Code, rec.Body)
+	}
+	store.Record(history.KindJoin, "windrose", "ann", "")
+
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/api/activity?limit=5", nil))
+	var out struct {
+		Events   []history.Event    `json:"events"`
+		Playtime []history.Playtime `json:"playtime"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Events) != 2 || out.Events[0].Kind != history.KindJoin ||
+		out.Events[1].Kind != history.KindSettings || out.Events[1].Detail != "idle_minutes 15→30" {
+		t.Fatalf("events = %+v", out.Events)
+	}
+	if len(out.Playtime) != 1 || out.Playtime[0].Player != "ann" {
+		t.Fatalf("playtime = %+v", out.Playtime)
+	}
+}
+
+func TestHost_ReportsDisks(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h.App.HostPaths = []string{t.TempDir()}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/api/host", nil))
+	var out struct {
+		Disks []struct{ Total, Free uint64 } `json:"disks"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || len(out.Disks) != 1 || out.Disks[0].Total == 0 {
+		t.Fatalf("host = %s (%v)", rec.Body, err)
+	}
+}
+
+func TestBackup_AdminOnlyAndPreconditions(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\ncase \"$1\" in ps) case \"$*\" in *'name=^g$'*) echo g ;; esac ;; exec) exit 0 ;; esac\n")
+	h := newHarnessFromDefs(t, docker, []games.GameDef{
+		{ID: "g", DisplayName: "g", ContainerName: "g", Status: &games.DockerStatusChecker{Docker: docker},
+			Backup: &games.BackupSpec{Exec: []string{"backup"}}},
+		{ID: "plain", DisplayName: "plain", ContainerName: "plain", Status: &games.DockerStatusChecker{Docker: docker}},
+	})
+	h.App.Backups = &backup.Manager{Docker: docker}
+	t.Cleanup(h.App.Backups.Wait)
+	post := func(path string) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("POST", path, nil))
+		return rec.Code
+	}
+
+	if got := post("/api/games/g/backup"); got != http.StatusAccepted {
+		t.Errorf("admin backup = %d, want 202", got)
+	}
+	h.App.Backups.Wait()
+	if got := post("/api/games/plain/backup"); got != http.StatusNotFound {
+		t.Errorf("backup of an unconfigured game = %d, want 404", got)
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	if got := post("/api/games/g/backup"); got != http.StatusForbidden {
+		t.Errorf("player backup = %d, want 403", got)
+	}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/api/games/g/backups", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("player listing backups = %d, want 403", rec.Code)
+	}
+}
+
+type fakeConsole struct{ ran []string }
+
+func (f *fakeConsole) Actions() []games.ConsoleAction {
+	return []games.ConsoleAction{{ID: "save", Label: "Save"}, {ID: "kick", Label: "Kick"}}
+}
+func (f *fakeConsole) Run(_ context.Context, action string, args map[string]string) (string, error) {
+	f.ran = append(f.ran, action)
+	if action == "kick" && args["userid"] == "" {
+		return "", fmt.Errorf("%w: user id is required", games.ErrBadInput)
+	}
+	return "done " + action, nil
+}
+func (f *fakeConsole) Raw(_ context.Context, cmd string) (string, error) {
+	f.ran = append(f.ran, "raw:"+cmd)
+	return "echo " + cmd, nil
+}
+
+func TestConsole_ActionsRawToggleAndAudit(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	fc := &fakeConsole{}
+	h := newHarnessFromDefs(t, docker, []games.GameDef{
+		{ID: "g", DisplayName: "g", ContainerName: "g", Status: &games.DockerStatusChecker{Docker: docker}, Console: fc, RawConsole: fc},
+		{ID: "plain", DisplayName: "plain", ContainerName: "plain", Status: &games.DockerStatusChecker{Docker: docker}},
+	})
+	hist, err := history.Open(filepath.Join(t.TempDir(), "e.jsonl"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.History = hist
+	h.App.Settings, _ = settings.New(settings.Values{IdleMinutes: 15, MaxActiveGames: 1, NightStartHour: 23, NightEndHour: 5}, "")
+	call := func(method, path, body string) (int, string) {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(method, path, []byte(body)))
+		return rec.Code, rec.Body.String()
+	}
+
+	if code, body := call("GET", "/api/games/g/console", ""); code != 200 || !strings.Contains(body, `"raw_enabled":false`) || !strings.Contains(body, `"raw_available":true`) {
+		t.Fatalf("describe = %d %s", code, body)
+	}
+	if code, body := call("POST", "/api/games/g/console/action", `{"action":"save"}`); code != 200 || !strings.Contains(body, "done save") {
+		t.Fatalf("action = %d %s", code, body)
+	}
+	if code, _ := call("POST", "/api/games/g/console/action", `{"action":"rm -rf"}`); code != 400 {
+		t.Errorf("unknown action = %d, want 400", code)
+	}
+	if code, body := call("POST", "/api/games/g/console/action", `{"action":"kick","args":{}}`); code != 400 || !strings.Contains(body, "user id is required") {
+		t.Errorf("bad input = %d %s", code, body)
+	}
+	if code, _ := call("POST", "/api/games/plain/console/action", `{"action":"save"}`); code != 404 {
+		t.Errorf("game without console = %d, want 404", code)
+	}
+
+	// Raw console: refused until an admin switches it on.
+	if code, _ := call("POST", "/api/games/g/console/raw", `{"command":"Info"}`); code != 403 {
+		t.Fatalf("raw while off = %d, want 403", code)
+	}
+	for _, r := range fc.ran {
+		if strings.HasPrefix(r, "raw:") {
+			t.Fatal("raw command ran while the console was off")
+		}
+	}
+	if code, _ := call("PUT", "/api/settings", `{"raw_console":true}`); code != 200 {
+		t.Fatalf("enable raw console = %d", code)
+	}
+	if code, body := call("POST", "/api/games/g/console/raw", `{"command":"Info"}`); code != 200 || !strings.Contains(body, "echo Info") {
+		t.Fatalf("raw while on = %d %s", code, body)
+	}
+
+	// Players can't use any of it, even with the raw console on.
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	for _, p := range []string{"/api/games/g/console/action", "/api/games/g/console/raw"} {
+		if code, _ := call("POST", p, `{"action":"save","command":"Info"}`); code != 403 {
+			t.Errorf("player POST %s = %d, want 403", p, code)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/api/games/g/console", nil))
+	if rec.Code != 403 {
+		t.Errorf("player describing console = %d, want 403", rec.Code)
+	}
+
+	var details []string
+	for _, e := range hist.Recent(50, "g") {
+		if e.Kind == history.KindConsole {
+			details = append(details, e.Detail)
+		}
+	}
+	if len(details) < 4 || !strings.Contains(strings.Join(details, "|"), "raw: Info") {
+		t.Errorf("console audit trail = %v", details)
 	}
 }

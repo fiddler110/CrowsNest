@@ -147,3 +147,33 @@ func TestRevokeSessions_UnknownUser(t *testing.T) {
 		t.Fatal("RevokeSessions() error = nil, want error for a user with no password set")
 	}
 }
+
+func TestRoles(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.env")
+	SetUserHash(path, "alice", "h")
+	SetUserHash(path, "bob", "h")
+	if err := SetRole(path, "bob", RolePlayer, false); err != nil {
+		t.Fatal(err)
+	}
+	users, err := LoadUsers(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if users["alice"].EffectiveRole() != RoleAdmin {
+		t.Fatal("a user with no role must default to admin")
+	}
+	if users["bob"].EffectiveRole() != RolePlayer {
+		t.Fatalf("bob = %q, want player", users["bob"].EffectiveRole())
+	}
+	// Survives a password change and a revocation (both rewrite the file).
+	SetUserHash(path, "bob", "h2")
+	RevokeSessions(path, "bob", false)
+	users, _ = LoadUsers(path)
+	if users["bob"].Role != RolePlayer {
+		t.Fatal("role lost when the users file was rewritten")
+	}
+	os.WriteFile(path, []byte("BOB_ROLE=superuser\n"), 0o600)
+	if _, err := LoadUsers(path); err == nil {
+		t.Fatal("LoadUsers accepted an invalid role")
+	}
+}

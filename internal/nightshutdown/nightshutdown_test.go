@@ -163,7 +163,7 @@ func TestInWindow_WrapsMidnight(t *testing.T) {
 		{12, false},
 	}
 	for _, tt := range tests {
-		got := m.inWindow(time.Date(2026, 1, 1, tt.hour, 0, 0, 0, time.UTC))
+		got := m.inWindow(time.Date(2026, 1, 1, tt.hour, 0, 0, 0, time.UTC), m.startHour, m.endHour)
 		if got != tt.want {
 			t.Errorf("inWindow(hour=%d) = %v, want %v", tt.hour, got, tt.want)
 		}
@@ -182,9 +182,42 @@ func TestInWindow_SameDayWindow(t *testing.T) {
 		{17, false},
 	}
 	for _, tt := range tests {
-		got := m.inWindow(time.Date(2026, 1, 1, tt.hour, 0, 0, 0, time.UTC))
+		got := m.inWindow(time.Date(2026, 1, 1, tt.hour, 0, 0, 0, time.UTC), m.startHour, m.endHour)
 		if got != tt.want {
 			t.Errorf("inWindow(hour=%d) = %v, want %v", tt.hour, got, tt.want)
 		}
+	}
+}
+
+func TestTick_SparesFreshlyStartedGame(t *testing.T) {
+	status := &fakeStatus{status: games.StatusOnline}
+	players := &fakePlayers{count: 0, ok: true}
+	m, stopper, clock := newTestManager(t, status, players)
+	m.MinUptime = 30 * time.Minute
+	started := clock.Add(-5 * time.Minute) // started five minutes ago, inside the window
+	m.StartedAt = func(context.Context, string) (time.Time, error) { return started, nil }
+
+	m.Tick(context.Background())
+	if len(stopper.stopped) != 0 {
+		t.Fatalf("stopped = %v, want a 5-minute-old game left alone", stopper.stopped)
+	}
+
+	*clock = clock.Add(30 * time.Minute) // now it has had its grace period
+	m.Tick(context.Background())
+	if len(stopper.stopped) != 1 {
+		t.Fatalf("stopped = %v, want the game stopped once past MinUptime", stopper.stopped)
+	}
+}
+
+func TestTick_SkipsWhenStartTimeUnavailable(t *testing.T) {
+	status := &fakeStatus{status: games.StatusOnline}
+	players := &fakePlayers{count: 0, ok: true}
+	m, stopper, _ := newTestManager(t, status, players)
+	m.MinUptime = 30 * time.Minute
+	m.StartedAt = func(context.Context, string) (time.Time, error) { return time.Time{}, context.DeadlineExceeded }
+
+	m.Tick(context.Background())
+	if len(stopper.stopped) != 0 {
+		t.Fatalf("stopped = %v, want none when uptime can't be read", stopper.stopped)
 	}
 }

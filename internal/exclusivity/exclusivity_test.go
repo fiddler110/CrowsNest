@@ -616,3 +616,211 @@ esac
 		t.Fatalf("failure message not trimmed to one short line (len %d): %q", len(got[0]), got[0])
 	}
 }
+
+// A slow `docker stop` must not block the decision lock: other requests
+// return promptly while it runs, and RequestStop itself returns at once.
+func TestRequestStop_IsAsyncAndDoesNotBlockOtherGames(t *testing.T) {
+	docker := newScriptDocker(t, `
+case "$1" in
+  ps) echo a ;;
+  stop) sleep 1 ;;
+esac
+`)
+	reg := newRegistry(t, docker, "a", "b")
+	m := newTestManager(t, reg, docker)
+
+	began := time.Now()
+	if err := m.RequestStop(context.Background(), "a"); err != nil {
+		t.Fatalf("RequestStop = %v", err)
+	}
+	if d := time.Since(began); d > 500*time.Millisecond {
+		t.Fatalf("RequestStop took %s, want it to return immediately", d)
+	}
+	if !m.Stopping("a") {
+		t.Fatal("Stopping(a) = false right after an accepted stop")
+	}
+	// The decision lock is free: a start of the stopping game is refused as busy.
+	var busy *BusyError
+	if err := m.RequestStart(context.Background(), "a"); !errors.As(err, &busy) {
+		t.Fatalf("RequestStart(a) while stopping = %v, want BusyError", err)
+	}
+	m.Wait()
+	if m.Stopping("a") {
+		t.Fatal("Stopping(a) still true after the stop finished")
+	}
+}
+
+func TestRequestStop_FailureIsRecorded(t *testing.T) {
+	docker := newScriptDocker(t, `
+case "$1" in
+  ps) echo a ;;
+  stop) echo boom >&2; exit 1 ;;
+esac
+`)
+	reg := newRegistry(t, docker, "a")
+	m := newTestManager(t, reg, docker)
+	if err := m.RequestStop(context.Background(), "a"); err != nil {
+		t.Fatalf("RequestStop = %v", err)
+	}
+	m.Wait()
+	res, ok := m.LastStart("a")
+	if !ok || !strings.HasPrefix(res.Err, "stop failed:") {
+		t.Fatalf("LastStart(a) = %+v, %v; want a recorded stop failure", res, ok)
+	}
+}
+
+// A switch outlives the request that asked for it, and while it runs the
+// target is reserved so a third game can't take its slot.
+func TestRequestSwitch_AsyncAndReservesTarget(t *testing.T) {
+	docker := newStatefulFakeDocker(t, []string{"a", "b", "c"}, []string{"a"})
+	reg := newRegistry(t, docker, "a", "b", "c")
+	m := newTestManager(t, reg, docker)
+	m.StopPollInterval = 10 * time.Millisecond
+
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := m.RequestSwitch(ctx, "a", "b"); err != nil {
+		t.Fatalf("RequestSwitch = %v", err)
+	}
+	cancel() // the HTTP request is gone; the switch must carry on
+	m.Wait()
+
+	active, err := m.ActiveGames(context.Background())
+	if err != nil || len(active) != 1 || active[0] != "b" {
+		t.Fatalf("ActiveGames after switch = %v, %v; want [b]", active, err)
+	}
+}
+
+func TestRequestSwitch_ReservationBlocksThirdGame(t *testing.T) {
+	docker := newScriptDocker(t, `
+case "$1" in
+  ps) case "$*" in *'name=^a$'*) echo a ;; esac ;;
+  stop) sleep 1 ;;
+esac
+`)
+	reg := newRegistry(t, docker, "a", "b", "c")
+	m := newTestManager(t, reg, docker)
+	m.StopPollInterval, m.StopPollTimeout = 10*time.Millisecond, 100*time.Millisecond
+	if err := m.RequestSwitch(context.Background(), "a", "b"); err != nil {
+		t.Fatalf("RequestSwitch = %v", err)
+	}
+	var conflict *ConflictError
+	if err := m.RequestStart(context.Background(), "c"); !errors.As(err, &conflict) {
+		t.Fatalf("RequestStart(c) during switch a->b = %v, want conflict", err)
+	}
+	m.Wait()
+}
+
+type fakePreStop struct {
+	calls int
+	err   error
+}
+
+func (f *fakePreStop) PrepareStop(context.Context) error { f.calls++; return f.err }
+
+// The pre-stop hook runs before docker stop when the game is up, and its
+// failure never prevents the stop.
+func TestStop_RunsPreStopHookAndIgnoresItsFailure(t *testing.T) {
+	docker := newStatefulFakeDocker(t, []string{"a"}, []string{"a"})
+	reg := newRegistry(t, docker, "a")
+	hook := &fakePreStop{err: errors.New("api down")}
+	d, _ := reg.Get("a")
+	d.PreStop = hook
+	reg, _ = games.NewRegistry([]games.GameDef{d})
+	m := newTestManager(t, reg, docker)
+
+	if err := m.Stop(context.Background(), "a"); err != nil {
+		t.Fatalf("Stop = %v, want success despite the hook failing", err)
+	}
+	if hook.calls != 1 {
+		t.Fatalf("hook ran %d times, want 1", hook.calls)
+	}
+	// Not running -> hook skipped.
+	if err := m.Stop(context.Background(), "a"); err != nil {
+		t.Fatalf("second Stop = %v", err)
+	}
+	if hook.calls != 1 {
+		t.Fatalf("hook ran for a game that was already down (%d calls)", hook.calls)
+	}
+}
+
+type recorded struct{ kind, game, actor, detail string }
+type fakeRecorder struct {
+	mu     sync.Mutex
+	events []recorded
+}
+
+func (f *fakeRecorder) Record(kind, game, actor, detail string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.events = append(f.events, recorded{kind, game, actor, detail})
+}
+
+func (f *fakeRecorder) kinds() string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []string
+	for _, e := range f.events {
+		out = append(out, e.kind+":"+e.game+":"+e.actor)
+	}
+	return strings.Join(out, ",")
+}
+
+func TestHistory_RecordsUserActionsButNotAutoStops(t *testing.T) {
+	docker := newStatefulFakeDocker(t, []string{"a", "b"}, []string{"a"})
+	reg := newRegistry(t, docker, "a", "b")
+	m := newTestManager(t, reg, docker)
+	m.StopPollInterval = 10 * time.Millisecond
+	rec := &fakeRecorder{}
+	m.History = rec
+
+	if err := m.Stop(context.Background(), "a"); err != nil { // auto-stop style: no actor
+		t.Fatal(err)
+	}
+	if got := rec.kinds(); got != "" {
+		t.Fatalf("an actor-less stop recorded %q; idle/night record their own", got)
+	}
+	if err := m.RequestStart(WithActor(context.Background(), "scott"), "a"); err != nil {
+		t.Fatal(err)
+	}
+	m.Wait()
+	if err := m.ConfirmSwitch(WithActor(context.Background(), "scott"), "a", "b"); err != nil {
+		t.Fatal(err)
+	}
+	m.Wait()
+	if got, want := rec.kinds(), "start:a:scott,stop:a:scott,start:b:scott"; got != want {
+		t.Fatalf("recorded %q, want %q", got, want)
+	}
+}
+
+type fakeBackups struct {
+	calls []string
+	err   error
+}
+
+func (f *fakeBackups) RunBackup(_ context.Context, d games.GameDef, actor string) error {
+	f.calls = append(f.calls, d.ID+":"+actor)
+	return f.err
+}
+
+func TestStop_BacksUpBeforeStopWhenConfigured(t *testing.T) {
+	docker := newStatefulFakeDocker(t, []string{"a", "b"}, []string{"a", "b"})
+	reg := newRegistry(t, docker, "a", "b")
+	a, _ := reg.Get("a")
+	a.Backup = &games.BackupSpec{Exec: []string{"backup"}, BeforeStop: true}
+	b, _ := reg.Get("b")
+	b.Backup = &games.BackupSpec{Exec: []string{"backup"}} // configured, but not before_stop
+	reg, _ = games.NewRegistry([]games.GameDef{a, b})
+	m := newTestManager(t, reg, docker)
+	fb := &fakeBackups{err: errors.New("disk full")}
+	m.Backups = fb
+
+	if err := m.Stop(context.Background(), "a"); err != nil {
+		t.Fatalf("Stop = %v, want success even though the backup failed", err)
+	}
+	if err := m.Stop(context.Background(), "b"); err != nil {
+		t.Fatal(err)
+	}
+	if len(fb.calls) != 1 || fb.calls[0] != "a:" {
+		t.Fatalf("backup calls = %v, want only a (before_stop)", fb.calls)
+	}
+}

@@ -35,3 +35,13 @@ type UnknownPlayerCounter struct{}
 func (UnknownPlayerCounter) PlayerCount(ctx context.Context) (count int, names []string, ok bool) {
 	return 0, nil, false
 }
+
+// CanCountPlayers reports whether d has a real PlayerCounter wired. Without
+// one, idle and night shutdown never stop the game.
+func CanCountPlayers(d GameDef) bool {
+	if d.Players == nil {
+		return false
+	}
+	_, baseline := d.Players.(UnknownPlayerCounter)
+	return !baseline
+}

@@ -97,6 +97,93 @@ recreates the container). Behind a restrictive Docker API proxy that denies
 container delete/rename, that recreate fails; `docker rm <game>` on the
 host, then Start again.
 
+### Automatic shutdown and settings
+
+By default a game that has had zero players for 15 minutes is stopped. It then
+stays stopped: someone has to start it again from CrowsNest. A game whose player
+count can't be read is never stopped automatically. An optional overnight
+window (`night_shutdown`) stops empty servers during set hours.
+
+Every signed-in user can change these from the **Settings** button on the
+dashboard, and the change applies immediately:
+
+| Setting | Meaning |
+|---|---|
+| Stop a server when nobody is on it / minutes | the idle auto-stop and its timeout (1-1440 minutes) |
+| Stop empty servers overnight / from / until | the overnight window, in `server.tz` hours |
+| Servers allowed at once | how many games may run together |
+| Update on start | run `docker compose pull` for the game each time it starts, so a restart picks up new server versions (a failed pull is logged and the old image is used) |
+
+`config.yaml` holds the defaults; whatever is saved from the dashboard is written
+to `server.settings_file` (default `/app/data/settings.json`) and takes
+precedence from then on. Mount a **directory** there so it survives container
+recreation (`${USERDIR}/crowsnest/config:/app/data` in `compose.yaml.example`; it must be
+writable by uid 1000). Delete the file to go back to the `config.yaml` values.
+
+### Roles
+
+Two roles: **admin** can do everything; **player** can start, stop and switch
+games and see everything on the dashboard, but can't open Settings or touch
+backups. A role is set per user in the users file (`<NAME>_ROLE=admin|player`),
+usually through `docker compose exec crowsnest crowsnest set-role <user> <admin|player>`.
+A user with no role is an admin, so existing accounts behave as before until
+you demote them. This includes Google sign-in users, who have no password
+entry: run `set-role` for each friend you want as a player. Role changes apply
+within seconds, and a demotion takes effect on the user's very next request.
+
+### Activity log, playtime and host health
+
+Everything notable is appended to `server.history_file` (default
+`/app/data/events.jsonl`, one JSON object per line): who started, stopped or
+switched a game, automatic stops, failed starts, settings changes, backups and
+players joining and leaving. The dashboard's **logbook** shows the latest
+entries and total time each player has spent in each game (from join/leave
+events, so it only covers games whose player names CrowsNest can read).
+Entries older than `server.history_retention_days` (default 180) are pruned.
+Keep the file on the same persistent mount as the settings file.
+
+A strip under the fleet banner shows host memory, load and free disk space
+for the paths in `server.host_disk_paths`; it turns red when a disk is under
+10% free or memory is nearly full. Mount the disk your game data and images
+live on (read-only is fine) and list its path to watch it.
+
+### Backups
+
+A game with a `backup:` block in `config.yaml` gets a **Backups** panel
+(admins only) with a "Back up now" button and the list of backup files.
+Backups run inside the game's container with `docker exec`, so they use
+whatever the image provides (see the Palworld example in `config.yaml.example`).
+`exec` needs the docker-socket-proxy's `EXEC=1`, and because the proxy cannot
+limit *which* commands run, put the bundled **exec guard** in front of it
+(`crowsnest execguard`; see the `execguard` service in `compose.yaml.example`).
+It allows exactly the commands your config implies (each `backup.exec`, the
+`list_dir` listing, Windrose's readiness check), refuses exec options such as
+`Privileged`, `User` and `Env`, and only lets `exec/<id>/start` through for ids
+it approved itself. Restart it after changing `backup:` settings. With `before_stop: true`
+CrowsNest also takes a backup every time it stops that game on purpose, after
+the world is saved, so an "update on start" pull always has a fresh backup
+behind it. A failed backup is logged and never stops the game from stopping.
+
+### Admin console
+
+Admins get a **Console** tab on games that support it (Palworld today). It has
+two parts:
+
+- **Fixed actions**, always available to admins: Players (names and user ids),
+  Announce, Save world, Kick, Ban and Unban. They go through the game's REST
+  API and CrowsNest validates the arguments. There is deliberately no shutdown
+  action; use Stop, which also saves and backs up.
+- **A raw RCON box**, off by default. Set `rcon_addr` (for example
+  `palworld:25575`, with `RCON_ENABLED=true` on the game) and an admin turns on
+  "Allow the raw RCON console" in Settings. It then sends any command to the
+  server, so only enable it if you are comfortable with every admin being able
+  to do that. The RCON password is `rcon_password_env`, defaulting to the REST
+  API password.
+
+Players never see the console, and the API refuses them. Every command, and any
+attempt on the raw console while it is off, is written to the audit log and the
+activity feed.
+
 ### Sessions
 
 Login sessions are stateless signed cookies, valid for `auth.DefaultSessionTTL`
@@ -104,10 +191,12 @@ Login sessions are stateless signed cookies, valid for `auth.DefaultSessionTTL`
 There's no server-side session store to revoke a single device from, but
 `docker compose exec crowsnest crowsnest revoke-sessions <username>` forces
 every outstanding session for that user to fail on their next request; it
-edits the users file, so it takes effect the next time crowsnest restarts.
+edits the users file, which a running crowsnest watches, so it takes effect
+within a few seconds (as does `set-password`).
 It works for Google sign-in users too (any name on the allowlist), even
 though they have no password entry. To remove someone entirely, take them
-off the Google allowlist (or delete their password entry) and restart: a
+off the Google allowlist (restart to apply) or delete their password entry (applies
+within seconds): a
 session only stays valid while its username still has a way to sign in.
 Rotating/deleting the session-secret file logs out every user at once, if
 you ever need that blunter option.
@@ -194,7 +283,16 @@ first); state-changing routes also require the session's CSRF token.
 | `GET` | `/api/games/{id}/info` | Rich per-game info panel (currently: Windrose+ only) |
 | `POST` | `/api/games/{id}/start` | Start the game's container |
 | `POST` | `/api/games/{id}/switch` | Stop whichever game is running, then start this one |
-| `POST` | `/api/games/{id}/stop` | Stop the game's container |
+| `POST` | `/api/games/{id}/stop` | Stop the game's container (accepted; runs in the background, status shows `stopping`) |
+| `GET` | `/api/activity` | Recent activity events and playtime per player (`?limit=`, `?game=`) |
+| `GET` | `/api/host` | Host memory, load and disk space |
+| `GET` | `/api/health` | Whether CrowsNest can reach Docker |
+| `GET`/`PUT` | `/api/settings` | Runtime settings (**admin only**) |
+| `GET` | `/api/games/{id}/console` | Console actions and raw-console state (**admin only**) |
+| `POST` | `/api/games/{id}/console/action` | Run a fixed console action (**admin only**) |
+| `POST` | `/api/games/{id}/console/raw` | Send a raw RCON command; refused unless enabled in Settings (**admin only**) |
+| `GET` | `/api/games/{id}/backups` | Backup files (**admin only**) |
+| `POST` | `/api/games/{id}/backup` | Start a backup in the background (**admin only**) |
 
 ## Development
 

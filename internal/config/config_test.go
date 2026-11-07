@@ -134,6 +134,7 @@ games:
 		StartHour:            defaultNightShutdownStartHour,
 		EndHour:              defaultNightShutdownEndHour,
 		CheckIntervalMinutes: defaultNightShutdownCheckIntervalMinutes,
+		MinUptimeMinutes:     defaultNightShutdownMinUptimeMinutes,
 	}
 	if *cfg.NightShutdown != wantNight {
 		t.Errorf("NightShutdown = %+v, want %+v", *cfg.NightShutdown, wantNight)
@@ -173,7 +174,7 @@ games:
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	want := NightShutdownConfig{Enabled: true, StartHour: 22, EndHour: 6, CheckIntervalMinutes: 15}
+	want := NightShutdownConfig{Enabled: true, StartHour: 22, EndHour: 6, CheckIntervalMinutes: 15, MinUptimeMinutes: 30}
 	if *cfg.NightShutdown != want {
 		t.Errorf("NightShutdown = %+v, want %+v", *cfg.NightShutdown, want)
 	}
@@ -533,5 +534,25 @@ func TestLoad_AuthErrors(t *testing.T) {
 	}
 	if _, err := Load(writeConfig(t, "auth:\n  google:\n    redirect_url: http://localhost:5000/auth/google/callback\n"+authTestGames)); err != nil {
 		t.Fatalf("http://localhost redirect should be allowed for local testing: %v", err)
+	}
+}
+
+func TestLoad_BackupValidation(t *testing.T) {
+	for name, tc := range map[string]struct {
+		backup  string
+		wantErr string
+	}{
+		"ok":         {"    backup:\n      exec: [\"/bin/sh\", \"-c\", \"backup\"]\n      list_dir: /backups\n", ""},
+		"no command": {"    backup:\n      list_dir: /backups\n", "backup.exec"},
+		"relative":   {"    backup:\n      exec: [backup]\n      list_dir: backups\n", "absolute"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config.yaml")
+			os.WriteFile(path, []byte("users_file: /tmp/users.env\ngames:\n  - id: g\n    display_name: G\n    container_name: g\n    compose_file: /data/c.yaml\n    compose_service: g\n    compose_profile: g\n"+tc.backup), 0o600)
+			_, err := Load(path)
+			if tc.wantErr == "" && err != nil || tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("Load error = %v, want %q", err, tc.wantErr)
+			}
+		})
 	}
 }

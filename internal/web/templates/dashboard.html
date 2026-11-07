@@ -19,6 +19,8 @@
   <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
   <symbol id="i-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></symbol>
   <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
   <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></symbol>
 </svg>
 
@@ -31,11 +33,16 @@
   </a>
   <div class="user-bar">
     <span class="user-chip"><svg class="icon"><use href="#i-user"/></svg><b>{{.Username}}</b></span>
+    {{if .IsAdmin}}<button id="settings-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-gear"/></svg>Settings</button>{{end}}
     <button id="logout-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-logout"/></svg>Log out</button>
   </div>
 </header>
 
 <main class="shell">
+  <div id="docker-banner" class="banner" role="alert" hidden>
+    <svg class="icon"><use href="#i-alert"/></svg>
+    <span>Can't reach Docker. Status below may be out of date and starting or stopping games won't work until it's back.</span>
+  </div>
   <section class="hero" id="fleet" aria-live="polite">
     <div class="hero-body">
       <p class="eyebrow"><i class="beacon"></i>// fleet status</p>
@@ -49,6 +56,8 @@
     </div>
     <img class="hero-art" src="/static/emblem.webp" alt="CrowsNest: game server launcher and controller" width="280" height="320">
   </section>
+
+  <section class="host" id="host-panel" aria-label="Host health" hidden></section>
 
   <h2 class="section-title">// vessels</h2>
   <div id="games" class="games">
@@ -84,6 +93,8 @@
 
       <p class="crew" hidden><svg class="icon"><use href="#i-users"/></svg><span class="player-count"></span></p>
 
+      <p class="idle-timer" hidden><svg class="icon"><use href="#i-clock"/></svg><span class="idle-text"></span></p>
+
       <div class="progress-wrap" hidden>
         <div class="progress-track"><div class="progress-bar"></div></div>
         <span class="progress-label"></span>
@@ -96,6 +107,8 @@
           <button class="tab logs-btn" type="button" aria-pressed="false"><svg class="icon"><use href="#i-terminal"/></svg>Logs</button>
           <button class="tab stats-btn" type="button" aria-pressed="false"><svg class="icon"><use href="#i-chart"/></svg>Stats</button>
           <button class="tab info-btn" type="button" aria-pressed="false"><svg class="icon"><use href="#i-info"/></svg>Info</button>
+          {{if .HasBackup}}<button class="tab backups-btn" type="button" aria-pressed="false"><svg class="icon"><use href="#i-info"/></svg>Backups</button>{{end}}
+          {{if .HasConsole}}<button class="tab console-btn" type="button" aria-pressed="false"><svg class="icon"><use href="#i-terminal"/></svg>Console</button>{{end}}
         </div>
       </div>
 
@@ -106,6 +119,31 @@
         <p class="info-empty" hidden>No info right now. The server may still be starting, or this game has none.</p>
         <dl class="info-fields"></dl>
       </div>
+      {{if .HasBackup}}
+      <div class="backups-panel" hidden>
+        <div class="backups-head">
+          <button class="btn btn-ghost backup-now-btn" type="button">Back up now</button>
+          <span class="backups-note"></span>
+        </div>
+        <ul class="backups-list"></ul>
+      </div>
+      {{end}}
+      {{if .HasConsole}}
+      <div class="console-panel" hidden>
+        <div class="console-actions"></div>
+        <form class="console-form" hidden>
+          <div class="console-fields"></div>
+          <button class="btn btn-primary" type="submit">Run</button>
+          <button class="btn btn-ghost console-cancel" type="button">Cancel</button>
+        </form>
+        <form class="console-raw" hidden>
+          <input class="console-raw-input" type="text" maxlength="1000" autocomplete="off" spellcheck="false" placeholder="RCON command, e.g. Info" aria-label="Raw RCON command">
+          <button class="btn btn-ghost" type="submit">Send</button>
+        </form>
+        <p class="console-note"></p>
+        <pre class="console-output" aria-live="polite"></pre>
+      </div>
+      {{end}}
       <div class="stats-panel" hidden>
         <div class="stat-row">
           <div class="stat-row-head"><span>CPU</span><span class="stat-value stat-cpu-val">—</span></div>
@@ -129,6 +167,15 @@
     <p class="empty">No vessels charted. Add a game to config.yaml.</p>
     {{end}}
   </div>
+
+  <h2 class="section-title">// logbook</h2>
+  <section class="logbook" id="logbook" aria-label="Recent activity and playtime">
+    <ul id="activity-list" class="activity-list"><li class="empty">Nothing logged yet.</li></ul>
+    <div id="playtime-wrap" class="playtime" hidden>
+      <h3 class="eyebrow">// time aboard</h3>
+      <table id="playtime-table"><tbody></tbody></table>
+    </div>
+  </section>
 </main>
 
 <div id="conflict-dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="conflict-title" hidden>
@@ -144,6 +191,38 @@
       <button id="conflict-confirm" class="btn btn-primary" type="button">Switch</button>
     </div>
   </div>
+</div>
+
+<div id="settings-dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
+  <form class="dialog-box" id="settings-form">
+    <p class="eyebrow">// ship's orders</p>
+    <h3 id="settings-title">Settings</h3>
+    <p class="settings-help">Applies to every game, immediately. A server that is shut down automatically stays down until someone starts it here.</p>
+
+    <label class="setting-check"><input type="checkbox" name="idle_enabled"> Stop a server when nobody is on it</label>
+    <label class="setting-field">After this many minutes empty
+      <input type="number" name="idle_minutes" min="1" max="1440" required></label>
+
+    <label class="setting-check"><input type="checkbox" name="night_enabled"> Stop empty servers overnight</label>
+    <div class="setting-row">
+      <label class="setting-field">From hour (0-23)
+        <input type="number" name="night_start_hour" min="0" max="23" required></label>
+      <label class="setting-field">Until hour (0-23)
+        <input type="number" name="night_end_hour" min="0" max="23" required></label>
+    </div>
+
+    <label class="setting-field">Servers allowed at once
+      <input type="number" name="max_active_games" min="1" max="32" required></label>
+
+    <label class="setting-check"><input type="checkbox" name="auto_update"> Update a server to the latest version each time it starts</label>
+    <label class="setting-check"><input type="checkbox" name="raw_console"> Allow the raw RCON console for admins (sends any command to the game server)</label>
+
+    <p id="settings-error" class="settings-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button id="settings-cancel" class="btn btn-ghost" type="button">Cancel</button>
+      <button class="btn btn-primary" type="submit">Save</button>
+    </div>
+  </form>
 </div>
 
 <div id="toast" class="toast" role="status" hidden>
