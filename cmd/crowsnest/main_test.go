@@ -196,3 +196,60 @@ func TestSetPasswordRejectsEmptyPassword(t *testing.T) {
 		t.Fatalf("setPassword with an empty password should fail")
 	}
 }
+
+func TestGoogleCallbackPathsAgree(t *testing.T) {
+	if config.GoogleCallbackPath != auth.GoogleCallbackPath {
+		t.Fatalf("config.GoogleCallbackPath %q != auth.GoogleCallbackPath %q", config.GoogleCallbackPath, auth.GoogleCallbackPath)
+	}
+}
+
+func TestGoogleLoginFromEnv(t *testing.T) {
+	cfg := &config.Config{Auth: config.AuthConfig{Google: &config.GoogleAuthConfig{
+		RedirectURL: "https://crowsnest.example.com/auth/google/callback",
+		ClientIDEnv: "T_GID", ClientSecretEnv: "T_GSECRET", UsersEnv: "T_GUSERS",
+	}}}
+	svc := &auth.Service{}
+
+	t.Setenv("T_GID", "")
+	t.Setenv("T_GSECRET", "")
+	t.Setenv("T_GUSERS", "scott=scott@gmail.com")
+	if _, err := googleLogin(cfg, svc); err == nil {
+		t.Fatal("googleLogin with no client ID/secret should fail")
+	}
+
+	t.Setenv("T_GID", "id")
+	t.Setenv("T_GSECRET", "secret")
+	t.Setenv("T_GUSERS", "")
+	if _, err := googleLogin(cfg, svc); err == nil {
+		t.Fatal("googleLogin with an empty allowlist should fail")
+	}
+
+	t.Setenv("T_GUSERS", "scott=scott@gmail.com")
+	g, err := googleLogin(cfg, svc)
+	if err != nil || g == nil || g.Users["scott@gmail.com"] != "scott" {
+		t.Fatalf("googleLogin() = %+v, %v", g, err)
+	}
+	if g, err := googleLogin(&config.Config{}, svc); g != nil || err != nil {
+		t.Fatalf("googleLogin without auth.google = %v, %v; want nil, nil", g, err)
+	}
+}
+
+func TestSessionAllowed(t *testing.T) {
+	users := auth.Users{"admin": {Hash: "$2a$x"}, "revoked-only": {}}
+	google := &auth.GoogleLogin{Users: auth.GoogleUsers{"pal@gmail.com": "friend"}}
+	for _, tc := range []struct {
+		name             string
+		passwordDisabled bool
+		want             bool
+	}{
+		{"admin", false, true},
+		{"admin", true, false}, // password sign-in off: password sessions end too
+		{"friend", true, true},
+		{"revoked-only", false, false},
+		{"stranger", false, false},
+	} {
+		if got := sessionAllowed(users, google, tc.passwordDisabled)(tc.name); got != tc.want {
+			t.Errorf("sessionAllowed(%q, passwordDisabled=%v) = %v, want %v", tc.name, tc.passwordDisabled, got, tc.want)
+		}
+	}
+}

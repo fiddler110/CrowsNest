@@ -25,7 +25,9 @@ type App struct {
 	Docker      *dockerctl.Client
 	Exclusivity *exclusivity.Manager
 	Auth        *auth.Service
-	Templates   *Templates
+	// Google, when set, adds "Sign in with Google" (see auth.GoogleLogin).
+	Google    *auth.GoogleLogin
+	Templates *Templates
 
 	// KeepaliveInterval overrides the SSE keepalive-comment interval.
 	// Intended for tests; production callers should leave it unset (falls
@@ -52,6 +54,10 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /login", a.handleLoginPage)
 	mux.HandleFunc("POST /login", a.Auth.ServeLogin)
 	mux.HandleFunc("POST /logout", a.Auth.ServeLogout)
+	if a.Google != nil {
+		mux.HandleFunc("GET "+auth.GoogleStartPath, a.Google.ServeStart)
+		mux.HandleFunc("GET "+auth.GoogleCallbackPath, getOnly(a.Google.ServeCallback))
+	}
 
 	mux.Handle("GET /{$}", a.requireSessionHTML(http.HandlerFunc(a.handleDashboard)))
 	mux.Handle("GET /api/games", a.requireSession(http.HandlerFunc(a.handleListGames)))
@@ -144,8 +150,28 @@ func checkStatus(r *http.Request, d games.GameDef) games.Status {
 	return status
 }
 
+// loginPage is the login template's data. Error is one of a fixed set of
+// messages chosen by code, never text taken from the request.
+type loginPage struct {
+	PasswordLogin  bool
+	GoogleStartURL string
+	Error          string
+}
+
+var loginErrors = map[string]string{
+	auth.LoginErrorDenied:     "Google sign-in was cancelled.",
+	auth.LoginErrorExpired:    "That sign-in attempt expired. Please try again.",
+	auth.LoginErrorNotAllowed: "That Google account isn't on this ship's crew list.",
+	auth.LoginErrorFailed:     "Google sign-in failed. Please try again.",
+	auth.LoginErrorRateLimit:  "Too many sign-in attempts. Try again in a few minutes.",
+}
+
 func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	if err := a.Templates.Login.Execute(w, nil); err != nil {
+	page := loginPage{PasswordLogin: !a.Auth.DisablePasswordLogin, Error: loginErrors[r.URL.Query().Get("error")]}
+	if a.Google != nil {
+		page.GoogleStartURL = a.Google.StartURL()
+	}
+	if err := a.Templates.Login.Execute(w, page); err != nil {
 		log.Printf("web: render login page: %v", err)
 	}
 }
@@ -415,4 +441,17 @@ func initialOf(name string) string {
 		return strings.ToUpper(string(r))
 	}
 	return "?"
+}
+
+// getOnly rejects HEAD on a GET route. Go's "GET" pattern also matches HEAD, and a
+// HEAD to the OAuth callback would consume the one-time state cookie.
+func getOnly(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		h(w, r)
+	}
 }

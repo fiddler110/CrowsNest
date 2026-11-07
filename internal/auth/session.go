@@ -50,6 +50,12 @@ type SessionManager struct {
 	// Users, when set, is consulted by Decode to reject sessions revoked via
 	// RevokeSessions. Left nil (the zero value) by default; nil-safe.
 	Users Users
+
+	// Allowed, when set, must return true for a session's username or Decode
+	// rejects it as revoked. CrowsNest sets it to "has a password (and password
+	// sign-in is on) or is on the Google allowlist", so taking someone off the
+	// allowlist and restarting ends their sessions without revoke-sessions.
+	Allowed func(username string) bool
 }
 
 func NewSessionManager(secret []byte, ttl time.Duration) *SessionManager {
@@ -110,6 +116,9 @@ func (m *SessionManager) Decode(token string) (Session, error) {
 		return Session{}, ErrSessionExpired
 	}
 	if rec, ok := m.Users[s.Username]; ok && !rec.ValidAfter.IsZero() && s.IssuedAt.Before(rec.ValidAfter) {
+		return Session{}, ErrSessionRevoked
+	}
+	if m.Allowed != nil && !m.Allowed(s.Username) {
 		return Session{}, ErrSessionRevoked
 	}
 	return s, nil

@@ -185,12 +185,22 @@ func serve() error {
 	sessions := auth.NewSessionManager(secret, auth.DefaultSessionTTL)
 	sessions.Users = users // enables per-user revocation; see `revoke-sessions`
 	authSvc := &auth.Service{
-		Users:          users,
-		Sessions:       sessions,
-		LoginLimiter:   loginLimiter,
-		TrustedProxies: trustedProxies,
-		SecureCookies:  cfg.Server.SecureCookies,
+		Users:                users,
+		Sessions:             sessions,
+		LoginLimiter:         loginLimiter,
+		TrustedProxies:       trustedProxies,
+		SecureCookies:        cfg.Server.SecureCookies,
+		DisablePasswordLogin: !cfg.Auth.PasswordLoginEnabled(),
 	}
+	google, err := googleLogin(cfg, authSvc)
+	if err != nil {
+		return err
+	}
+	if google != nil {
+		log.Printf("auth: Google sign-in enabled for %d account(s); password sign-in %s",
+			len(google.Users), map[bool]string{true: "disabled", false: "enabled"}[authSvc.DisablePasswordLogin])
+	}
+	sessions.Allowed = sessionAllowed(users, google, authSvc.DisablePasswordLogin)
 
 	templates, err := web.LoadTemplates()
 	if err != nil {
@@ -207,6 +217,7 @@ func serve() error {
 		Docker:      docker,
 		Exclusivity: exclusivityMgr,
 		Auth:        authSvc,
+		Google:      google,
 		Templates:   templates,
 	}
 
@@ -261,9 +272,15 @@ func serve() error {
 		log.Printf("nightshutdown: disabled via config")
 	}
 
+	// Header/idle timeouts bound slow or idle clients (slowloris). No
+	// Read/WriteTimeout: the log and startup-progress SSE streams stay open
+	// for as long as the dashboard is watching.
 	srv := &http.Server{
-		Addr:    cfg.Server.Addr,
-		Handler: auth.SecurityHeaders(cfg.Server.SecureCookies, newMux(app)),
+		Addr:              cfg.Server.Addr,
+		Handler:           auth.SecurityHeaders(cfg.Server.SecureCookies, newMux(app)),
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    64 << 10,
 	}
 
 	serveErr := make(chan error, 1)
@@ -334,7 +351,19 @@ func revokeSessions(username string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if err := auth.RevokeSessions(cfg.UsersFile, username); err != nil {
+	// A Google-only user has no users-file entry yet; allow creating just the
+	// revocation marker for names on the Google allowlist (a typo still fails).
+	allowNew := false
+	if g := cfg.Auth.Google; g != nil {
+		if users, err := auth.ParseGoogleUsers(os.Getenv(g.UsersEnv)); err == nil {
+			for _, name := range users {
+				if name == strings.ToLower(username) {
+					allowNew = true
+				}
+			}
+		}
+	}
+	if err := auth.RevokeSessions(cfg.UsersFile, username, allowNew); err != nil {
 		return err
 	}
 	fmt.Printf("Revoked sessions for %s in %s — restart crowsnest for it to take effect\n", strings.ToLower(username), cfg.UsersFile)
@@ -386,4 +415,50 @@ func healthcheck() int {
 		return 1
 	}
 	return 0
+}
+
+// sessionAllowed reports whether a session's user may still be signed in: a
+// password user while password sign-in is on, or a name on the Google
+// allowlist. Sessions are stateless, so this is what ends a removed user's
+// session (after a restart) instead of letting it run out its TTL.
+func sessionAllowed(users auth.Users, google *auth.GoogleLogin, passwordDisabled bool) func(string) bool {
+	allowed := map[string]bool{}
+	if !passwordDisabled {
+		for name, rec := range users {
+			if rec.Hash != "" {
+				allowed[name] = true
+			}
+		}
+	}
+	if google != nil {
+		for _, name := range google.Users {
+			allowed[name] = true
+		}
+	}
+	return func(name string) bool { return allowed[name] }
+}
+
+// googleLogin builds Google sign-in from config and the environment, or
+// returns nil when auth.google isn't configured. Missing or malformed values
+// are a startup error rather than a silently disabled login.
+func googleLogin(cfg *config.Config, svc *auth.Service) (*auth.GoogleLogin, error) {
+	g := cfg.Auth.Google
+	if g == nil {
+		return nil, nil
+	}
+	clientID, secret := os.Getenv(g.ClientIDEnv), os.Getenv(g.ClientSecretEnv)
+	if clientID == "" || secret == "" {
+		return nil, fmt.Errorf("auth.google: %s and %s must both be set", g.ClientIDEnv, g.ClientSecretEnv)
+	}
+	users, err := auth.ParseGoogleUsers(os.Getenv(g.UsersEnv))
+	if err != nil {
+		return nil, fmt.Errorf("auth.google: %s: %w", g.UsersEnv, err)
+	}
+	return &auth.GoogleLogin{
+		ClientID:     clientID,
+		ClientSecret: secret,
+		RedirectURL:  g.RedirectURL,
+		Users:        users,
+		Service:      svc,
+	}, nil
 }

@@ -73,6 +73,22 @@ services:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - WINDROSE_RCON_PASSWORD=${WINDROSE_RCON_PASSWORD:-}
       - PALWORLD_ADMIN_PASSWORD=${PALWORLD_ADMIN_PASSWORD:-}
+      - CROWSNEST_GOOGLE_CLIENT_ID=${CROWSNEST_GOOGLE_CLIENT_ID:-}
+      - CROWSNEST_GOOGLE_CLIENT_SECRET=${CROWSNEST_GOOGLE_CLIENT_SECRET:-}
+      - CROWSNEST_GOOGLE_USERS=${CROWSNEST_GOOGLE_USERS:-}
+      - DOCKER_CONFIG=/tmp/.docker   # the docker CLI's config dir; the root filesystem is read-only
+    # Hardening: CrowsNest runs as a non-root user, needs no Linux
+    # capabilities (port 5000, no raw sockets), and only writes users.env and
+    # the session secret (both bind mounts) plus /tmp.
+    read_only: true
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256   # docker/compose subprocesses + log streams (capped at 20 in the app)
+    mem_limit: 512m
     # Grants the container's non-root user access to the host Docker socket.
     # Run `stat -c '%g' /var/run/docker.sock` to find your host's docker
     # group GID if it differs from the Debian/Ubuntu default of 999.

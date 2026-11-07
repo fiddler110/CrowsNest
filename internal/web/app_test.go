@@ -689,3 +689,58 @@ func TestHandleStart_NotifiesWithActor(t *testing.T) {
 type chanNotifier struct{ ch chan string }
 
 func (c *chanNotifier) Notify(_ context.Context, m string) { c.ch <- m }
+
+func TestLoginPage_GoogleOnly(t *testing.T) {
+	h := newHarness(t, psOnlyRunning, "palworld")
+	h.App.Auth.DisablePasswordLogin = true
+	h.App.Google = &auth.GoogleLogin{RedirectURL: "https://crowsnest.example.com/auth/google/callback", Service: h.App.Auth}
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login?error="+auth.LoginErrorNotAllowed, nil))
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d", rec.Code)
+	}
+	if !strings.Contains(body, `href="https://crowsnest.example.com/auth/google/start"`) {
+		t.Fatal("login page has no Google sign-in link to the redirect URL's origin")
+	}
+	if strings.Contains(body, `id="login-form"`) || strings.Contains(body, "login.js") {
+		t.Fatal("password form still rendered with password sign-in disabled")
+	}
+	if !strings.Contains(body, "crew list") {
+		t.Fatal("not-allowed error message not shown")
+	}
+
+	// The Google routes are registered; an unknown error code shows nothing.
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, auth.GoogleStartPath, nil))
+	if rec.Code != http.StatusFound {
+		t.Fatalf("GET %s = %d, want 302", auth.GoogleStartPath, rec.Code)
+	}
+	// HEAD would otherwise reach the callback (Go's GET pattern matches it) and burn the state cookie.
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodHead, auth.GoogleCallbackPath+"?code=x&state=y", nil))
+	if rec.Code != http.StatusMethodNotAllowed || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("HEAD %s = %d with cookies %v, want 405 and no cookie changes", auth.GoogleCallbackPath, rec.Code, rec.Result().Cookies())
+	}
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login?error=%3Cscript%3E", nil))
+	if strings.Contains(rec.Body.String(), "<script>") || !strings.Contains(rec.Body.String(), `id="login-alert" role="alert" hidden`) {
+		t.Fatal("an unknown error code must not render any text")
+	}
+}
+
+func TestLoginPage_PasswordOnlyByDefault(t *testing.T) {
+	h := newHarness(t, psOnlyRunning, "palworld")
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="login-form"`) || strings.Contains(body, "Sign in with Google") {
+		t.Fatal("default login page should show the password form and no Google button")
+	}
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, auth.GoogleStartPath, nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("GET %s without Google configured = %d, want 404", auth.GoogleStartPath, rec.Code)
+	}
+}

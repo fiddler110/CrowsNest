@@ -447,3 +447,66 @@ games:
 		t.Errorf("Games[1] connect = %q / %q, want both empty when unset", g.ConnectAddress, g.ConnectNote)
 	}
 }
+
+const authTestGames = `
+users_file: /app/users.env
+games:
+  - id: a
+    display_name: A
+    container_name: a
+    compose_file: f
+    compose_profile: p
+    compose_service: s
+`
+
+func TestLoad_AuthGoogle(t *testing.T) {
+	path := writeConfig(t, `
+server:
+  secure_cookies: true
+auth:
+  password_login: false
+  google:
+    redirect_url: https://crowsnest.example.com/auth/google/callback
+`+authTestGames)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.Auth.PasswordLoginEnabled() {
+		t.Fatal("password_login: false should disable password sign-in")
+	}
+	g := cfg.Auth.Google
+	if g.ClientIDEnv != "CROWSNEST_GOOGLE_CLIENT_ID" || g.ClientSecretEnv != "CROWSNEST_GOOGLE_CLIENT_SECRET" || g.UsersEnv != "CROWSNEST_GOOGLE_USERS" {
+		t.Fatalf("default env names = %+v", g)
+	}
+
+	path = writeConfig(t, authTestGames)
+	if cfg, err = Load(path); err != nil || !cfg.Auth.PasswordLoginEnabled() || cfg.Auth.Google != nil {
+		t.Fatalf("no auth section: err=%v, password=%v google=%v; want password on, google off", err, cfg.Auth.PasswordLoginEnabled(), cfg.Auth.Google)
+	}
+}
+
+func TestLoad_AuthErrors(t *testing.T) {
+	for name, tc := range map[string]struct{ auth, want string }{
+		"nobody can sign in":      {"auth:\n  password_login: false\n", "nobody could sign in"},
+		"no redirect":             {"auth:\n  google: {}\n", "redirect_url is required"},
+		"relative redirect":       {"auth:\n  google:\n    redirect_url: /auth/google/callback\n", "absolute URL"},
+		"plain http":              {"auth:\n  google:\n    redirect_url: http://crowsnest.example.com/auth/google/callback\n", "must be https"},
+		"wrong path":              {"auth:\n  google:\n    redirect_url: https://crowsnest.example.com/callback\n", "path must be"},
+		"query":                   {"auth:\n  google:\n    redirect_url: https://crowsnest.example.com/auth/google/callback?x=1\n", "no query"},
+		"empty query":             {"auth:\n  google:\n    redirect_url: https://crowsnest.example.com/auth/google/callback?\n", "no query"},
+		"empty fragment":          {"auth:\n  google:\n    redirect_url: \"https://crowsnest.example.com/auth/google/callback#\"\n", "no query"},
+		"escaped path":            {"auth:\n  google:\n    redirect_url: https://crowsnest.example.com/auth%2Fgoogle/callback\n", "no query"},
+		"https, insecure cookies": {"auth:\n  google:\n    redirect_url: https://crowsnest.example.com/auth/google/callback\n", "secure_cookies must be true"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := Load(writeConfig(t, tc.auth+authTestGames))
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("Load() error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	if _, err := Load(writeConfig(t, "auth:\n  google:\n    redirect_url: http://localhost:5000/auth/google/callback\n"+authTestGames)); err != nil {
+		t.Fatalf("http://localhost redirect should be allowed for local testing: %v", err)
+	}
+}

@@ -105,8 +105,41 @@ There's no server-side session store to revoke a single device from, but
 `docker compose exec crowsnest crowsnest revoke-sessions <username>` forces
 every outstanding session for that user to fail on their next request; it
 edits the users file, so it takes effect the next time crowsnest restarts.
+It works for Google sign-in users too (any name on the allowlist), even
+though they have no password entry. To remove someone entirely, take them
+off the Google allowlist (or delete their password entry) and restart: a
+session only stays valid while its username still has a way to sign in.
 Rotating/deleting the session-secret file logs out every user at once, if
 you ever need that blunter option.
+
+### Signing in with Google
+
+CrowsNest can do "Sign in with Google" itself (OpenID Connect, server side),
+with its own allowlist, so it doesn't need a separate auth proxy and a
+Google account only gets in if you listed it.
+
+1. In Google Cloud Console, go to APIs & Services, then Credentials. Create
+   an OAuth client ID of type **Web application**, with the authorized
+   redirect URI `https://<your host>/auth/google/callback`. On the OAuth
+   consent screen, the `openid` and `email` scopes are all CrowsNest asks for.
+2. In `.env`, set `CROWSNEST_GOOGLE_CLIENT_ID`, `CROWSNEST_GOOGLE_CLIENT_SECRET`
+   and the allowlist, e.g.
+   `CROWSNEST_GOOGLE_USERS=alice=alice@gmail.com,bob=bob@example.org`.
+   The name before each `=` is the CrowsNest username that Google account
+   signs in as (in the audit log, and for `revoke-sessions`).
+3. In `config.yaml`, add `auth.google.redirect_url` with the same URL, and
+   `auth.password_login: false` if Google should be the only way in. An
+   https redirect URL also needs `server.secure_cookies: true`.
+   CrowsNest refuses to start if a value is missing or malformed. Addresses
+   must be plain ASCII and match the Google account's exactly (case aside):
+   `j.doe@gmail.com` and `jdoe@gmail.com` are different entries here.
+
+The flow uses a signed 10-minute state cookie (state, nonce and PKCE), and
+exchanges the code with Google's token endpoint directly over TLS. Once
+signed in, it's the same 3-hour session as a password login. Requests to
+Google need outbound HTTPS from the container. If the login page is
+reached on another hostname that proxies to CrowsNest, the Google button
+still goes through the redirect URL's host, and you land there.
 
 ### Docker socket access
 

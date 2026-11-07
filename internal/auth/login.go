@@ -38,7 +38,15 @@ type Service struct {
 	// SecureCookies marks the session cookie Secure; set true once serving
 	// over TLS or behind a TLS-terminating reverse proxy.
 	SecureCookies bool
+
+	// DisablePasswordLogin turns off POST /login with a username and
+	// password (e.g. Google sign-in only): every password attempt is refused
+	// before any credential is looked at. The zero value keeps it on.
+	DisablePasswordLogin bool
 }
+
+// passwordLoginDisabled is the 403 body when password sign-in is off.
+const passwordLoginDisabled = "password sign-in is disabled"
 
 type loginRequest struct {
 	Username string `json:"username"`
@@ -53,6 +61,10 @@ type loginResponse struct {
 // cookie and returns the session's CSRF token. Exempt from CSRF checking —
 // it's what creates the token in the first place.
 func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
+	if s.DisablePasswordLogin {
+		http.Error(w, passwordLoginDisabled, http.StatusForbidden)
+		return
+	}
 	ip := ClientIP(r, s.TrustedProxies)
 	if s.LoginLimiter != nil && !s.LoginLimiter.Allow(ip) {
 		http.Error(w, "too many login attempts, try again later", http.StatusTooManyRequests)
@@ -68,6 +80,9 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 	username := strings.ToLower(strings.TrimSpace(req.Username))
 
 	record, known := s.Users[username]
+	// A user with no hash (e.g. a Google-only user with just a revocation
+	// marker) has no password: treat them exactly like an unknown name.
+	known = known && record.Hash != ""
 	hash := record.Hash
 	if !known {
 		hash = dummyHash
@@ -78,15 +93,31 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := s.Sessions.New(username)
+	session, err := s.newSession(w, username)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(loginResponse{CSRFToken: session.CSRFToken})
+}
+
+// startSession signs a new session for username and sets its cookie; used by
+// sign-in methods that redirect rather than answer JSON (Google).
+func (s *Service) startSession(w http.ResponseWriter, username string) error {
+	_, err := s.newSession(w, username)
+	return err
+}
+
+func (s *Service) newSession(w http.ResponseWriter, username string) (Session, error) {
+	session, err := s.Sessions.New(username)
+	if err != nil {
+		return Session{}, err
+	}
 	token, err := s.Sessions.Encode(session)
 	if err != nil {
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
+		return Session{}, err
 	}
 
 	// #nosec G124 -- HttpOnly and SameSite=Lax are always set; Secure follows server.secure_cookies, because a
@@ -100,9 +131,7 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		SameSite: http.SameSiteLaxMode,
 		Expires:  session.ExpiresAt,
 	})
-
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(loginResponse{CSRFToken: session.CSRFToken})
+	return session, nil
 }
 
 // ServeLogout clears the session cookie. Idempotent; doesn't require a

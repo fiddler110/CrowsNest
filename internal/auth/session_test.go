@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -93,5 +94,22 @@ func TestSessionDecode_Malformed(t *testing.T) {
 	mgr := NewSessionManager([]byte("test-secret"), time.Hour)
 	if _, err := mgr.Decode("not-a-valid-token"); err == nil {
 		t.Fatal("Decode() error = nil, want error for a malformed token")
+	}
+}
+
+func TestDecode_Allowed(t *testing.T) {
+	m := NewSessionManager([]byte("0123456789abcdef0123456789abcdef"), time.Hour)
+	s, _ := m.New("friend")
+	tok, err := m.Encode(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.Allowed = func(name string) bool { return name == "friend" }
+	if _, err := m.Decode(tok); err != nil {
+		t.Fatalf("allowed user: Decode() error = %v", err)
+	}
+	m.Allowed = func(string) bool { return false }
+	if _, err := m.Decode(tok); !errors.Is(err, ErrSessionRevoked) {
+		t.Fatalf("user no longer allowed: Decode() error = %v, want ErrSessionRevoked", err)
 	}
 }

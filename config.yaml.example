@@ -39,6 +39,18 @@ notifications:                 # Discord webhook, posted on both idle and night 
 
 users_file: /app/users.env     # <NAME>_PASSWORD_HASH entries; managed by `crowsnest set-password`
 
+# How people sign in. With no auth section, only username/password (users_file) is used.
+# auth:
+#   password_login: false         # default true; false makes Google the only way in
+#   google:                       # "Sign in with Google"; see README "Signing in with Google"
+#     # Must also be an authorized redirect URI on the Google OAuth client.
+#     # An https URL requires server.secure_cookies: true.
+#     redirect_url: https://crowsnest.example.com/auth/google/callback
+#     # These name env vars (set in .env); the defaults are shown.
+#     # client_id_env: CROWSNEST_GOOGLE_CLIENT_ID
+#     # client_secret_env: CROWSNEST_GOOGLE_CLIENT_SECRET
+#     # users_env: CROWSNEST_GOOGLE_USERS    # the allowlist: name=email,name=email
+
 games:
   - id: windrose
     display_name: Windrose

@@ -110,14 +110,18 @@ func SetUserHash(path, username, hash string) error {
 // fail SessionManager.Decode from that point on. Like SetUserHash, this
 // only takes effect once the running server reloads the file (i.e. on
 // restart); there's no hot-reload.
-func RevokeSessions(path, username string) error {
+//
+// A name with no entry in the file is an error unless allowNew is set: the
+// caller passes true for a Google sign-in user (who has no password, so no
+// entry yet), and the marker is then written on its own.
+func RevokeSessions(path, username string, allowNew bool) error {
 	existing, err := LoadUsers(path)
 	if err != nil {
 		return err
 	}
 	key := strings.ToLower(username)
 	rec, ok := existing[key]
-	if !ok {
+	if !ok && !allowNew {
 		return fmt.Errorf("auth: no such user %q in %s", username, path)
 	}
 	rec.ValidAfter = time.Now().UTC()
@@ -137,7 +141,9 @@ func writeUsers(path string, users Users) error {
 	var b strings.Builder
 	for _, name := range names {
 		rec := users[name]
-		fmt.Fprintf(&b, "%s%s=%s\n", strings.ToUpper(name), passwordHashSuffix, rec.Hash)
+		if rec.Hash != "" {
+			fmt.Fprintf(&b, "%s%s=%s\n", strings.ToUpper(name), passwordHashSuffix, rec.Hash)
+		}
 		if !rec.ValidAfter.IsZero() {
 			fmt.Fprintf(&b, "%s%s=%d\n", strings.ToUpper(name), validAfterSuffix, rec.ValidAfter.Unix())
 		}

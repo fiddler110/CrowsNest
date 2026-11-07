@@ -124,7 +124,7 @@ func TestRevokeSessions_SetsValidAfterAndPreservesHash(t *testing.T) {
 	}
 
 	before := time.Now().Add(-time.Second)
-	if err := RevokeSessions(path, "Alice"); err != nil {
+	if err := RevokeSessions(path, "Alice", false); err != nil {
 		t.Fatalf("RevokeSessions() error = %v", err)
 	}
 
@@ -143,7 +143,7 @@ func TestRevokeSessions_SetsValidAfterAndPreservesHash(t *testing.T) {
 
 func TestRevokeSessions_UnknownUser(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "users.env")
-	if err := RevokeSessions(path, "ghost"); err == nil {
+	if err := RevokeSessions(path, "ghost", false); err == nil {
 		t.Fatal("RevokeSessions() error = nil, want error for a user with no password set")
 	}
 }

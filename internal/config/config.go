@@ -6,9 +6,11 @@ package config
 import (
 	"fmt"
 	"net"
+	"net/url"
 	"os"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -34,6 +36,7 @@ type Config struct {
 	IdleShutdown  *IdleShutdownConfig  `yaml:"idle_shutdown"`
 	NightShutdown *NightShutdownConfig `yaml:"night_shutdown"`
 	Notifications *NotificationsConfig `yaml:"notifications"`
+	Auth          AuthConfig           `yaml:"auth"`
 	UsersFile     string               `yaml:"users_file"`
 	Games         []GameConfig         `yaml:"games"`
 }
@@ -71,6 +74,49 @@ type ServerConfig struct {
 	// environment variable (e.g. from .env) when that is set.
 	MaxActiveGames int `yaml:"max_active_games"`
 }
+
+// AuthConfig chooses how people sign in.
+type AuthConfig struct {
+	// PasswordLogin enables username/password sign-in against users_file.
+	// Nil (unset) means true. Set it false to make Google the only way in;
+	// at least one sign-in method must stay enabled.
+	PasswordLogin *bool `yaml:"password_login"`
+
+	// Google enables "Sign in with Google" when set.
+	Google *GoogleAuthConfig `yaml:"google"`
+}
+
+// PasswordLoginEnabled reports the effective password_login setting.
+func (a AuthConfig) PasswordLoginEnabled() bool {
+	return a.PasswordLogin == nil || *a.PasswordLogin
+}
+
+// GoogleAuthConfig configures Google sign-in. Like every other secret in
+// this config, the values themselves live in environment variables (e.g.
+// from .env), and these fields only name them.
+type GoogleAuthConfig struct {
+	// RedirectURL is the absolute callback URL, which must also be listed as
+	// an authorized redirect URI on the Google OAuth client, e.g.
+	// https://crowsnest.example.com/auth/google/callback. Its path must be
+	// /auth/google/callback.
+	RedirectURL string `yaml:"redirect_url"`
+
+	// ClientIDEnv / ClientSecretEnv name the variables holding the OAuth
+	// client's ID and secret. Defaults: CROWSNEST_GOOGLE_CLIENT_ID and
+	// CROWSNEST_GOOGLE_CLIENT_SECRET.
+	ClientIDEnv     string `yaml:"client_id_env"`
+	ClientSecretEnv string `yaml:"client_secret_env"`
+
+	// UsersEnv names the variable holding the allowlist: comma-separated
+	// name=email pairs, e.g. "scott=scott@gmail.com,friend=pal@gmail.com".
+	// Only these Google accounts may sign in, each as the CrowsNest
+	// username before the '='. Default: CROWSNEST_GOOGLE_USERS.
+	UsersEnv string `yaml:"users_env"`
+}
+
+// GoogleCallbackPath is the route auth.GoogleLogin serves the callback on
+// (auth.GoogleCallbackPath); a test in cmd/crowsnest checks they agree.
+const GoogleCallbackPath = "/auth/google/callback"
 
 // MaxActiveGamesEnv names the environment variable that overrides
 // server.max_active_games.
@@ -224,6 +270,18 @@ func (c *Config) applyDefaults() {
 	if c.Notifications == nil {
 		c.Notifications = &NotificationsConfig{}
 	}
+
+	if g := c.Auth.Google; g != nil {
+		if g.ClientIDEnv == "" {
+			g.ClientIDEnv = "CROWSNEST_GOOGLE_CLIENT_ID"
+		}
+		if g.ClientSecretEnv == "" {
+			g.ClientSecretEnv = "CROWSNEST_GOOGLE_CLIENT_SECRET" // #nosec G101 -- the name of an env var, not a secret
+		}
+		if g.UsersEnv == "" {
+			g.UsersEnv = "CROWSNEST_GOOGLE_USERS"
+		}
+	}
 }
 
 // Location parses Server.TZ, which applyDefaults has already guaranteed is
@@ -242,6 +300,25 @@ func (c *Config) validate() error {
 	for i, cidr := range c.Server.TrustedProxies {
 		if _, _, err := net.ParseCIDR(cidr); err != nil {
 			return fmt.Errorf("server.trusted_proxies[%d] (%s): %w", i, cidr, err)
+		}
+	}
+	if !c.Auth.PasswordLoginEnabled() && c.Auth.Google == nil {
+		return fmt.Errorf("auth: password_login is false and auth.google is not set, so nobody could sign in")
+	}
+	if g := c.Auth.Google; g != nil {
+		u, err := url.Parse(g.RedirectURL)
+		switch {
+		case g.RedirectURL == "":
+			return fmt.Errorf("auth.google.redirect_url is required")
+		case err != nil || u.Host == "" || u.User != nil || u.RawQuery != "" || u.ForceQuery || u.Fragment != "" ||
+			strings.ContainsAny(g.RedirectURL, "#%"):
+			return fmt.Errorf("auth.google.redirect_url (%s): must be an absolute URL with no query or fragment", g.RedirectURL)
+		case u.Scheme != "https" && !(u.Scheme == "http" && isLoopbackHost(u.Hostname())):
+			return fmt.Errorf("auth.google.redirect_url (%s): must be https (http only for localhost)", g.RedirectURL)
+		case u.Path != GoogleCallbackPath:
+			return fmt.Errorf("auth.google.redirect_url (%s): path must be %s", g.RedirectURL, GoogleCallbackPath)
+		case u.Scheme == "https" && !c.Server.SecureCookies:
+			return fmt.Errorf("auth.google.redirect_url is https, so server.secure_cookies must be true")
 		}
 	}
 	if c.Server.MaxActiveGames < 1 {
@@ -297,4 +374,12 @@ func (c *Config) validate() error {
 		}
 	}
 	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
