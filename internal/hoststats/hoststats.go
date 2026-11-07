@@ -53,8 +53,8 @@ func Read(paths []string) Snapshot {
 		seen[id] = true
 		s.Disks = append(s.Disks, Disk{
 			Path:  p,
-			Total: st.Blocks * uint64(st.Bsize),
-			Free:  st.Bavail * uint64(st.Bsize),
+			Total: st.Blocks * uint64(st.Bsize), // #nosec G115 -- block size is a small positive int
+			Free:  st.Bavail * uint64(st.Bsize), // #nosec G115 -- block size is a small positive int
 		})
 	}
 	return s

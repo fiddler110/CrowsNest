@@ -95,10 +95,13 @@ func isTimeout(err error) bool {
 }
 
 func write(w io.Writer, id int32, typ int32, body string) error {
+	if len(body) > maxPacket {
+		return errors.New("rcon: command too long")
+	}
 	buf := make([]byte, 4+4+4+len(body)+2)
-	binary.LittleEndian.PutUint32(buf[0:], uint32(4+4+len(body)+2))
-	binary.LittleEndian.PutUint32(buf[4:], uint32(id))
-	binary.LittleEndian.PutUint32(buf[8:], uint32(typ))
+	binary.LittleEndian.PutUint32(buf[0:], uint32(4+4+len(body)+2)) // #nosec G115 -- bounded by maxPacket above
+	binary.LittleEndian.PutUint32(buf[4:], uint32(id))              // #nosec G115 -- wire format is the same 32 bits
+	binary.LittleEndian.PutUint32(buf[8:], uint32(typ))             // #nosec G115 -- wire format is the same 32 bits
 	copy(buf[12:], body)
 	_, err := w.Write(buf)
 	return err
@@ -117,8 +120,8 @@ func read(r io.Reader) (id int32, typ int32, body string, err error) {
 	if _, err = io.ReadFull(r, buf); err != nil {
 		return
 	}
-	id = int32(binary.LittleEndian.Uint32(buf[0:]))
-	typ = int32(binary.LittleEndian.Uint32(buf[4:]))
+	id = int32(binary.LittleEndian.Uint32(buf[0:]))  // #nosec G115 -- ids are signed on the wire (-1 = auth failure)
+	typ = int32(binary.LittleEndian.Uint32(buf[4:])) // #nosec G115 -- small enum on the wire
 	body = strings.TrimRight(string(buf[8:]), "\x00")
 	return
 }
