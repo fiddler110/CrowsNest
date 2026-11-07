@@ -89,6 +89,8 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// #nosec G124 -- HttpOnly and SameSite=Lax are always set; Secure follows server.secure_cookies, because a
+	// plain-HTTP LAN deployment would never get a Secure cookie back from the browser.
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    token,
@@ -106,6 +108,7 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 // ServeLogout clears the session cookie. Idempotent; doesn't require a
 // valid session (there's no server-side state to invalidate).
 func (s *Service) ServeLogout(w http.ResponseWriter, r *http.Request) {
+	// #nosec G124 -- clears the cookie; same attributes as the one set at login
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,
 		Value:    "",

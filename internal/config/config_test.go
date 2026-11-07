@@ -416,3 +416,34 @@ func TestLoad_MaxActiveGames(t *testing.T) {
 		}
 	}
 }
+
+func TestLoad_ConnectDetails(t *testing.T) {
+	path := writeConfig(t, `
+users_file: /app/users.env
+games:
+  - id: palworld
+    display_name: Palworld
+    container_name: palworld
+    compose_file: /palworld/compose.yaml
+    compose_profile: palworld
+    compose_service: palworld
+    connect_address: "play.example.com:8211"
+    connect_note: "Password is in our group chat"
+  - id: valheim
+    display_name: Valheim
+    container_name: valheim
+    compose_file: /valheim/compose.yaml
+    compose_profile: valheim
+    compose_service: valheim
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if g := cfg.Games[0]; g.ConnectAddress != "play.example.com:8211" || g.ConnectNote != "Password is in our group chat" {
+		t.Errorf("Games[0] connect = %q / %q", g.ConnectAddress, g.ConnectNote)
+	}
+	if g := cfg.Games[1]; g.ConnectAddress != "" || g.ConnectNote != "" {
+		t.Errorf("Games[1] connect = %q / %q, want both empty when unset", g.ConnectAddress, g.ConnectNote)
+	}
+}

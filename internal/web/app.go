@@ -102,6 +102,12 @@ type gameSummary struct {
 	// PlayerCount is nil when the game has no PlayerCounter wired, or its
 	// count is currently undeterminable — never a guessed zero.
 	PlayerCount *int `json:"player_count"`
+
+	// StartError is the error from this game's most recent background
+	// start, if it failed; StartErrorAt is when (unix seconds), so the UI
+	// can tell a new failure from one it has already shown.
+	StartError   string `json:"start_error,omitempty"`
+	StartErrorAt int64  `json:"start_error_at,omitempty"`
 }
 
 // playerCount reports d's current player count, if determinable.
@@ -114,6 +120,17 @@ func playerCount(r *http.Request, d games.GameDef) *int {
 		return nil
 	}
 	return &count
+}
+
+// gameStatus is checkStatus plus the exclusivity manager's view: a game
+// whose start was accepted but is still pulling/creating its container
+// reports starting even though docker doesn't show it running yet.
+func (a *App) gameStatus(r *http.Request, d games.GameDef) games.Status {
+	st := checkStatus(r, d)
+	if a.Exclusivity != nil && a.Exclusivity.Starting(d.ID) && st != games.StatusOnline {
+		return games.StatusStarting
+	}
+	return st
 }
 
 func checkStatus(r *http.Request, d games.GameDef) games.Status {
@@ -138,6 +155,11 @@ type dashboardGame struct {
 	DisplayName string
 	Initial     string // first letter, for the card's emblem
 	Status      string
+
+	// ConnectAddress/ConnectNote are the optional display-only connection
+	// details; the template renders nothing when both are empty.
+	ConnectAddress string
+	ConnectNote    string
 }
 
 type dashboardData struct {
@@ -155,7 +177,10 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			ID:          d.ID,
 			DisplayName: d.DisplayName,
 			Initial:     initialOf(d.DisplayName),
-			Status:      checkStatus(r, d).String(),
+			Status:      a.gameStatus(r, d).String(),
+
+			ConnectAddress: d.ConnectAddress,
+			ConnectNote:    d.ConnectNote,
 		})
 	}
 	if err := a.Templates.Dashboard.Execute(w, data); err != nil {
@@ -170,8 +195,14 @@ func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
 		out[i] = gameSummary{
 			ID:          d.ID,
 			DisplayName: d.DisplayName,
-			Status:      checkStatus(r, d).String(),
+			Status:      a.gameStatus(r, d).String(),
 			PlayerCount: playerCount(r, d),
+		}
+		if a.Exclusivity != nil {
+			if res, ok := a.Exclusivity.LastStart(d.ID); ok && res.Err != "" {
+				out[i].StartError = res.Err
+				out[i].StartErrorAt = res.At.Unix()
+			}
 		}
 	}
 	writeJSON(w, http.StatusOK, out)
@@ -248,7 +279,7 @@ func (a *App) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]string{"status": checkStatus(r, d).String()})
+	writeJSON(w, http.StatusOK, map[string]string{"status": a.gameStatus(r, d).String()})
 }
 
 // statsResponse mirrors the original Python CrowsNest's /api/stats shape:
@@ -309,7 +340,7 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	err := a.Exclusivity.RequestStart(r.Context(), d.ID)
+	err := a.Exclusivity.RequestStart(exclusivity.WithActor(r.Context(), actor(r)), d.ID)
 	if err == nil {
 		log.Printf("audit: %s started %s", actor(r), d.ID)
 		w.WriteHeader(http.StatusAccepted)
@@ -335,7 +366,7 @@ func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := a.Exclusivity.Stop(r.Context(), d.ID); err != nil {
+	if err := a.Exclusivity.Stop(exclusivity.WithActor(r.Context(), actor(r)), d.ID); err != nil {
 		log.Printf("audit: %s stop %s failed: %v", actor(r), d.ID, err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return
@@ -363,7 +394,7 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "unknown source game", http.StatusBadRequest)
 		return
 	}
-	if err := a.Exclusivity.ConfirmSwitch(r.Context(), req.From, to.ID); err != nil {
+	if err := a.Exclusivity.ConfirmSwitch(exclusivity.WithActor(r.Context(), actor(r)), req.From, to.ID); err != nil {
 		log.Printf("audit: %s switch %s->%s failed: %v", actor(r), req.From, to.ID, err)
 		http.Error(w, err.Error(), http.StatusBadGateway)
 		return

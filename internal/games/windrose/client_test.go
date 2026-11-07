@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -35,8 +36,10 @@ func newFakeDockerInspect(t *testing.T, startedAt time.Time) *dockerctl.Client {
 type fakeWplusServer struct {
 	*httptest.Server
 	wantPassword string
-	statusCalls  int
-	rconCalls    int
+	// Counters are atomic: the HTTP server runs each request on its own
+	// goroutine, and the client legitimately issues concurrent requests.
+	statusCalls atomic.Int32
+	rconCalls   atomic.Int32
 
 	// statusFunc, if set, is called for each valid /api/status request and
 	// its return value is marshaled as the response body.
@@ -68,10 +71,10 @@ func newFakeWplusServer(t *testing.T, password string) *fakeWplusServer {
 			json.NewEncoder(w).Encode(map[string]string{"error": "Authentication required"})
 			return
 		}
-		f.statusCalls++
+		calls := int(f.statusCalls.Add(1))
 		var body map[string]any
 		if f.statusFunc != nil {
-			body = f.statusFunc(f.statusCalls)
+			body = f.statusFunc(calls)
 		} else {
 			body = map[string]any{"mode": "active"}
 		}
@@ -82,7 +85,7 @@ func newFakeWplusServer(t *testing.T, password string) *fakeWplusServer {
 			json.NewEncoder(w).Encode(map[string]string{"error": "Authentication required"})
 			return
 		}
-		f.rconCalls++
+		f.rconCalls.Add(1)
 		var req struct {
 			Command string `json:"command"`
 		}
@@ -226,8 +229,8 @@ func TestStatus_CachedWithinTTL(t *testing.T) {
 
 	c.status(context.Background())
 	c.status(context.Background())
-	if srv.statusCalls != 1 {
-		t.Errorf("statusCalls = %d, want 1 (second call should be cache-served)", srv.statusCalls)
+	if srv.statusCalls.Load() != 1 {
+		t.Errorf("statusCalls = %d, want 1 (second call should be cache-served)", srv.statusCalls.Load())
 	}
 }
 
@@ -319,8 +322,8 @@ func TestInfo_BootModeSkipsRCON(t *testing.T) {
 	if info["available"] != true {
 		t.Errorf("available = %v, want true (API reachable, just in boot mode)", info["available"])
 	}
-	if srv.rconCalls != 0 {
-		t.Errorf("rconCalls = %d, want 0 in boot mode", srv.rconCalls)
+	if srv.rconCalls.Load() != 0 {
+		t.Errorf("rconCalls = %d, want 0 in boot mode", srv.rconCalls.Load())
 	}
 }
 

@@ -12,10 +12,13 @@ package palworld
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
@@ -37,6 +40,26 @@ type Client struct {
 	// HTTP overrides the http.Client used for requests. Intended for tests;
 	// production callers should leave it unset.
 	HTTP *http.Client
+
+	// authWarned is set once a 401/403 has been logged, so a wrong
+	// password produces one clear warning rather than one per poll.
+	authWarned atomic.Bool
+}
+
+// noteAuth logs, once per failure streak, that the REST API rejected our
+// credentials — otherwise a wrong password just looks like a server stuck
+// on "starting" with no player count and no idle auto-stop.
+func (c *Client) noteAuth(err error) {
+	var st errStatus
+	if errors.As(err, &st) && (st == http.StatusUnauthorized || st == http.StatusForbidden) {
+		if !c.authWarned.Swap(true) {
+			log.Printf("palworld: REST API at %s rejected the admin credentials (HTTP %d) — check that the CrowsNest password env var matches the server's ADMIN_PASSWORD; status will stay \"starting\" and idle auto-stop is disabled until it does", c.BaseURL, int(st))
+		}
+		return
+	}
+	if err == nil {
+		c.authWarned.Store(false)
+	}
 }
 
 func (c *Client) client() *http.Client {
@@ -86,7 +109,9 @@ func (c *Client) Check(ctx context.Context, containerName string) (games.Status,
 	if !running {
 		return games.StatusOffline, nil
 	}
-	if err := c.get(ctx, "/v1/api/info", nil); err != nil {
+	err = c.get(ctx, "/v1/api/info", nil)
+	c.noteAuth(err)
+	if err != nil {
 		return games.StatusStarting, nil
 	}
 	return games.StatusOnline, nil

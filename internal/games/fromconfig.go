@@ -20,6 +20,8 @@ func FromConfig(cfgs []config.GameConfig, docker *dockerctl.Client) []GameDef {
 			ComposeFile:    g.ComposeFile,
 			ComposeProfile: g.ComposeProfile,
 			ComposeService: g.ComposeService,
+			ConnectAddress: g.ConnectAddress,
+			ConnectNote:    g.ConnectNote,
 			NightShutdown:  g.NightShutdown == nil || *g.NightShutdown,
 			Status:         &DockerStatusChecker{Docker: docker},
 			Players:        UnknownPlayerCounter{},

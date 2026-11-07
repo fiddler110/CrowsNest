@@ -199,6 +199,9 @@ func serve() error {
 
 	exclusivityMgr := exclusivity.NewManager(registry, docker)
 	exclusivityMgr.MaxActive = cfg.Server.MaxActiveGames
+	// Background starts (compose pull/up) belong to the process, not to the
+	// HTTP request that asked for them; shutdown cancels them.
+	exclusivityMgr.BaseContext = ctx
 	app := &web.App{
 		Registry:    registry,
 		Docker:      docker,
@@ -216,6 +219,11 @@ func serve() error {
 	} else {
 		discordNotifier = &notify.Discord{} // inert zero value; Notify becomes a no-op
 	}
+
+	// Manual starts/stops/switches and failed starts notify too. Auto-stops
+	// call Stop without an actor, so they don't double up with idle/night's
+	// own messages.
+	exclusivityMgr.Notifier = discordNotifier
 
 	if cfg.IdleShutdown.Enabled {
 		idle := idleshutdown.New(

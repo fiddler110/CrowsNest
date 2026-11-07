@@ -63,6 +63,17 @@
         <span class="status status-{{.Status}}"><i class="beacon"></i><span class="status-text">{{.Status}}</span></span>
       </header>
 
+      {{if or .ConnectAddress .ConnectNote}}
+      <div class="connect">
+        {{if .ConnectAddress}}
+        <span class="connect-label">Connect</span>
+        <code class="connect-address">{{.ConnectAddress}}</code>
+        <button class="btn btn-ghost copy-btn" type="button" data-copy="{{.ConnectAddress}}" aria-label="Copy {{.DisplayName}} address to clipboard">Copy</button>
+        {{end}}
+        {{if .ConnectNote}}<p class="connect-note">{{.ConnectNote}}</p>{{end}}
+      </div>
+      {{end}}
+
       <p class="crew" hidden><svg class="icon"><use href="#i-users"/></svg><span class="player-count"></span></p>
 
       <div class="progress-wrap" hidden>
@@ -117,6 +128,9 @@
     <p class="eyebrow">// one ship at a time</p>
     <h3 id="conflict-title">Another vessel is at sea</h3>
     <p id="conflict-message"></p>
+    <fieldset id="conflict-choices" class="dialog-choices" hidden>
+      <legend>Which one should be stopped?</legend>
+    </fieldset>
     <div class="dialog-actions">
       <button id="conflict-cancel" class="btn btn-ghost" type="button">Cancel</button>
       <button id="conflict-confirm" class="btn btn-primary" type="button">Switch</button>

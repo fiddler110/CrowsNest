@@ -346,6 +346,24 @@ h1, h2, h3, p { margin: 0; }
 .dialog-box p { color: var(--muted); }
 .dialog-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.25rem; }
 
+.connect {
+  display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem;
+  margin: 0.2rem 0 0.8rem; font-size: 0.88rem;
+}
+.connect-label { color: var(--muted); font-size: 0.78rem; letter-spacing: 0.04em; text-transform: uppercase; }
+.connect-address { color: var(--text); overflow-wrap: anywhere; }
+.connect .copy-btn { padding: 0.2rem 0.6rem; font-size: 0.8rem; }
+.connect-note { flex-basis: 100%; margin: 0; color: var(--muted); }
+
+.dialog-choices { border: 0; margin: 0.75rem 0 0; padding: 0; display: grid; gap: 0.4rem; }
+.dialog-choices legend { padding: 0; margin-bottom: 0.4rem; color: var(--muted); }
+.dialog-choice {
+  display: flex; align-items: center; gap: 0.6rem; padding: 0.5rem 0.7rem; cursor: pointer;
+  border: 1px solid var(--border-strong); border-radius: 10px; color: var(--text);
+}
+.dialog-choice:has(input:checked) { border-color: var(--gold); }
+.dialog-choice:has(input:focus-visible) { outline: 2px solid var(--gold); outline-offset: 2px; }
+
 .toast {
   position: fixed; left: 50%; bottom: 1.4rem; z-index: 60; transform: translateX(-50%);
   max-width: min(92vw, 30rem); padding: 0.7rem 1rem;

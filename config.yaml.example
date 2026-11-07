@@ -67,6 +67,11 @@ games:
     compose_file: /data/compose.yaml
     compose_profile: palworld
     compose_service: palworld
+    # Optional connection details shown on the game's card, with a copy
+    # button for the address. Shown to every logged-in user, so never put a
+    # password here.
+    # connect_address: play.example.com:8211
+    # connect_note: Password is in our group chat
     # Palworld's dedicated server REST API (enable REST_API_ENABLED on the
     # server container) doubles as status probe and player counter.
     palworld:

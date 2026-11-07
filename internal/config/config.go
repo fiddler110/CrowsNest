@@ -137,6 +137,14 @@ type GameConfig struct {
 	ComposeService string `yaml:"compose_service"`
 	EnvFile        string `yaml:"env_file"`
 
+	// ConnectAddress is an optional host:port shown on the game's card with
+	// a copy button, so players know where to connect. ConnectNote is an
+	// optional short free-text hint beside it. Both are display-only and
+	// shown to every logged-in user: never put a password in either (a
+	// server password belongs in your group chat, not the panel).
+	ConnectAddress string `yaml:"connect_address"`
+	ConnectNote    string `yaml:"connect_note"`
+
 	// NightShutdown opts this game out of the global night-shutdown window
 	// when explicitly set to false. Nil (the default) means "included,"
 	// same as every other game, so long as night_shutdown.enabled is true.
@@ -148,7 +156,7 @@ type GameConfig struct {
 
 // Load reads, defaults, and validates the config.yaml at path.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- the config path is CROWSNEST_CONFIG or /app/config.yaml, set by the operator
 	if err != nil {
 		return nil, fmt.Errorf("config: read %s: %w", path, err)
 	}

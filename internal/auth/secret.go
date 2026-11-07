@@ -12,7 +12,7 @@ const sessionSecretSize = 32
 // and persisting a new random one on first run if the file doesn't exist
 // yet. Rotating (deleting) this file invalidates every existing session.
 func LoadOrCreateSecret(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- session_secret_file path comes from the operator's config.yaml
 	if err == nil {
 		if len(data) < sessionSecretSize {
 			return nil, fmt.Errorf("auth: session secret file %s is too short (want >= %d bytes)", path, sessionSecretSize)

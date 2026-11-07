@@ -8,6 +8,22 @@
 # socket; you generally don't run `--profile <game> up` yourself. See
 # config.yaml.example for the matching CrowsNest configuration.
 #
+# How CrowsNest runs compose: it calls `docker compose -f /data/compose.yaml
+# --profile <game> up -d <game>` from *inside* its own container. Three
+# things make that behave the same as running compose on the host:
+#   - the top-level `name:` below pins the project name (otherwise it would
+#     be "data", after the mount directory, and the game would land on a
+#     different network than crowsnest);
+#   - .env is mounted next to the compose file, so compose interpolates the
+#     same ${USERDIR}/passwords it would on the host (without it they are
+#     blank: saves land in /<Game> on the host root and the game password
+#     is empty);
+#   - host paths in game services must be absolute (${USERDIR}/...): a
+#     relative ./path would resolve against /data inside the container.
+# Compose interpolates the *whole* file even when starting one service, so
+# avoid ${VAR:?error} in game services — one unset variable for game A
+# would block starting game B.
+#
 # Docker socket access — two ways to grant it:
 #
 #   1. Direct socket mount (default below): simplest, but a container with
@@ -38,6 +54,8 @@
 #      you'd rather lose Windrose's fine-grained status in exchange for not
 #      exposing exec at all; docker-ps-only status still works either way.
 
+name: crowsnest
+
 services:
   crowsnest:
     image: ghcr.io/fiddler110/crowsnest:latest
@@ -67,6 +85,7 @@ services:
       - ./users.env:/app/users.env
       - ./session_secret:/app/.session_secret
       - ./compose.yaml:/data/compose.yaml:ro
+      - ./.env:/data/.env:ro   # compose in the container interpolates from this
       - /var/run/docker.sock:/var/run/docker.sock
     # depends_on:
     #   - dockerproxy
@@ -133,7 +152,7 @@ services:
       - TZ=${TZ:-UTC}
       - SERVER_NAME=${VALHEIM_SERVER_NAME:-My Valheim Server}
       - WORLD_NAME=${VALHEIM_WORLD_NAME:-Midgard}
-      - SERVER_PASS=${VALHEIM_SERVER_PASS:?set a server password}
+      - SERVER_PASS=${VALHEIM_SERVER_PASS:-}   # required by the image (5+ chars)
     volumes:
       - ${USERDIR}/Valheim/config:/config
       - ${USERDIR}/Valheim/data:/opt/valheim
@@ -143,10 +162,17 @@ services:
     profiles: ["palworld"]
     container_name: palworld
     restart: unless-stopped
-    stop_grace_period: 30s
+    # The image saves via its REST API on SIGTERM, then waits up to 30s for
+    # the server to exit — give it room.
+    stop_grace_period: 60s
+    # Palworld's README asks for 16GB+; cap it so a leak can't take the
+    # host down with it (tune to your host).
+    # mem_limit: 10g
     ports:
       - "8211:8211/udp"
-      - "8212:8212/tcp"   # REST API — used by crowsnest for status/player count
+      # No 8212 mapping: the REST API (admin password = full server control)
+      # must not be exposed. crowsnest reaches it as http://palworld:8212
+      # over this project's network.
     environment:
       - TZ=${TZ:-UTC}
       - PUID=1000
@@ -156,7 +182,12 @@ services:
       - MULTITHREADING=true
       - REST_API_ENABLED=true
       - REST_API_PORT=8212
-      - ADMIN_PASSWORD=${PALWORLD_ADMIN_PASSWORD:?set an admin password}
+      - ADMIN_PASSWORD=${PALWORLD_ADMIN_PASSWORD:-}   # required: REST API password, also used to save on stop
       - SERVER_PASSWORD=${PALWORLD_SERVER_PASSWORD:-}
+      - SERVER_NAME=${PALWORLD_SERVER_NAME:-CrowsNest Palworld}
+      - COMMUNITY=false            # not listed in the community server browser
+      - BACKUP_ENABLED=true        # daily, to /palworld/backups
+      - DELETE_OLD_BACKUPS=true
+      - OLD_BACKUP_DAYS=14
     volumes:
       - ${USERDIR}/Palworld:/palworld

@@ -6,6 +6,53 @@ grouped by priority, not phase; check them off as they land.
 
 ## Done
 
+- [x] **Production blockers for running compose from inside the container
+  (2026-11-06).** Confirmed with `docker compose config` run the way
+  CrowsNest runs it: (1) `${VALHEIM_SERVER_PASS:?}` aborted *every* game's
+  start, because compose interpolates the whole file; (2) `.env` wasn't
+  mounted, so `USERDIR` was blank (saves at `/Palworld` on the host root)
+  and the Palworld server password was empty; (3) the project name
+  defaulted to `data`, putting games on a different network than
+  crowsnest, so `http://palworld:8212` never resolved. Fixed in
+  `compose.yaml.example` / `.env.example` (`name:`, `.env` mounted at
+  `/data/.env`, no `:?`, 8212 no longer published, 60s Palworld grace
+  period, `COMMUNITY=false`, backup pruning).
+- [x] **Async start, decoupled from the HTTP request (2026-11-06).**
+  `exclusivity.Manager` runs `docker.Start` in the background under
+  `BaseContext` (30 min limit); in-flight starts count as active, Stop
+  cancels them, results show on `/api/games` (`start_error`) and as a
+  dashboard toast. Replaces "consider a longer start timeout".
+- [x] **Start always uses `compose up` when a compose file is configured**,
+  so compose/.env changes are applied instead of `docker start` silently
+  keeping a stale container.
+- [x] **Restart cooldown counts every stop**: also reads the container's
+  `State.FinishedAt`, so crashes, external `docker stop`s and stops from
+  before a CrowsNest restart count. (Idle/night auto-stops already went
+  through `Manager.Stop`.)
+- [x] **Stop timeout 60s → 5m**, above every game's `stop_grace_period`
+  (Valheim's is 2m, which used to make its Stop/Switch report a failure).
+- [x] **Palworld REST credential failures are logged** once per failure
+  streak, instead of silently leaving the game on "starting" with idle stop
+  disabled.
+- [x] **Security pipeline + gated releases (2026-11-06).** `ci.yml` (PRs,
+  weekly, and the gate inside `publish.yml`) runs gosec, govulncheck,
+  gitleaks, Trivy fs and a Trivy image scan, with SARIF to code scanning;
+  CodeQL stays in `codeql.yml`. `publish.yml` replaces `docker-publish.yml`
+  with the labctl/Assay scheme: scan before push (fixable HIGH/CRITICAL
+  blocks the release), multi-arch, SBOM + provenance, cosign keyless
+  signature, attestation, GitHub Release. See `docs/publishing.md`.
+  Supersedes the earlier "not gating on Trivy" decision.
+- [x] **Vulnerabilities fixed (2026-11-06).** Go 1.23.5 → 1.26.10 (13
+  reachable stdlib CVEs), `golang.org/x/crypto` v0.38.0 → v0.58.0 (20
+  advisories, not reached), docker CLI 27 → 29.9.3, alpine 3.20 → 3.24.4,
+  and the compose plugin rebuilt from v5.7.0 source with x/net v0.62.0
+  (CVE-2026-78661 HIGH, CVE-2026-97045 MEDIUM). Image: 0 known vulns at any
+  severity. gosec's 8 medium findings were all false positives, annotated
+  with `#nosec Gxxx -- reason`.
+- [x] **Pick which game to stop at the limit; connect details on cards;
+  Discord on manual start/stop/switch and failed starts; windrose test race
+  fixed (2026-11-06).**
+
 - [x] **Configurable concurrent-server limit (2026-09-30).** The
   one-game-at-a-time guard is now `exclusivity.Manager.MaxActive`, default 1,
   set from `server.max_active_games` or the `CROWSNEST_MAX_ACTIVE_GAMES`
@@ -178,11 +225,7 @@ grouped by priority, not phase; check them off as they land.
 
 ## Considered, not doing
 
-- **Gating `docker-publish.yml` on the Trivy scan.** The scan currently
-  runs after the image is already pushed to GHCR — a CRITICAL/HIGH finding
-  is reported to code scanning but doesn't block the publish. Raised during
-  a 2026-09-12 review; kept as awareness-only rather than a release gate by
-  explicit choice.
+(none currently)
 
 ## Next up (picked up from the 2026-09-30 session)
 
@@ -194,9 +237,6 @@ grouped by priority, not phase; check them off as they land.
   starting→online, logs, stats, and the Windrose+ player count/info panel
   (needs the RCON password supplied by hand — deliberately not copied out of
   the real server's `windrose_plus.json`).
-- [ ] **Consider a longer start timeout (or a separate pull step).** A first
-  start that has to pull a multi-GB image exceeds `defaultStartTimeout`
-  (120s) and returns 502 even though compose may still be working.
 - [ ] **Migration from the Python lab setup**
   (`/home/plex/docker/compose_includes/CrowsNest`). That stack uses
   `seccomp:unconfined` and `network_mode: host` for Windrose, a
@@ -204,9 +244,15 @@ grouped by priority, not phase; check them off as they land.
   compose example now carries `seccomp:unconfined`, the rest is config.
 - [ ] **Real player joins** for Valheim (join/leave log markers) and
   Palworld, plus a real Start→Switch between two games from the browser UI.
-- [ ] **Restart cooldown only tracks stops made through the panel** and is
-  in-memory; a stop via `docker stop` or idle/night auto-stop isn't counted.
-  Could read the container's `FinishedAt` instead.
+- [ ] **Multi-game behind the lab's scoped API guard.** Production
+  (`~/docker/compose_includes/crowsnest`) goes through labdash's `guard.py`
+  in scoped mode, which allows exactly one container name (now `palworld`)
+  and denies network create, container delete and rename. Running all three
+  games needs guard.py to accept a list of scopes (name → images/binds/
+  netmodes/secopts). Windrose also needs `network_mode: host` +
+  `seccomp:unconfined` in its scope, and Valheim a bind under its own dir.
+- [ ] **Drop the compose-from-source Dockerfile stage** once a docker/compose
+  release ships `golang.org/x/net` >= v0.62.0.
 - [ ] Idle/night auto-stop and Discord notifications are still untested
   against real servers; firewall for `:5001`/game ports not checked.
 

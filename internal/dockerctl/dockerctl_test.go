@@ -74,11 +74,16 @@ fi
 	}
 }
 
-func TestStart_ExistingContainer(t *testing.T) {
+// TestStart_ExistingContainerStillUsesCompose: with a compose file
+// configured, Start always goes through `compose up -d` (which starts an
+// existing container as-is, or recreates it if its config changed) rather
+// than a bare `docker start` that would silently keep a stale config.
+func TestStart_ExistingContainerStillUsesCompose(t *testing.T) {
 	c, logPath := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
 case "$1" in
   ps) echo "windrose" ;;
   start) exit 0 ;;
+  compose) exit 0 ;;
 esac
 `)
 	tgt := Target{ContainerName: "windrose", ComposeFile: "/windrose/compose.yaml", ComposeProfile: "windrose", ComposeService: "windrose"}
@@ -87,17 +92,51 @@ esac
 	}
 
 	invocations := readInvocations(t, logPath)
-	var sawStart bool
+	want := "compose -f /windrose/compose.yaml --profile windrose up -d windrose"
+	var sawCompose bool
 	for _, line := range invocations {
-		if strings.HasPrefix(line, "compose ") {
-			t.Fatalf("unexpected compose invocation for an existing container: %q", line)
-		}
 		if line == "start windrose" {
-			sawStart = true
+			t.Fatalf("unexpected bare docker start with a compose file configured: %v", invocations)
+		}
+		if line == want {
+			sawCompose = true
 		}
 	}
-	if !sawStart {
-		t.Fatalf("invocations = %v, want a %q call", invocations, "start windrose")
+	if !sawCompose {
+		t.Fatalf("invocations = %v, want %q", invocations, want)
+	}
+}
+
+func TestStart_NoComposeFileExistingContainer(t *testing.T) {
+	c, logPath := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
+case "$1" in
+  ps) echo "windrose" ;;
+  start) exit 0 ;;
+esac
+`)
+	if err := c.Start(context.Background(), Target{ContainerName: "windrose"}); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	invocations := readInvocations(t, logPath)
+	if invocations[len(invocations)-1] != "start windrose" {
+		t.Fatalf("invocations = %v, want a final %q", invocations, "start windrose")
+	}
+}
+
+func TestFinishedAt(t *testing.T) {
+	c, _ := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
+case "$4" in
+  palworld) echo "2026-11-06T22:00:00.5Z" ;;
+  fresh) echo "0001-01-01T00:00:00Z" ;;
+esac
+`)
+	got, err := c.FinishedAt(context.Background(), "palworld")
+	if err != nil || got.UTC().Format(time.RFC3339) != "2026-11-06T22:00:00Z" {
+		t.Fatalf("FinishedAt(palworld) = %v, %v", got, err)
+	}
+	got, err = c.FinishedAt(context.Background(), "fresh")
+	if err != nil || !got.IsZero() {
+		t.Fatalf("FinishedAt(never stopped) = %v, %v, want zero time", got, err)
 	}
 }
 

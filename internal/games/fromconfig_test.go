@@ -17,6 +17,8 @@ func TestFromConfig(t *testing.T) {
 			ComposeFile:    "/windrose/compose.yaml",
 			ComposeProfile: "windrose",
 			ComposeService: "windrose",
+			ConnectAddress: "play.example.com:8211",
+			ConnectNote:    "Ask for the password",
 		},
 		{
 			ID:             "valheim",
@@ -44,6 +46,12 @@ func TestFromConfig(t *testing.T) {
 	}
 	if _, ok := d.Players.(UnknownPlayerCounter); !ok {
 		t.Errorf("defs[0].Players = %T, want UnknownPlayerCounter", d.Players)
+	}
+	if d.ConnectAddress != "play.example.com:8211" || d.ConnectNote != "Ask for the password" {
+		t.Errorf("defs[0] connect = %q / %q", d.ConnectAddress, d.ConnectNote)
+	}
+	if defs[1].ConnectAddress != "" || defs[1].ConnectNote != "" {
+		t.Errorf("defs[1] connect = %q / %q, want empty", defs[1].ConnectAddress, defs[1].ConnectNote)
 	}
 	if !d.NightShutdown {
 		t.Errorf("defs[0].NightShutdown = false, want true (included by default)")

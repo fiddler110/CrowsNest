@@ -137,6 +137,17 @@ func (a *App) handleStartupProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	defer a.releaseStream()
 
+	// Accepted but the container doesn't exist yet (compose is still
+	// pulling the image or creating it): say so and end the stream; the
+	// dashboard reopens it on its next status poll.
+	if a.Exclusivity != nil && a.Exclusivity.Starting(d.ID) {
+		if _, err := a.Docker.StartedAt(r.Context(), d.ContainerName); err != nil {
+			body, _ := json.Marshal(progressEvent{Pct: 2, Label: "Pulling image / creating container"})
+			sw.WriteEvent("progress", string(body))
+			return
+		}
+	}
+
 	// Read only the current run's log: a container restarted by compose keeps
 	// its earlier runs' output, and replaying a previous run's "ready" line
 	// would report 100% before the new run has even begun. tail=all so a

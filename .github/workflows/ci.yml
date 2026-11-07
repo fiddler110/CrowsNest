@@ -1,36 +1,136 @@
-name: CI
+# Tests plus the security gate: SAST (gosec here, CodeQL in codeql.yml), SCA (govulncheck and Trivy over go.mod),
+# secrets (gitleaks), Dockerfile misconfiguration (Trivy), and a Trivy scan of the built image.
+# Runs on pull requests and once a week (new CVEs land without any code change), and is called by publish.yml as
+# the gate in front of every release, so a push to main runs it exactly once.
+# Results go to the repository's Security tab (code scanning) as well as failing the job.
+#
+# What fails the build:
+#   - gofmt / go vet / go test -race / build failures
+#   - govulncheck: a known vulnerability that the code actually reaches
+#   - gosec: a finding at medium severity and confidence or above. A justified exception is a
+#     `#nosec Gxxx -- reason` comment on the statement, reviewed like any other change.
+#   - gitleaks: any secret in the git history
+#   - Trivy (repo and image): a fixable HIGH or CRITICAL. Unfixed ones are reported, not enforced.
+name: ci
 
 on:
-  push:
-    branches: ["main"]
   pull_request:
+    branches: [main]
+  workflow_call:
+  workflow_dispatch:
+  schedule:
+    - cron: "23 4 * * 1"   # Mondays; catches CVEs published since the last push
+
+permissions:
+  contents: read
 
 jobs:
-  build-test:
+  test:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
-          go-version: "1.23"
-
+          go-version-file: go.mod   # uses the toolchain line, so CI builds with the same patched Go as the image
+      - run: go mod download && go mod verify
       - name: gofmt
+        run: test -z "$(gofmt -l .)" || { echo "Not gofmt-formatted:"; gofmt -l .; exit 1; }
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+      - run: go build ./...
+      - name: dashboard JS parses
+        run: node --check internal/web/static/app.js && node --check internal/web/static/login.js
+
+  compose:
+    name: example compose file is valid
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - run: |
+          cp compose.yaml.example compose.yaml
+          cp .env.example .env
+          docker compose config -q
+          for p in windrose valheim palworld; do docker compose --profile "$p" config -q; done
+
+  sast-sca:
+    name: SAST + SCA (gosec, govulncheck, gitleaks, Trivy fs)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write   # upload SARIF to code scanning
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with: {fetch-depth: 0}   # gitleaks scans the whole history
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: false
+
+      - name: govulncheck (SCA, reachability-aware)
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.9.0 ./...
+
+      - name: gosec (SAST)
+        id: gosec
         run: |
-          unformatted=$(gofmt -l .)
-          if [ -n "$unformatted" ]; then
-            echo "The following files are not gofmt-formatted:"
-            echo "$unformatted"
-            exit 1
-          fi
+          go run github.com/securego/gosec/v2/cmd/gosec@v2.30.0 -quiet -severity medium -confidence medium \
+            -fmt sarif -out gosec.sarif -stdout -verbose text ./...
+      - name: Upload gosec results
+        if: ${{ always() && hashFiles('gosec.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4
+        with: {sarif_file: gosec.sarif, category: gosec}
 
-      - name: go vet
-        run: go vet ./...
+      - name: gitleaks (secrets, full history)
+        run: go run github.com/zricethezav/gitleaks/v8@v8.30.1 git --no-banner --redact .
 
-      - name: go build
-        run: go build ./...
+      - name: Trivy fs (dependencies, Dockerfile/compose misconfig, secrets)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          scanners: vuln,misconfig,secret
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy-fs.sarif
+          limit-severities-for-sarif: true
+      - name: Upload Trivy fs results
+        if: ${{ always() && hashFiles('trivy-fs.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4
+        with: {sarif_file: trivy-fs.sarif, category: trivy-fs}
 
-      - name: go test
-        run: go test ./...
+  image:
+    name: container image scan (Trivy)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
+      - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
+        with:
+          context: .
+          load: true
+          tags: crowsnest:ci
+      - name: Trivy image (a fixable HIGH or CRITICAL fails, as it would at release)
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: crowsnest:ci
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+          exit-code: "1"
+          format: sarif
+          output: trivy-image.sarif
+          limit-severities-for-sarif: true
+      - name: Upload Trivy image results
+        if: ${{ always() && hashFiles('trivy-image.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4
+        with: {sarif_file: trivy-image.sarif, category: trivy-image}
+      - name: Full report (all severities, informational)
+        if: always()
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
+        with:
+          image-ref: crowsnest:ci
+          format: table
+          skip-setup-trivy: true

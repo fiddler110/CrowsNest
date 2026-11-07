@@ -40,7 +40,7 @@ type Users map[string]UserRecord
 // missing file is not an error — it means no users have been created yet
 // (run `crowsnest set-password <username>`).
 func LoadUsers(path string) (Users, error) {
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 -- users_file path comes from the operator's config.yaml
 	if err != nil {
 		if os.IsNotExist(err) {
 			return Users{}, nil

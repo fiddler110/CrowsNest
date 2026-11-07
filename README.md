@@ -36,9 +36,12 @@ layers.
 
 ## Running
 
-Pre-built images are published to `ghcr.io/fiddler110/crowsnest` on every
-push to `main` (`:latest`) and version tag (`:vX.Y.Z`), alongside the
-existing game server images from Docker Hub — no local Go toolchain needed.
+Pre-built images are published to `ghcr.io/fiddler110/crowsnest` (`:latest`,
+`:X.Y.Z`, `:X.Y`, `:dev`). Every push to `main` passes the CI and security
+gate, then cuts a release: patch by default, `#minor`/`#major` in a commit
+message to bump higher, `[skip release]` to skip. Images are scanned before
+they're pushed, signed with cosign and shipped with an SBOM. See
+[docs/publishing.md](docs/publishing.md). No local Go toolchain needed.
 
 1. Copy [`config.yaml.example`](config.yaml.example) to `config.yaml`,
    [`compose.yaml.example`](compose.yaml.example) to `compose.yaml`, and
@@ -47,6 +50,13 @@ existing game server images from Docker Hub — no local Go toolchain needed.
    volumes/ports, `.env` for secrets and host-specific values (it's
    git-ignored; everything else here is meant to be committed as-is or with
    your own edits).
+   CrowsNest runs `docker compose` against that same compose file from
+   *inside* its container (mounted at `/data/compose.yaml`, with `.env`
+   mounted next to it as `/data/.env`), so keep the top-level `name:`, use
+   absolute `${USERDIR}/...` host paths in game services, and don't use
+   `${VAR:?}` there — compose interpolates the whole file, so one missing
+   variable for one game would block starting any game. The header of
+   `compose.yaml.example` explains each point.
 2. Start just the controller: `docker compose up -d crowsnest`. CrowsNest
    starts/stops the game containers itself via the Docker socket — you don't
    run `--profile <game> up` by hand.
@@ -67,6 +77,25 @@ switch away from the first running game.
 
 Palworld additionally enforces a 30-second pause between a stop and the next
 start, because bringing it back up within seconds crashed the server.
+
+### Starting is asynchronous
+
+Start (and the start half of Switch) returns as soon as the request has
+passed the limit and cooldown checks. The `docker compose up` itself, which
+includes pulling a multi-GB image on first run, runs in the background
+with a 30-minute limit, so a closed tab or a reverse-proxy timeout can't
+kill it partway through. While it runs the game shows as **starting**,
+counts toward the concurrent limit, and its progress bar reads "Pulling
+image / creating container" until the container exists. A failed start
+shows up as a toast on the dashboard and as an `exclusivity: start ...
+failed` line in the CrowsNest log. Stop cancels a start that's still in
+flight.
+
+With a compose file configured, Start always runs `compose up -d`, so
+edits to the compose file or `.env` take effect on the next start (compose
+recreates the container). Behind a restrictive Docker API proxy that denies
+container delete/rename, that recreate fails; `docker rm <game>` on the
+host, then Start again.
 
 ### Sessions
 

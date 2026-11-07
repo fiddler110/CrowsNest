@@ -95,6 +95,12 @@ type GameDef struct {
 
 	NightShutdown bool
 
+	// ConnectAddress/ConnectNote are optional, display-only connection
+	// details for the dashboard card (see config.GameConfig). Empty means
+	// show nothing.
+	ConnectAddress string
+	ConnectNote    string
+
 	// RestartCooldown is the minimum time between stopping this game and
 	// starting it again; zero means no limit. Some servers (Palworld)
 	// crash if brought back up seconds after a shutdown.

@@ -74,10 +74,12 @@ func newHarnessFromDefs(t *testing.T, docker *dockerctl.Client, defs []games.Gam
 	}
 
 	sessions := auth.NewSessionManager([]byte("test-secret"), time.Hour)
+	excl := exclusivity.NewManager(registry, docker)
+	t.Cleanup(excl.Wait) // no background start may outlive the fake docker
 	app := &App{
 		Registry:    registry,
 		Docker:      docker,
-		Exclusivity: exclusivity.NewManager(registry, docker),
+		Exclusivity: excl,
 		Auth: &auth.Service{
 			Users:        auth.Users{},
 			Sessions:     sessions,
@@ -591,3 +593,99 @@ func TestLoginLogoutFlow(t *testing.T) {
 		t.Fatalf("POST /logout = %d, want %d", rec3.Code, http.StatusOK)
 	}
 }
+
+// A start is accepted immediately (202) and runs in the background; while
+// it's in flight the game reports "starting" even though docker doesn't
+// show the container running yet, and a failure surfaces on /api/games.
+func TestHandleStart_AsyncStatusAndError(t *testing.T) {
+	gate := filepath.Join(t.TempDir(), "gate")
+	t.Setenv("GATE", gate)
+	h := newHarness(t, `#!/bin/sh
+case "$1" in
+  ps) if [ "$2" = "-a" ]; then echo windrose; fi ;;
+  start)
+    while [ ! -e "$GATE" ]; do sleep 0.05; done
+    echo "pull access denied" >&2; exit 1 ;;
+esac
+`)
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPost, "/api/games/windrose/start", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("POST start = %d, want 202, body=%s", rec.Code, rec.Body)
+	}
+
+	list := func() gameSummary {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games", nil))
+		var out []gameSummary
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || len(out) != 1 {
+			t.Fatalf("GET /api/games = %s (%v)", rec.Body, err)
+		}
+		return out[0]
+	}
+	if g := list(); g.Status != "starting" || g.StartError != "" {
+		t.Fatalf("while start in flight: %+v, want status starting and no error", g)
+	}
+
+	os.WriteFile(gate, nil, 0o644)
+	h.App.Exclusivity.Wait()
+	g := list()
+	if g.Status != "offline" || !strings.Contains(g.StartError, "pull access denied") || g.StartErrorAt == 0 {
+		t.Fatalf("after failed start: %+v, want offline with the docker error", g)
+	}
+}
+
+func TestHandleDashboard_ConnectDetails(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	mk := func(id, addr, note string) games.GameDef {
+		return games.GameDef{
+			ID: id, DisplayName: id, ContainerName: id,
+			Status:         &games.DockerStatusChecker{Docker: docker},
+			Players:        games.UnknownPlayerCounter{},
+			ConnectAddress: addr, ConnectNote: note,
+		}
+	}
+	h := newHarnessFromDefs(t, docker, []games.GameDef{
+		mk("palworld", "play.example.com:8211", "Password is in <our> chat"),
+		mk("valheim", "", ""),
+	})
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/", nil))
+	body := rec.Body.String()
+
+	if !strings.Contains(body, `data-copy="play.example.com:8211"`) {
+		t.Errorf("dashboard missing copy button for the address: %s", body)
+	}
+	if !strings.Contains(body, "Password is in &lt;our&gt; chat") {
+		t.Error("dashboard missing HTML-escaped connect note")
+	}
+	if n := strings.Count(body, `class="connect"`); n != 1 {
+		t.Errorf("connect blocks = %d, want 1 (none for the game without details)", n)
+	}
+}
+
+// A user's start request reaches the notifier with their session username.
+func TestHandleStart_NotifiesWithActor(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	n := &chanNotifier{ch: make(chan string, 4)}
+	h.App.Exclusivity.Notifier = n
+
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPost, "/api/games/windrose/start", nil))
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("start = %d, want 202", rec.Code)
+	}
+	select {
+	case msg := <-n.ch:
+		if !strings.Contains(msg, "requested by tester") {
+			t.Errorf("message = %q, want it to name the session user", msg)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("no notification received")
+	}
+}
+
+type chanNotifier struct{ ch chan string }
+
+func (c *chanNotifier) Notify(_ context.Context, m string) { c.ch <- m }

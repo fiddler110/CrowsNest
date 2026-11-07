@@ -23,8 +23,14 @@ import (
 
 const (
 	defaultShortTimeout = 10 * time.Second
-	defaultStopTimeout  = 60 * time.Second
-	defaultStartTimeout = 120 * time.Second
+	// defaultStopTimeout must exceed every game's stop_grace_period (docker
+	// stop returns once the container has exited, which can take the full
+	// grace period while the game saves) — Valheim's is 2m.
+	defaultStopTimeout = 5 * time.Minute
+	// defaultStartTimeout covers a first `compose up` that has to pull a
+	// multi-GB image. Callers normally bound Start with their own, shorter
+	// context too.
+	defaultStartTimeout = 30 * time.Minute
 	defaultGPUTimeout   = 5 * time.Second
 
 	// waitDelay bounds how long Wait may take to return after a timeout
@@ -39,6 +45,8 @@ const (
 // if that child has already forked a grandchild holding the stdout/stderr
 // pipes open (e.g. a shell wrapper execing a long-running subprocess).
 func newCmd(ctx context.Context, bin string, args ...string) *exec.Cmd {
+	// #nosec G204 -- bin is the docker/nvidia-smi binary (operator-set, never request input); args are built
+	// here from registry config (container/compose names), passed as an argv list with no shell involved.
 	cmd := exec.CommandContext(ctx, bin, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	cmd.Cancel = func() error {
@@ -157,6 +165,11 @@ func (c *Client) exists(ctx context.Context, name string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
+// Exists reports whether a container by this name exists, running or not.
+func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
+	return c.exists(ctx, name)
+}
+
 // Running reports whether the container is currently running.
 func (c *Client) Running(ctx context.Context, name string) (bool, error) {
 	out, err := c.run(ctx, defaultShortTimeout, "ps", "--filter", "name=^"+name+"$", "--format", "{{.Names}}")
@@ -166,28 +179,30 @@ func (c *Client) Running(ctx context.Context, name string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-// Start starts the target's container. If the container already exists
-// (from a previous run) it's simply started; otherwise it's created via
-// `docker compose up -d` against the target's compose file/profile/service.
+// Start starts the target's container. With a compose file configured it
+// always goes through `docker compose up -d <service>`, which pulls a
+// missing image, creates the container on first run, recreates it when
+// the compose file/.env changed since it was created, and otherwise just
+// starts the existing one. Without a compose file it falls back to `docker
+// start` of an existing container.
 func (c *Client) Start(ctx context.Context, t Target) error {
-	exists, err := c.exists(ctx, t.ContainerName)
-	if err != nil {
-		return err
-	}
-	if exists {
-		_, err := c.run(ctx, defaultStartTimeout, "start", t.ContainerName)
-		return err
-	}
-
 	if t.ComposeFile == "" {
-		return fmt.Errorf("dockerctl: container %q does not exist and no compose file is configured", t.ContainerName)
+		exists, err := c.exists(ctx, t.ContainerName)
+		if err != nil {
+			return err
+		}
+		if !exists {
+			return fmt.Errorf("dockerctl: container %q does not exist and no compose file is configured", t.ContainerName)
+		}
+		_, err = c.run(ctx, defaultStartTimeout, "start", t.ContainerName)
+		return err
 	}
 	args := []string{"compose", "-f", t.ComposeFile}
 	if t.ComposeProfile != "" {
 		args = append(args, "--profile", t.ComposeProfile)
 	}
 	args = append(args, "up", "-d", t.ComposeService)
-	_, err = c.run(ctx, defaultStartTimeout, args...)
+	_, err := c.run(ctx, defaultStartTimeout, args...)
 	return err
 }
 
@@ -207,6 +222,24 @@ func (c *Client) StartedAt(ctx context.Context, name string) (time.Time, error) 
 	t, err := time.Parse(time.RFC3339Nano, ts)
 	if err != nil {
 		return time.Time{}, fmt.Errorf("dockerctl: parse StartedAt %q: %w", ts, err)
+	}
+	return t, nil
+}
+
+// FinishedAt returns when the container's most recent run ended. It's the
+// zero time for a container that has never stopped.
+func (c *Client) FinishedAt(ctx context.Context, name string) (time.Time, error) {
+	out, err := c.run(ctx, defaultShortTimeout, "inspect", "--format", "{{.State.FinishedAt}}", name)
+	if err != nil {
+		return time.Time{}, err
+	}
+	ts := strings.TrimSpace(out)
+	t, err := time.Parse(time.RFC3339Nano, ts)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("dockerctl: parse FinishedAt %q: %w", ts, err)
+	}
+	if t.Year() <= 1 {
+		return time.Time{}, nil // docker reports 0001-01-01 for "never"
 	}
 	return t, nil
 }

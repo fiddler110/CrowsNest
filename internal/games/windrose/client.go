@@ -163,6 +163,7 @@ func (c *Client) sendRCON(ctx context.Context, cookie, command string, timeout t
 		return "", false, false
 	}
 	req.Header.Set("Content-Type", "application/json")
+	// #nosec G124 -- outgoing request cookie to the Windrose+ API; Secure/HttpOnly/SameSite are response-cookie attributes
 	req.AddCookie(&http.Cookie{Name: "wp_session", Value: cookie})
 
 	hc := c.client()
@@ -224,6 +225,7 @@ func (c *Client) fetchStatus(ctx context.Context, cookie string) (*wplusStatus, 
 	if err != nil {
 		return nil, false, false
 	}
+	// #nosec G124 -- outgoing request cookie to the Windrose+ API; Secure/HttpOnly/SameSite are response-cookie attributes
 	req.AddCookie(&http.Cookie{Name: "wp_session", Value: cookie})
 
 	resp, err := c.client().Do(req)

@@ -6,6 +6,8 @@ const MAX_LOG_LINES = 300;
 
 const logSources = {};
 const progressSources = {};
+const progressDone = {};      // id -> true once a run's progress hit 100%
+const shownStartErrors = {};  // id -> start_error_at already toasted
 const statsTimers = {};
 const infoTimers = {};
 
@@ -32,9 +34,13 @@ function setStatus(id, status) {
   card.querySelector(".start-btn").disabled = status === "online" || status === "starting";
   card.querySelector(".stop-btn").disabled = status === "offline";
 
-  if (status === "starting" && prevStatus !== "starting") {
-    startProgressTracking(id);
-  } else if (status !== "starting") {
+  // While starting, (re)open the progress stream on every poll: it ends
+  // early while the image is still being pulled (no container yet), and
+  // startProgressTracking is a no-op while one is already open.
+  if (status === "starting") {
+    if (!progressDone[id]) startProgressTracking(id);
+  } else {
+    delete progressDone[id];
     stopProgressTracking(id);
   }
   updateFleet();
@@ -100,11 +106,25 @@ function startProgressTracking(id) {
     bar.style.width = data.pct + "%";
     label.textContent = data.label;
     if (data.pct >= 100) {
+      progressDone[id] = true;
       stopProgressTracking(id);
     }
   });
-  es.addEventListener("unsupported", () => stopProgressTracking(id));
-  es.onerror = () => stopProgressTracking(id);
+  es.addEventListener("unsupported", () => {
+    progressDone[id] = true;
+    stopProgressTracking(id);
+  });
+  // Stream ended (e.g. still pulling): close it but keep the bar showing;
+  // the next status poll reopens it.
+  es.onerror = () => closeProgressSource(id);
+}
+
+function closeProgressSource(id) {
+  const es = progressSources[id];
+  if (es) {
+    es.close();
+    delete progressSources[id];
+  }
 }
 
 function stopProgressTracking(id) {
@@ -330,6 +350,15 @@ async function refreshStatuses() {
   games.forEach((g) => {
     setStatus(g.id, g.status);
     setPlayerCount(g.id, g.player_count);
+    // Starts run in the background, so a failure arrives here rather than
+    // as the Start button's HTTP response.
+    if (g.start_error && shownStartErrors[g.id] !== g.start_error_at) {
+      shownStartErrors[g.id] = g.start_error_at;
+      if (Date.now() / 1000 - g.start_error_at > 600) return; // stale; don't replay on reload
+      const card = cardFor(g.id);
+      const name = card ? card.dataset.name : g.id;
+      toast(`${name} failed to start: ${g.start_error.slice(-300)}`);
+    }
   });
 }
 
@@ -344,27 +373,69 @@ function callAPI(path, options = {}) {
   });
 }
 
-function confirmSwitch(activeId, targetId) {
+// confirmSwitch asks which running game to stop in favour of targetId.
+// activeIds is every active game; with exactly one the dialog is a plain
+// confirm, with several the user picks one (radio group). Resolves to the
+// chosen game id, or null if cancelled. Focus is trapped in the dialog and
+// restored to the opener afterwards; Escape cancels.
+function confirmSwitch(activeIds, targetId) {
   return new Promise((resolve) => {
     const dialog = document.getElementById("conflict-dialog");
     const nameOf = (id) => (cardFor(id) ? cardFor(id).dataset.name : id);
-    document.getElementById("conflict-message").textContent =
-      `${nameOf(activeId)} is currently running. Stop it and start ${nameOf(targetId)}?`;
-    dialog.hidden = false;
-
+    const choices = document.getElementById("conflict-choices");
     const confirmBtn = document.getElementById("conflict-confirm");
     const cancelBtn = document.getElementById("conflict-cancel");
-    confirmBtn.focus();
+    const opener = document.activeElement;
+
+    choices.querySelectorAll("label").forEach((l) => l.remove());
+    const multiple = activeIds.length > 1;
+    choices.hidden = !multiple;
+    if (multiple) {
+      document.getElementById("conflict-message").textContent =
+        `Only so many games can run at once. Stop one to start ${nameOf(targetId)}.`;
+      activeIds.forEach((id, i) => {
+        const label = document.createElement("label");
+        label.className = "dialog-choice";
+        const input = document.createElement("input");
+        input.type = "radio";
+        input.name = "conflict-from";
+        input.value = id;
+        input.checked = i === 0;
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(nameOf(id)));
+        choices.appendChild(label);
+      });
+      confirmBtn.textContent = "Stop and start";
+    } else {
+      document.getElementById("conflict-message").textContent =
+        `${nameOf(activeIds[0])} is currently running. Stop it and start ${nameOf(targetId)}?`;
+      confirmBtn.textContent = "Switch";
+    }
+    dialog.hidden = false;
+    (multiple ? choices.querySelector("input:checked") : confirmBtn).focus();
+
     const done = (answer) => {
       dialog.hidden = true;
       confirmBtn.removeEventListener("click", onConfirm);
       cancelBtn.removeEventListener("click", onCancel);
       document.removeEventListener("keydown", onKey);
+      if (opener && opener.focus) opener.focus();
       resolve(answer);
     };
-    const onConfirm = () => done(true);
-    const onCancel = () => done(false);
-    const onKey = (e) => { if (e.key === "Escape") done(false); };
+    const onConfirm = () => {
+      const picked = multiple ? choices.querySelector("input:checked").value : activeIds[0];
+      done(picked);
+    };
+    const onCancel = () => done(null);
+    const onKey = (e) => {
+      if (e.key === "Escape") { done(null); return; }
+      if (e.key !== "Tab") return;
+      const focusable = [...dialog.querySelectorAll("input, button")].filter((el) => !el.disabled && el.offsetParent !== null);
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    };
     confirmBtn.addEventListener("click", onConfirm);
     cancelBtn.addEventListener("click", onCancel);
     document.addEventListener("keydown", onKey);
@@ -396,10 +467,12 @@ async function startGame(id, btn) {
     const res = await callAPI(`/api/games/${id}/start`, { method: "POST" });
     if (res.status === 409) {
       const body = await res.json();
-      if (await confirmSwitch(body.active_game, id)) {
+      const active = body.active_games && body.active_games.length ? body.active_games : [body.active_game];
+      const from = await confirmSwitch(active, id);
+      if (from) {
         const sw = await callAPI(`/api/games/${id}/switch`, {
           method: "POST",
-          body: JSON.stringify({ from: body.active_game }),
+          body: JSON.stringify({ from }),
         });
         await checkOK(sw, "Switch");
       }
@@ -437,6 +510,18 @@ document.querySelectorAll(".game-card").forEach((card) => {
 });
 
 refreshStatuses();
+
+document.querySelectorAll(".copy-btn").forEach((btn) => {
+  btn.addEventListener("click", async () => {
+    try {
+      await navigator.clipboard.writeText(btn.dataset.copy);
+      btn.textContent = "Copied";
+      setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+    } catch (err) {
+      toast("Couldn't copy automatically. Select the address and copy it by hand.");
+    }
+  });
+});
 
 document.getElementById("logout-btn").addEventListener("click", async () => {
   await callAPI("/logout", { method: "POST" });
