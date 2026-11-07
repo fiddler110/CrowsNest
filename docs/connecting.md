@@ -14,8 +14,8 @@ need one.
 | Game | Join method without a router port | Notes |
 |---|---|---|
 | Palworld | Server's LAN address over a **private overlay network** (e.g. Tailscale) | Dedicated servers only join by IP:port. There's no built-in relay or Steam relay. |
-| Valheim | **Crossplay join code** (start the server with `-crossplay`, PlayFab relay) | The code is in the server log and changes on every restart. Adds some relay latency. |
-| Windrose | **Invite code** (the game's own P2P relay) | Set `INVITE_CODE` and `P2P_PROXY_ADDRESS` (host LAN IP), with `network_mode: host`. |
+| Valheim | **Join by IP** over a private overlay network (same as Palworld, `udp:2456-2457`), or a **crossplay join code** (add `CROSSPLAY=1` to the server's environment; PlayFab relay) | The crossplay code is in the server log and changes on every restart, and adds some relay latency. The compose example does neither by default. |
+| Windrose | **Invite code** (the game's own P2P relay) | Set `WINDROSE_INVITE_CODE` and `P2P_PROXY_ADDRESS` (host LAN IP) in `.env`; the compose example uses `network_mode: host`. |
 
 ## Palworld over Tailscale
 
@@ -38,7 +38,7 @@ Being on the tailnet gives friends no access to CrowsNest itself. They still
 log in through however you publish the web UI.
 
 To give friends another game over the overlay, add its port to their grant
-(Valheim without crossplay: `udp:2456-2458`).
+(Valheim: `udp:2456-2457`).
 
 ## Other options
 

@@ -140,6 +140,10 @@ services:
   #     # Leave everything else at the proxy's secure-by-default 0: no
   #     # BUILD, DELETE, SECRETS, SERVICES, SWARM, SYSTEM, etc.
 
+  # Windrose: host networking and an invite code (the game's own P2P relay), so players need no port forward.
+  # Everything lives in one directory, ${USERDIR}/Windrose, which is the server's install folder: the world
+  # is R5/Saved/SaveProfiles/Default/ inside it, and Windrose+ keeps windrose_plus.json beside it. Point
+  # this at an existing server folder to keep its save.
   windrose:
     image: indifferentbroccoli/windrose-server-docker:latest
     profiles: ["windrose"]
@@ -151,11 +155,22 @@ services:
       - seccomp:unconfined   # required by the image's Wine runtime
     environment:
       - TZ=${TZ:-UTC}
-      - P2P_PROXY_ADDRESS=${P2P_PROXY_ADDRESS:-}   # host LAN IP, set in .env
+      - PUID=${PUID:-1000}
+      - PGID=${PGID:-1000}
+      - SERVER_NAME=${WINDROSE_SERVER_NAME:-My Windrose Server}
+      - SERVER_PASSWORD=${WINDROSE_SERVER_PASSWORD:-}
+      - INVITE_CODE=${WINDROSE_INVITE_CODE:-}           # what players type to join
+      - MAX_PLAYERS=${WINDROSE_MAX_PLAYERS:-4}
+      - P2P_PROXY_ADDRESS=${P2P_PROXY_ADDRESS:-}        # host LAN IP, set in .env
+      - UPDATE_ON_START=true
+      - WINDROSE_PLUS_ENABLED=${WINDROSE_PLUS_ENABLED:-false}
+      - WINDROSE_PLUS_RCON_PASSWORD=${WINDROSE_RCON_PASSWORD:-}
     volumes:
       - ${USERDIR}/Windrose:/home/steam/server-files
-      - ${USERDIR}/Windrose/Saved:/server/R5/Saved
 
+  # Valheim: /config holds the world (worlds_local/<WORLD_NAME>.db and .fwl), adminlist.txt and backups, so
+  # that is the folder to drop an existing world into. /opt/valheim is the server install, kept so restarts
+  # don't re-download it.
   valheim:
     image: lloesche/valheim-server:latest
     profiles: ["valheim"]
@@ -169,6 +184,8 @@ services:
       - SERVER_NAME=${VALHEIM_SERVER_NAME:-My Valheim Server}
       - WORLD_NAME=${VALHEIM_WORLD_NAME:-Midgard}
       - SERVER_PASS=${VALHEIM_SERVER_PASS:-}   # required by the image (5+ chars)
+      - SERVER_PUBLIC=${VALHEIM_SERVER_PUBLIC:-false}   # list in the in-game server browser
+      - BACKUPS_MAX_AGE=${VALHEIM_BACKUPS_MAX_AGE:-3}   # days of automatic world backups to keep
     volumes:
       - ${USERDIR}/Valheim/config:/config
       - ${USERDIR}/Valheim/data:/opt/valheim
