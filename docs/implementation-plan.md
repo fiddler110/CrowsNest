@@ -83,7 +83,6 @@ games:
     compose_file: /windrose/compose.yaml
     compose_profile: windrose
     compose_service: windrose
-    env_file: /windrose/.env
     windrose:
       http_api_url: http://host.docker.internal:8780
       rcon_password_env: WINDROSE_PLUS_RCON_PASSWORD
@@ -94,7 +93,6 @@ games:
     compose_file: /valheim/compose.yaml
     compose_profile: valheim
     compose_service: valheim
-    env_file: /valheim/.env
     night_shutdown: false     # e.g. a remote friend group spanning time zones
 
   - id: palworld
@@ -103,7 +101,6 @@ games:
     compose_file: /palworld/compose.yaml
     compose_profile: palworld
     compose_service: palworld
-    env_file: /palworld/.env
     palworld:
       rest_api_url: http://palworld:8212
       rest_api_user: admin

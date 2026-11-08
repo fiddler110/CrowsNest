@@ -6,6 +6,16 @@ grouped by priority, not phase; check them off as they land.
 
 ## Done
 
+- [x] **Log-followed Windrose status, non-blocking dashboard, quiet tabs
+  (2026-11-08).** Windrose readiness now comes from a `windrose.Tracker`
+  following `docker logs -f` (like Valheim's), so the Windrose `docker exec`
+  rule is gone from the exec guard (only backup commands remain). The
+  dashboard page renders from the last cached snapshot (`memo.Peek`) or a
+  neutral "checking..." badge instead of waiting on every game probe; the JS
+  refreshes statuses on load. All network pollers in `app.js` go through a
+  `poll()` helper that skips hidden tabs and refreshes on return. Removed the
+  unused `env_file` config field (old configs still load).
+
 - [x] **Roles, activity log, host health, backups (2026-11-07).** Roles:
   `<NAME>_ROLE=admin|player` in the users file (no role = admin),
   `crowsnest set-role`, players can't open settings or backups, role looked up

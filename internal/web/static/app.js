@@ -11,6 +11,21 @@ const shownStartErrors = {};  // id -> start_error_at already toasted
 const statsTimers = {};
 const infoTimers = {};
 
+// poll runs fn every ms like setInterval, but skips ticks while the tab is
+// hidden and fires once immediately when it becomes visible again. Returns a
+// handle for stopPoll.
+function poll(fn, ms) {
+  const handle = { fn, id: setInterval(() => { if (!document.hidden) fn(); }, ms) };
+  handle.onVisible = () => { if (!document.hidden) fn(); };
+  document.addEventListener("visibilitychange", handle.onVisible);
+  return handle;
+}
+
+function stopPoll(handle) {
+  clearInterval(handle.id);
+  document.removeEventListener("visibilitychange", handle.onVisible);
+}
+
 function cardFor(id) {
   return document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
 }
@@ -274,7 +289,7 @@ function toggleStats(id) {
   const btn = card.querySelector(".stats-btn");
 
   if (statsTimers[id]) {
-    clearInterval(statsTimers[id]);
+    stopPoll(statsTimers[id]);
     delete statsTimers[id];
     panel.hidden = true;
     setPressed(btn, false);
@@ -284,7 +299,7 @@ function toggleStats(id) {
   panel.hidden = false;
   setPressed(btn, true);
   fetchStats(id);
-  statsTimers[id] = setInterval(() => fetchStats(id), STATS_POLL_MS);
+  statsTimers[id] = poll(() => fetchStats(id), STATS_POLL_MS);
 }
 
 // fetchInfo fills the info panel's key/value list from
@@ -329,7 +344,7 @@ function toggleInfo(id) {
   const btn = card.querySelector(".info-btn");
 
   if (infoTimers[id]) {
-    clearInterval(infoTimers[id]);
+    stopPoll(infoTimers[id]);
     delete infoTimers[id];
     panel.hidden = true;
     setPressed(btn, false);
@@ -339,7 +354,7 @@ function toggleInfo(id) {
   panel.hidden = false;
   setPressed(btn, true);
   fetchInfo(id);
-  infoTimers[id] = setInterval(() => fetchInfo(id), INFO_POLL_MS);
+  infoTimers[id] = poll(() => fetchInfo(id), INFO_POLL_MS);
 }
 
 // Idle countdown: the server reports seconds left on each poll; between polls
@@ -790,11 +805,11 @@ document.getElementById("logout-btn").addEventListener("click", async () => {
 window.addEventListener("beforeunload", () => {
   Object.values(logSources).forEach((es) => es.close());
   Object.values(progressSources).forEach((es) => es.close());
-  Object.values(statsTimers).forEach((t) => clearInterval(t));
-  Object.values(infoTimers).forEach((t) => clearInterval(t));
+  Object.values(statsTimers).forEach(stopPoll);
+  Object.values(infoTimers).forEach(stopPoll);
 });
 
-setInterval(refreshStatuses, POLL_INTERVAL_MS);
+poll(refreshStatuses, POLL_INTERVAL_MS);
 
 
 // Logbook: recent activity plus playtime per player.
@@ -872,7 +887,7 @@ setInterval(refreshStatuses, POLL_INTERVAL_MS);
     });
   }
   refreshActivity();
-  setInterval(refreshActivity, 30000);
+  poll(refreshActivity, 30000);
   window.refreshActivity = refreshActivity;
 })();
 
@@ -914,7 +929,7 @@ setInterval(refreshStatuses, POLL_INTERVAL_MS);
     panel.hidden = items.length === 0;
   }
   refreshHost();
-  setInterval(refreshHost, 15000);
+  poll(refreshHost, 15000);
 })();
 
 
@@ -955,7 +970,7 @@ function toggleBackups(id) {
   const panel = card.querySelector(".backups-panel");
   const btn = card.querySelector(".backups-btn");
   if (backupTimers[id]) {
-    clearInterval(backupTimers[id]);
+    stopPoll(backupTimers[id]);
     delete backupTimers[id];
     panel.hidden = true;
     setPressed(btn, false);
@@ -964,7 +979,7 @@ function toggleBackups(id) {
   panel.hidden = false;
   setPressed(btn, true);
   fetchBackups(id);
-  backupTimers[id] = setInterval(() => fetchBackups(id), 5000);
+  backupTimers[id] = poll(() => fetchBackups(id), 5000);
 }
 
 async function backupGame(id, btn) {

@@ -326,13 +326,19 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		IsAdmin:   a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
 		CSRFToken: session.CSRFToken,
 	}
-	snaps := a.observeAll(r.Context(), defs)
-	for i, d := range defs {
+	// First paint must not wait on game probes (a booting game's API can
+	// take seconds to time out): use the last shared snapshot if any, else
+	// "unknown"; the page's JS refreshes statuses immediately on load.
+	for _, d := range defs {
+		snap, ok := a.snapshots.Peek(d.ID)
+		if !ok {
+			snap = snapshot{Status: games.StatusUnknown}
+		}
 		data.Games = append(data.Games, dashboardGame{
 			ID:          d.ID,
 			DisplayName: d.DisplayName,
 			Initial:     initialOf(d.DisplayName),
-			Status:      a.gameStatus(d, snaps[i].Status).String(),
+			Status:      a.gameStatus(d, snap.Status).String(),
 
 			ConnectAddress: d.ConnectAddress,
 			ConnectNote:    d.ConnectNote,

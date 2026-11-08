@@ -238,7 +238,6 @@ type GameConfig struct {
 	ComposeFile    string `yaml:"compose_file"`
 	ComposeProfile string `yaml:"compose_profile"`
 	ComposeService string `yaml:"compose_service"`
-	EnvFile        string `yaml:"env_file"`
 
 	// ConnectAddress is an optional host:port shown on the game's card with
 	// a copy button, so players know where to connect. ConnectNote is an
