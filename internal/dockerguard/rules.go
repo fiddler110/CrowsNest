@@ -490,7 +490,26 @@ func hostConfigRules(s *Scope) map[string]rule {
 	return r
 }
 
-var ipamRules = map[string]rule{"IPv4Address": ruleEmpty, "IPv6Address": ruleEmpty, "LinkLocalIPs": ruleEmpty} // compose sends these empty for "no fixed address"
+// ipamRules: compose sends these empty for "no fixed address". IPv4Address may
+// also be one of the addresses the scope pins for this network (Scope.IPv4).
+func ipamRules(s *Scope, network string) map[string]rule {
+	return map[string]rule{"IPv4Address": ipv4Rule(s, network), "IPv6Address": ruleEmpty, "LinkLocalIPs": ruleEmpty}
+}
+
+func ipv4Rule(s *Scope, network string) rule {
+	return func(v any, name string) error {
+		if isEmpty(v) {
+			return nil
+		}
+		str, _ := v.(string)
+		for _, a := range s.IPv4[network] {
+			if str == a {
+				return nil
+			}
+		}
+		return deny(403, "%s: address %s is not allowed for %s on this network", name, quote(v), s.Name)
+	}
+}
 
 // aliasesRule: names other containers on the network resolve to this one are
 // the scope's own name (compose adds the container name and the service name)
@@ -512,9 +531,11 @@ func aliasesRule(s *Scope) rule {
 	}
 }
 
-func endpointRules(s *Scope) map[string]rule {
+// endpointRules checks one network attachment; network is the resolved name of
+// the network (not an id), which selects the scope's pinned addresses.
+func endpointRules(s *Scope, network string) map[string]rule {
 	return map[string]rule{"Aliases": aliasesRule(s), "DNSNames": aliasesRule(s), "GwPriority": intMin(-(1 << 31)),
-		"IPAMConfig": objectRule(ipamRules),
+		"IPAMConfig": objectRule(ipamRules(s, network)),
 		"Links":      ruleEmpty, "DriverOpts": ruleEmpty, "MacAddress": ruleEmpty, // DriverOpts can set sysctls
 		"NetworkID": ruleEmpty, "EndpointID": ruleEmpty, "Gateway": ruleEmpty, "IPAddress": ruleEmpty, "IPPrefixLen": ruleEmpty,
 		"IPv6Gateway": ruleEmpty, "GlobalIPv6Address": ruleEmpty, "GlobalIPv6PrefixLen": ruleEmpty}

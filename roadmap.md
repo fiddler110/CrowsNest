@@ -6,6 +6,19 @@ grouped by priority, not phase; check them off as they land.
 
 ## Done
 
+- [x] **Pinned container addresses in guard scopes; game wiring extracted;
+  golden tests (2026-11-08).** A `GUARD_SCOPES` entry may carry
+  `"ipv4": {"<network>": ["a.b.c.d"]}`: the exact addresses that container may
+  take on that network (needed for a macvlan container that a host firewall
+  rule must name). Without a pin every fixed address is still refused; bad pins
+  (unspecified, loopback, multicast, link-local, non-canonical, network not in
+  `networks`) stop the guard starting. Network ids resolve to the scope's
+  network name before the pin is checked. Also: the per-game wiring in
+  `serve()` moved unchanged into `buildGameDefs`, and `cmd/crowsnest` has
+  golden tests (`testdata/*.golden.json`, regenerate with `-update`) pinning the
+  production games' strategies, exec rules and guard scopes. This is phase 0 of
+  the modular-games rework.
+
 - [x] **Go scoped Docker API guard (2026-11-08).** `crowsnest guard` is a
   port of the Python guard's scoped mode (`GUARD_SCOPES`: per-container image,
   exact bind, volume, network, port, label, alias, secopt, cap_add and exec

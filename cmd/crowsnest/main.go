@@ -23,9 +23,6 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/exclusivity"
 	"github.com/fiddler110/crowsnest/internal/games"
-	"github.com/fiddler110/crowsnest/internal/games/palworld"
-	"github.com/fiddler110/crowsnest/internal/games/valheim"
-	"github.com/fiddler110/crowsnest/internal/games/windrose"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/idleshutdown"
 	"github.com/fiddler110/crowsnest/internal/nightshutdown"
@@ -121,77 +118,7 @@ func serve() error {
 	}
 
 	docker := &dockerctl.Client{Host: cfg.Server.DockerHost}
-	defs := games.FromConfig(cfg.Games, docker)
-	var valheimTrackers []*valheim.Tracker
-	var windroseTrackers []*windrose.Tracker
-	for i, d := range defs {
-		// cfg.Games[i] lines up 1:1 with defs[i]: FromConfig builds defs by
-		// iterating cfg.Games in order without filtering or reordering.
-		switch d.ID {
-		case "windrose":
-			// Real status/startup detection (a log-following tracker, no docker exec) plus, when configured,
-			// the Windrose+ HTTP/RCON integration for player count and the
-			// rich info panel — see docs/implementation-plan.md phases 7
-			// and 10.
-			wtracker := windrose.NewTracker(docker, d.ContainerName)
-			defs[i].Status = wtracker
-			windroseTrackers = append(windroseTrackers, wtracker)
-			defs[i].Startup = windrose.Startup
-			if wc := cfg.Games[i].Windrose; wc != nil {
-				client := &windrose.Client{
-					BaseURL:       wc.HTTPAPIURL,
-					Password:      os.Getenv(wc.RCONPasswordEnv),
-					Docker:        docker,
-					ContainerName: d.ContainerName,
-				}
-				defs[i].Players = client
-				defs[i].Info = client
-			}
-		case "palworld":
-			// Palworld's dedicated server REST API doubles as both status
-			// probe (reachable == online) and player counter — see
-			// docs/implementation-plan.md phase 10. Verified against a real
-			// palworld-server-docker container (2026-09-30).
-			if pc := cfg.Games[i].Palworld; pc != nil {
-				client := &palworld.Client{
-					BaseURL:  pc.RESTAPIURL,
-					User:     pc.RESTAPIUser,
-					Password: os.Getenv(pc.RESTAPIPasswordEnv),
-					Docker:   docker,
-				}
-				if pc.RCONAddr != "" {
-					env := pc.RCONPasswordEnv
-					if env == "" {
-						env = pc.RESTAPIPasswordEnv
-					}
-					client.RCONAddr = pc.RCONAddr
-					client.RCONPassword = os.Getenv(env)
-					defs[i].RawConsole = client
-				}
-				defs[i].Status = client
-				defs[i].Players = client
-				defs[i].Info = client
-				defs[i].PreStop = client
-				defs[i].Console = client
-			}
-			defs[i].Startup = palworld.Startup
-			// Bringing it back up seconds after a stop segfaulted it once.
-			defs[i].RestartCooldown = 30 * time.Second
-		case "valheim":
-			// No first-party API: player count comes from tailing the
-			// container's own log output for join/leave markers — see
-			// docs/implementation-plan.md phase 10. The same tail also
-			// reports readiness (starting vs. online) and drives the
-			// progress bar; both verified against a real container
-			// (2026-09-30), joins/leaves not yet with a real player.
-			tracker := valheim.NewTracker(docker, d.ContainerName)
-			defs[i].Players = tracker
-			defs[i].Info = tracker
-			defs[i].Status = tracker
-			defs[i].Startup = valheim.Startup
-			valheimTrackers = append(valheimTrackers, tracker)
-		}
-	}
+	defs, trackers := buildGameDefs(cfg, docker)
 	registry, err := games.NewRegistry(defs)
 	if err != nil {
 		return fmt.Errorf("build game registry: %w", err)
@@ -201,10 +128,10 @@ func serve() error {
 			log.Printf("warning: %s has no player counter configured — idle and night shutdown will never stop it", d.ID)
 		}
 	}
-	for _, tr := range valheimTrackers {
+	for _, tr := range trackers.valheim {
 		go tr.Run(ctx)
 	}
-	for _, tr := range windroseTrackers {
+	for _, tr := range trackers.windrose {
 		go tr.Run(ctx)
 	}
 

@@ -1,0 +1,100 @@
+[
+  {
+    "ID": "palworld",
+    "DisplayName": "Palworld",
+    "Container": "palworld",
+    "ComposeProfile": "palworld",
+    "ComposeService": "palworld",
+    "Status": "*palworld.Client",
+    "Players": "*palworld.Client",
+    "Info": "*palworld.Client",
+    "PreStop": "*palworld.Client",
+    "Console": "*palworld.Client",
+    "RawConsole": "*palworld.Client",
+    "StartupSteps": 6,
+    "StartupParse": true,
+    "RestartCooldown": "30s",
+    "NightShutdown": true,
+    "ConnectAddress": "10.0.0.2:8211",
+    "ConnectNote": "Turn on Tailscale first (away from home)",
+    "ConnectSecrets": [
+      "Join password"
+    ],
+    "Backup": {
+      "Exec": [
+        "backup"
+      ],
+      "ListDir": "/palworld/backups",
+      "BeforeStop": true
+    },
+    "CanCountPlayers": true
+  },
+  {
+    "ID": "valheim",
+    "DisplayName": "Valheim",
+    "Container": "valheim",
+    "ComposeProfile": "valheim",
+    "ComposeService": "valheim",
+    "Status": "*valheim.Tracker",
+    "Players": "*valheim.Tracker",
+    "Info": "*valheim.Tracker",
+    "PreStop": "",
+    "Console": "",
+    "RawConsole": "",
+    "StartupSteps": 5,
+    "StartupParse": true,
+    "RestartCooldown": "0s",
+    "NightShutdown": true,
+    "ConnectAddress": "10.0.0.2:2456",
+    "ConnectNote": "Turn on Tailscale first (away from home)",
+    "ConnectSecrets": [
+      "Server name",
+      "World name",
+      "Server password"
+    ],
+    "Backup": {
+      "Exec": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /config/backups \u0026\u0026 tar czf /config/backups/manual-$(date +%Y%m%d-%H%M%S).tar.gz -C /config worlds_local"
+      ],
+      "ListDir": "/config/backups",
+      "BeforeStop": true
+    },
+    "CanCountPlayers": true
+  },
+  {
+    "ID": "windrose",
+    "DisplayName": "Windrose",
+    "Container": "windrose",
+    "ComposeProfile": "windrose",
+    "ComposeService": "windrose",
+    "Status": "*windrose.Tracker",
+    "Players": "*windrose.Client",
+    "Info": "*windrose.Client",
+    "PreStop": "",
+    "Console": "",
+    "RawConsole": "",
+    "StartupSteps": 1,
+    "StartupParse": false,
+    "RestartCooldown": "0s",
+    "NightShutdown": true,
+    "ConnectAddress": "",
+    "ConnectNote": "Join in-game with the invite code",
+    "ConnectSecrets": [
+      "Invite code",
+      "Server name",
+      "Server password"
+    ],
+    "Backup": {
+      "Exec": [
+        "/bin/sh",
+        "-c",
+        "mkdir -p /home/steam/server-files/backups \u0026\u0026 tar czf /home/steam/server-files/backups/world-$(date +%Y%m%d-%H%M%S).tar.gz -C /home/steam/server-files/R5/Saved SaveProfiles \u0026\u0026 chown -R 1000:1000 /home/steam/server-files/backups"
+      ],
+      "ListDir": "/home/steam/server-files/backups",
+      "BeforeStop": true
+    },
+    "CanCountPlayers": true
+  }
+]
