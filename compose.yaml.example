@@ -173,6 +173,9 @@ services:
   # redacts /info. Refusals are logged: `docker logs dockerproxy-crowsnest 2>&1 | grep DENY`. It refuses to
   # start without a valid GUARD_SCOPES. Use it in place of `dockerproxy` above (execguard's --upstream
   # then points at it); exec is still switched on per scope here and restricted by execguard.
+  # A fixed container address is refused unless the scope pins it: "ipv4": {"<network>": ["10.0.1.16"]} lists the
+  # exact addresses that container may take on that network (the network must be in "networks"). Use it when
+  # something outside Docker keys on the address, such as a firewall rule for a macvlan container.
   # guard:
   #   image: ghcr.io/fiddler110/crowsnest:latest
   #   container_name: dockerproxy-crowsnest

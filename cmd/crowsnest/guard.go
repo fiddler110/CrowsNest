@@ -44,8 +44,8 @@ func runGuard(args []string) error {
 		g.MaxConns = n
 	}
 	for _, s := range scopes {
-		fmt.Printf("crowsnest guard scope %s: images=%v binds=%v volumes=%v networks=%v ports=%v exec=%v secopts=%v cap_add=%v\n",
-			s.Name, sortedKeys(s.Images), s.Binds, s.Volumes, sortedKeys(s.Networks), s.Ports, s.Exec, sortedKeys(s.SecOpts), sortedKeys(s.CapAdd)) // #nosec G705 G706 -- operator configuration, not request data
+		fmt.Printf("crowsnest guard scope %s: images=%v binds=%v volumes=%v networks=%v ipv4=%v ports=%v exec=%v secopts=%v cap_add=%v\n",
+			s.Name, sortedKeys(s.Images), s.Binds, s.Volumes, sortedKeys(s.Networks), s.IPv4, s.Ports, s.Exec, sortedKeys(s.SecOpts), sortedKeys(s.CapAdd)) // #nosec G705 G706 -- operator configuration, not request data
 	}
 
 	l, err := net.Listen("tcp", *listen)

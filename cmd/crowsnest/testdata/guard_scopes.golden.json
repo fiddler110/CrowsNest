@@ -1,0 +1,92 @@
+[
+  {
+    "Name": "palworld",
+    "Images": {
+      "docker.io/thijsvanloef/palworld-server-docker": true
+    },
+    "Binds": [
+      "/srv/games/Palworld"
+    ],
+    "Volumes": null,
+    "Networks": {
+      "crowsnest-games-net": true
+    },
+    "Ports": [
+      {
+        "HostIP": "10.0.0.2",
+        "HostPort": "8211",
+        "ContainerPort": "8211",
+        "Proto": "udp"
+      }
+    ],
+    "Exec": true,
+    "SecOpts": {},
+    "CapAdd": {},
+    "Labels": {
+      "com.centurylinklabs.watchtower.enable": "false"
+    },
+    "Aliases": {},
+    "IPv4": null
+  },
+  {
+    "Name": "valheim",
+    "Images": {
+      "docker.io/lloesche/valheim-server": true
+    },
+    "Binds": [
+      "/srv/games/Valheim/config",
+      "/srv/games/Valheim/data"
+    ],
+    "Volumes": null,
+    "Networks": {
+      "crowsnest-games-net": true
+    },
+    "Ports": [
+      {
+        "HostIP": "10.0.0.2",
+        "HostPort": "2456",
+        "ContainerPort": "2456",
+        "Proto": "udp"
+      },
+      {
+        "HostIP": "10.0.0.2",
+        "HostPort": "2457",
+        "ContainerPort": "2457",
+        "Proto": "udp"
+      }
+    ],
+    "Exec": true,
+    "SecOpts": {},
+    "CapAdd": {},
+    "Labels": {
+      "com.centurylinklabs.watchtower.enable": "false"
+    },
+    "Aliases": {},
+    "IPv4": null
+  },
+  {
+    "Name": "windrose",
+    "Images": {
+      "docker.io/indifferentbroccoli/windrose-server-docker": true
+    },
+    "Binds": [
+      "/srv/games/Windrose/Config"
+    ],
+    "Volumes": null,
+    "Networks": {
+      "host": true
+    },
+    "Ports": null,
+    "Exec": true,
+    "SecOpts": {
+      "seccomp:unconfined": true,
+      "seccomp=unconfined": true
+    },
+    "CapAdd": {},
+    "Labels": {
+      "com.centurylinklabs.watchtower.enable": "false"
+    },
+    "Aliases": {},
+    "IPv4": null
+  }
+]

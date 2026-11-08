@@ -1,0 +1,123 @@
+# CrowsNest config, production (Palworld-first). Reference: /home/plex/projects/crowsnest/config.yaml.example
+server:
+    addr: ":5000"
+    session_secret_file: /app/.session_secret
+    tz: "America/Toronto"
+    # Docker calls go through execguard (exec allowlist) and then the scoped API guard, never the raw socket.
+    docker_host: tcp://crowsnest-execguard:2375
+    # Only Caddy, at its fixed address on crowsnest-web (docker-compose.yml), may set X-Forwarded-For. Caddy
+    # trusts cloudflared for the visitor's real IP (Cf-Connecting-Ip) and sends exactly that one IP as
+    # X-Forwarded-For (`header_up X-Forwarded-For {client_ip}`), so the login rate limit is per visitor.
+    trusted_proxies: ["192.168.241.2/32"]
+    # Served over HTTPS (Cloudflare -> Caddy). Marks the cookie Secure and adds HSTS.
+    secure_cookies: true
+    # max_active_games comes from CROWSNEST_MAX_ACTIVE_GAMES in .env (1). This host can't carry two big servers.
+    #
+    # Dashboard Settings override this file. Idle/night shutdown, max active games, auto-update and the raw
+    # console, once changed from the dashboard, are saved to /app/data/settings.json
+    # (${USERDIR}/crowsnest/config/settings.json) and win over the values here. Delete that file to go back to
+    # this one.
+    # host_disk_paths: [/app/data, /data]   # free space on the dashboard (default); both are on the game-data disk
+
+idle_shutdown:
+    enabled: true
+    idle_minutes: 20
+    check_interval_seconds: 60
+
+night_shutdown:
+    enabled: false   # default only; settings.json currently has it on (see the note under server)
+    # min_uptime_minutes: 30   # a game started inside the window is left alone until it has been up this long
+
+notifications:
+    discord_webhook_url_env: DISCORD_WEBHOOK_URL # set DISCORD_WEBHOOK_URL in .env to enable
+    # player_events: false   # join/leave messages are on whenever a webhook is set
+
+users_file: /app/users.env
+
+# Sign-in is Google only. The allowlist (username=email pairs) and the OAuth client live in .env
+# (CROWSNEST_GOOGLE_CLIENT_ID / _CLIENT_SECRET / _USERS). Missing values stop CrowsNest at startup.
+# The token exchange reaches oauth2.googleapis.com through crowsnest-games-net (the only non-internal network).
+auth:
+    password_login: false
+    google:
+        redirect_url: https://crowsnest.example.com/auth/google/callback
+
+games:
+    - id: palworld
+      display_name: Palworld
+      container_name: palworld
+      compose_file: /data/compose.yaml
+      compose_profile: palworld
+      compose_service: palworld
+      # Shown on the card with a copy button. Friends join over Tailscale (no router port forward): the tailscale
+      # container (compose_includes/tailscale) routes 10.0.0.2, and the tailnet policy allows friends only
+      # udp:8211 on it. The same address works on the home LAN. Never put a password here.
+      connect_address: "10.0.0.2:8211"
+      connect_note: "Turn on Tailscale first (away from home)"
+      # Shown on the card to every signed-in user, values read from .env (passed to the container in compose.yaml).
+      # Only what players need: never PALWORLD_ADMIN_PASSWORD.
+      connect_secrets:
+          - {label: Join password, env: PALWORLD_SERVER_PASSWORD}
+      palworld:
+          rest_api_url: http://palworld:8212 # over crowsnest-games-net; 8212 is not published
+          rest_api_user: admin
+          rest_api_password_env: PALWORLD_ADMIN_PASSWORD
+          # Raw RCON console for admins (also needs raw_console on in Settings). RCON is enabled in
+          # games.compose.yaml and not published; the password is the admin password.
+          rcon_addr: palworld:25575
+      # Admin-only Backups panel. Runs in the container through execguard, which allows exactly these commands.
+      # The image's `backup` saves through the REST API, writes /palworld/backups/palworld-save-<date>.tar.gz and
+      # prunes after OLD_BACKUP_DAYS. Restart execguard after changing any backup block.
+      backup:
+          exec: ["backup"]
+          list_dir: /palworld/backups
+          before_stop: true
+
+    - id: valheim
+      display_name: Valheim
+      container_name: valheim
+      compose_file: /data/compose.yaml
+      compose_profile: valheim
+      compose_service: valheim
+      # Same route as Palworld: friends away from home join over Tailscale, which needs udp:2456-2457 on 10.0.0.2
+      # added to the tailnet policy's friends grant (compose_includes/tailscale/policy.hujson). The server password
+      # is VALHEIM_SERVER_PASS in .env; never put it here. Status and player count come from the container log.
+      connect_address: "10.0.0.2:2456"
+      connect_note: "Turn on Tailscale first (away from home)"
+      connect_secrets:
+          - {label: Server name, env: VALHEIM_SERVER_NAME}
+          - {label: World name, env: VALHEIM_WORLD_NAME}
+          - {label: Server password, env: VALHEIM_SERVER_PASS}
+      # The image also makes its own hourly worlds-*.zip in /config/backups (BACKUPS_MAX_AGE days). This adds
+      # manual and before-stop copies of worlds_local next to them.
+      backup:
+          exec: ["/bin/sh", "-c", "mkdir -p /config/backups && tar czf /config/backups/manual-$(date +%Y%m%d-%H%M%S).tar.gz -C /config worlds_local"]
+          list_dir: /config/backups
+          before_stop: true
+
+    - id: windrose
+      display_name: Windrose
+      container_name: windrose
+      compose_file: /data/compose.yaml
+      compose_profile: windrose
+      compose_service: windrose
+      # Windrose is joined by invite code through the game's own relay: no address, no Tailscale, no router port.
+      # The invite code, name and password come from .env (WINDROSE_INVITE_CODE, _SERVER_NAME, _SERVER_PASSWORD).
+      connect_note: "Join in-game with the invite code"
+      connect_secrets:
+          - {label: Invite code, env: WINDROSE_INVITE_CODE}
+          - {label: Server name, env: WINDROSE_SERVER_NAME}
+          - {label: Server password, env: WINDROSE_SERVER_PASSWORD}
+      # Windrose+ (the server-side mod installed by the image when WINDROSE_PLUS_ENABLED=true) gives the player
+      # count, so idle shutdown can stop an empty server, plus the world info panel. The container is on host
+      # networking, so its dashboard is bound (windrose_plus.json server.bind_ip) to 192.168.0.1, the host's
+      # address on crowsnest-games-net: reachable from CrowsNest, not from the LAN. The password must match
+      # rcon.password in ${USERDIR}/Windrose/Config/windrose_plus.json (the image sets it from .env on each start).
+      windrose:
+          http_api_url: http://192.168.0.1:8780
+          rcon_password_env: WINDROSE_RCON_PASSWORD
+      # The world (R5/Saved/SaveProfiles) has no backup of its own. Copies go to backups/ in the server folder.
+      backup:
+          exec: ["/bin/sh", "-c", "mkdir -p /home/steam/server-files/backups && tar czf /home/steam/server-files/backups/world-$(date +%Y%m%d-%H%M%S).tar.gz -C /home/steam/server-files/R5/Saved SaveProfiles && chown -R 1000:1000 /home/steam/server-files/backups"]
+          list_dir: /home/steam/server-files/backups
+          before_stop: true

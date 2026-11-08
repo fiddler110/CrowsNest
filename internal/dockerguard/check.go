@@ -360,22 +360,30 @@ var netIDRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 // networkOK is a scope network by name, or by its full id (looked up here:
 // the name is what the scope lists).
 func (g *Guard) networkOK(s *Scope, net any) bool {
+	return g.scopeNetwork(s, net) != ""
+}
+
+// scopeNetwork resolves net (a name, or a full network id) to the scope
+// network's name, or "" when the scope may not use it.
+func (g *Guard) scopeNetwork(s *Scope, net any) string {
 	name, ok := net.(string)
 	if !ok || name == "" {
-		return false
+		return ""
 	}
 	if s.networkOK(name) {
-		return true
+		return name
 	}
 	if netIDRe.MatchString(name) {
 		info, _ := g.engineJSON("/networks/" + name).(map[string]any)
 		if info == nil {
-			return false
+			return ""
 		}
 		n, _ := info["Name"].(string)
-		return info["Id"] == name && n != "" && s.networkOK(n)
+		if info["Id"] == name && n != "" && s.networkOK(n) {
+			return n
+		}
 	}
-	return false
+	return ""
 }
 
 // ---- create
@@ -440,10 +448,11 @@ func (g *Guard) checkCreate(q query, body any) error {
 		}
 		sort.Strings(nets)
 		for _, n := range nets {
-			if !g.networkOK(scope, n) {
+			resolved := g.scopeNetwork(scope, n)
+			if resolved == "" {
 				return deny(403, "%s may not join network %s", quote(name), quote(n))
 			}
-			if _, err := checkObject(m[n], endpointRules(scope), where+"["+n+"]"); err != nil {
+			if _, err := checkObject(m[n], endpointRules(scope, resolved), where+"["+n+"]"); err != nil {
 				return err
 			}
 		}

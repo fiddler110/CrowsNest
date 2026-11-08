@@ -32,6 +32,12 @@ type Scope struct {
 	CapAdd   map[string]bool
 	Labels   map[string]string
 	Aliases  map[string]bool
+
+	// IPv4 pins exact container addresses per network (network name -> addresses).
+	// A network with no entry accepts no fixed address, the default. Needed when
+	// something outside Docker keys on the address, e.g. a firewall rule for a
+	// macvlan container.
+	IPv4 map[string][]string
 }
 
 var (
@@ -40,7 +46,7 @@ var (
 	portRe      = regexp.MustCompile(`^[1-9][0-9]{0,4}(-[1-9][0-9]{0,4})?$`)
 	capRe       = regexp.MustCompile(`^[A-Z_]+$`)
 	scopeKeys   = map[string]bool{"name": true, "images": true, "binds": true, "volumes": true, "networks": true, "ports": true,
-		"exec": true, "secopts": true, "cap_add": true, "labels": true, "aliases": true}
+		"exec": true, "secopts": true, "cap_add": true, "labels": true, "aliases": true, "ipv4": true}
 )
 
 // LoadScopes parses GUARD_SCOPES: a non-empty JSON list of scope objects. The
@@ -212,7 +218,44 @@ func newScope(e any, where string) (*Scope, error) {
 		}
 		s.Aliases[str] = true
 	}
+	if err := parseIPv4(entry, s, where); err != nil {
+		return nil, err
+	}
 	return s, nil
+}
+
+// parseIPv4 reads "ipv4": {"<network>": ["10.0.1.16"]}. Each network must be one
+// the scope may join, and each address a plain, canonical, unicast IPv4 address:
+// nothing that could mean "any", this host, or a broadcast/multicast target.
+func parseIPv4(entry map[string]any, s *Scope, where string) error {
+	v, present := entry["ipv4"]
+	if !present {
+		return nil
+	}
+	m, ok := v.(map[string]any)
+	if !ok || len(m) == 0 {
+		return fmt.Errorf("%s: ipv4 must be an object of network: [addresses]", where)
+	}
+	s.IPv4 = map[string][]string{}
+	for network, list := range m {
+		if !s.Networks[network] {
+			return fmt.Errorf("%s: ipv4 names network %s, which is not in networks", where, quote(network))
+		}
+		items, ok := list.([]any)
+		if !ok || len(items) == 0 {
+			return fmt.Errorf("%s: ipv4[%s] must be a non-empty list of addresses", where, network)
+		}
+		for _, it := range items {
+			str, _ := it.(string)
+			addr, err := netip.ParseAddr(str)
+			if err != nil || !addr.Is4() || addr.String() != str || addr.IsUnspecified() || addr.IsLoopback() ||
+				addr.IsMulticast() || addr.IsLinkLocalUnicast() || str == "255.255.255.255" {
+				return fmt.Errorf("%s: ipv4[%s]: %s is not a usable unicast IPv4 address", where, network, quote(it))
+			}
+			s.IPv4[network] = append(s.IPv4[network], str)
+		}
+	}
+	return nil
 }
 
 func badBindRune(r rune) bool {
