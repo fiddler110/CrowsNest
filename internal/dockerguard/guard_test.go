@@ -125,6 +125,36 @@ func TestRecreateNameMustFollowTheCurrentContainer(t *testing.T) {
 	}
 }
 
+// compose reads the replacement back after creating it, before it stops and deletes the old container.
+func TestTheReplacementIsInspectableOnlyWhileItsOldContainerStands(t *testing.T) {
+	h := newHarness(t, scopesJSON)
+	tmp := valID[:12] + "_valheim"
+	if r := h.request("GET", "/v1.52/containers/"+tmp+"/json", nil); r.code != 200 {
+		t.Fatal(r)
+	}
+	if r := h.request("GET", "/v1.52/containers/"+strings.Repeat("f6", 32)+"/json", nil); r.code != 200 {
+		t.Fatal(r)
+	}
+	h.eng.clear()
+	for _, p := range []string{"/containers/" + tmp + "/logs", "/containers/" + tmp + "/top", "/containers/" + tmp + "/stats?stream=0",
+		"/containers/" + retiredID[:12] + "_valheim/json", // not the id of the current valheim
+		"/containers/" + vwID[:12] + "_valheim/json", "/containers/" + valID[:12] + "_vaultwarden/json"} {
+		if r := h.request("GET", p, nil); r.code != 404 {
+			t.Errorf("%s: %s", p, r)
+		}
+	}
+	for _, s := range h.eng.all() {
+		if strings.HasSuffix(s.path, "/logs") || strings.HasSuffix(s.path, "/top") || strings.HasSuffix(s.path, "/stats") {
+			t.Errorf("engine saw %s", s.uri)
+		}
+	}
+	// the listing never shows it
+	r := h.request("GET", "/containers/json?all=1", nil)
+	if strings.Contains(string(r.raw), tmp) {
+		t.Error("the replacement is listed")
+	}
+}
+
 func TestRemovalIsLimitedToStoppedScopeContainers(t *testing.T) {
 	h := newHarness(t, scopesJSON)
 	h.eng.clear()

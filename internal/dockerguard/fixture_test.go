@@ -79,8 +79,11 @@ var (
 				"Labels": map[string]any{"com.docker.compose.project": "vaultwarden", "secret.hint": "admin-token-here"}, "State": "running"},
 		}
 	}()
-	retired = map[string]any{"Id": retiredID, "Names": []any{"/" + retiredID[:12] + "_valheim"}, "Image": "lloesche/valheim-server", "Labels": labels("valheim"), "State": "exited"}
-	images  = []any{
+	// compose's replacement for valheim, made under the temporary name while the current valheim (valID) still stands;
+	// inspectable but in no list
+	recreated = map[string]any{"Id": strings.Repeat("f6", 32), "Names": []any{"/" + valID[:12] + "_valheim"}, "Image": "lloesche/valheim-server", "Labels": labels("valheim"), "State": "created"}
+	retired   = map[string]any{"Id": retiredID, "Names": []any{"/" + retiredID[:12] + "_valheim"}, "Image": "lloesche/valheim-server", "Labels": labels("valheim"), "State": "exited"}
+	images    = []any{
 		map[string]any{"Id": palImageID, "RepoTags": []any{"thijsvanloef/palworld-server-docker:latest"},
 			"RepoDigests": []any{"thijsvanloef/palworld-server-docker@" + digest}},
 		map[string]any{"Id": "sha256:" + strings.Repeat("01", 32), "RepoTags": []any{"evil.example.com/thijsvanloef/palworld-server-docker:latest"}, "RepoDigests": []any{}},
@@ -103,7 +106,7 @@ var (
 )
 
 func findContainer(ref string) map[string]any {
-	for _, c := range append(append([]any{}, containers...), retired) {
+	for _, c := range append(append([]any{}, containers...), retired, recreated) {
 		cm := c.(map[string]any)
 		name := cm["Names"].([]any)[0].(string)
 		id := cm["Id"].(string)

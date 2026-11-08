@@ -334,6 +334,27 @@ func (g *Guard) tmpScopeOf(ref string) *Scope {
 	return g.scopeByName[m[2]]
 }
 
+// recreateCopy is true for the container compose created under its temporary
+// name "<old id12>_<scope>" while the scope's current container still has that id.
+func (g *Guard) recreateCopy(ref string) bool {
+	info := g.inspect(ref)
+	if info == nil {
+		return false
+	}
+	name, _ := info["Name"].(string)
+	m := tmpNameRe.FindStringSubmatch(strings.TrimLeft(name, "/"))
+	if m == nil || g.scopeByName[m[2]] == nil {
+		return false
+	}
+	old := g.inspect(m[2])
+	if old == nil {
+		return false
+	}
+	id, _ := old["Id"].(string)
+	oldName, _ := old["Name"].(string)
+	return strings.HasPrefix(id, m[1]) && strings.TrimLeft(oldName, "/") == m[2]
+}
+
 var netIDRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 // networkOK is a scope network by name, or by its full id (looked up here:
@@ -604,7 +625,9 @@ func (g *Guard) checkGet(path string, q query) (*hook, error) {
 		return nil, deny(404, "plugin not found")
 	}
 	if m := containerReadRe.FindStringSubmatch(path); m != nil {
-		if g.scopeOf(m[1]) == nil { // missing and out-of-scope look the same: neither is there for this client
+		// missing and out-of-scope look the same: neither is there for this client. The one extra thing visible, to inspect
+		// only, is compose's replacement while it is being recreated (compose reads it back right after creating it).
+		if g.scopeOf(m[1]) == nil && !(m[2] == "json" && g.recreateCopy(m[1])) {
 			return nil, noSuchContainer(m[1])
 		}
 		if m[2] == "top" {
