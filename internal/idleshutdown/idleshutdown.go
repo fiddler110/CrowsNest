@@ -33,6 +33,10 @@ type Notifier interface {
 	Notify(ctx context.Context, message string)
 }
 
+// DefaultStartupGrace is the empty-server allowance after a game first comes
+// online, before anyone has joined.
+const DefaultStartupGrace = time.Hour
+
 // Manager runs the idle-shutdown check on a timer. Build one with New; the
 // zero value is not usable.
 type Manager struct {
@@ -41,6 +45,12 @@ type Manager struct {
 
 	idleDuration  time.Duration
 	checkInterval time.Duration
+
+	// StartupGrace is how long a freshly started game may sit empty before
+	// its first player joins (covers updates and slow first boots). Once a
+	// player has been seen, the shorter idle duration applies from the moment
+	// the game becomes empty again. Defaults to DefaultStartupGrace.
+	StartupGrace time.Duration
 
 	// Notifier, when set, is told about every stop this manager triggers.
 	// Optional — leave nil to disable notifications.
@@ -70,6 +80,8 @@ type Manager struct {
 	mu sync.Mutex
 	// empty marks games whose latest determinable reading was zero players.
 	empty map[string]bool
+	// seenPlayers marks games that have had a player since coming online.
+	seenPlayers map[string]bool
 	// idleFor is the grace period applied on the most recent tick.
 	idleFor time.Duration
 }
@@ -84,7 +96,16 @@ func (m *Manager) IdleRemaining(id string) (time.Duration, bool) {
 	if !tracked || !m.empty[id] || m.idleFor <= 0 {
 		return 0, false
 	}
-	return max(0, m.idleFor-m.now().Sub(last)), true
+	return max(0, m.graceFor(id, m.idleFor)-m.now().Sub(last)), true
+}
+
+// graceFor returns the grace period for id: the startup grace until a player
+// has been seen, the idle duration afterwards. Callers must hold m.mu.
+func (m *Manager) graceFor(id string, idle time.Duration) time.Duration {
+	if m.seenPlayers[id] {
+		return idle
+	}
+	return max(idle, m.StartupGrace)
 }
 
 // New builds a Manager that checks every game in registry once per
@@ -98,6 +119,8 @@ func New(registry *games.Registry, stopper Stopper, idleDuration, checkInterval 
 		checkInterval: checkInterval,
 		lastNonZero:   make(map[string]time.Time),
 		empty:         make(map[string]bool),
+		seenPlayers:   make(map[string]bool),
+		StartupGrace:  DefaultStartupGrace,
 		idleFor:       idleDuration,
 	}
 }
@@ -136,6 +159,7 @@ func (m *Manager) Tick(ctx context.Context) {
 			m.mu.Lock()
 			clear(m.lastNonZero)
 			clear(m.empty)
+			clear(m.seenPlayers)
 			m.mu.Unlock()
 			return
 		}
@@ -154,6 +178,7 @@ func (m *Manager) forget(id string) {
 	m.mu.Lock()
 	delete(m.lastNonZero, id)
 	delete(m.empty, id)
+	delete(m.seenPlayers, id)
 	m.mu.Unlock()
 }
 
@@ -201,13 +226,20 @@ func (m *Manager) checkGame(ctx context.Context, d games.GameDef, idleDuration t
 		return
 	}
 	if count > 0 {
+		m.mu.Lock()
+		m.seenPlayers[d.ID] = true
+		m.mu.Unlock()
 		m.observe(d.ID, now, false)
 		return
 	}
 	m.observe(d.ID, last, true)
-	if now.Sub(last) < idleDuration {
+	m.mu.Lock()
+	grace := m.graceFor(d.ID, idleDuration)
+	m.mu.Unlock()
+	if now.Sub(last) < grace {
 		return
 	}
+	idleDuration = grace
 
 	log.Printf("idleshutdown: stopping %s after %s with no players", d.ID, idleDuration)
 	if err := m.stopper.Stop(ctx, d.ID); err != nil {

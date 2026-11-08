@@ -57,6 +57,7 @@ func newTestManager(t *testing.T, status *fakeStatus, players *fakePlayers, idle
 	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	m := New(registry, stopper, idleDuration, time.Minute)
 	m.Now = func() time.Time { return clock }
+	m.StartupGrace = 0 // most tests exercise the plain idle timer
 	return m, stopper, &clock
 }
 
@@ -275,5 +276,56 @@ func TestIdleRemaining(t *testing.T) {
 	m.Tick(context.Background())
 	if _, ok := m.IdleRemaining("windrose"); ok {
 		t.Fatal("countdown with an unreadable player count")
+	}
+}
+
+func TestTick_StartupGraceThenShortIdle(t *testing.T) {
+	status := &fakeStatus{status: games.StatusOnline}
+	players := &fakePlayers{count: 0, ok: true}
+	m, stopper, clock := newTestManager(t, status, players, 20*time.Minute)
+	m.StartupGrace = time.Hour
+	ctx := context.Background()
+
+	m.Tick(ctx) // comes online, nobody has joined
+	*clock = clock.Add(45 * time.Minute)
+	m.Tick(ctx)
+	if len(stopper.stopped) != 0 {
+		t.Fatalf("stopped %v inside the 1h startup grace", stopper.stopped)
+	}
+	if left, ok := m.IdleRemaining("windrose"); !ok || left != 15*time.Minute {
+		t.Fatalf("remaining = %v, %v; want 15m (1h startup grace - 45m)", left, ok)
+	}
+
+	// Someone joins, then leaves: the 20m idle timer starts at that moment.
+	players.count = 1
+	m.Tick(ctx)
+	*clock = clock.Add(5 * time.Minute)
+	m.Tick(ctx) // last poll that still sees the player
+	players.count = 0
+	m.Tick(ctx)
+	*clock = clock.Add(19 * time.Minute)
+	m.Tick(ctx)
+	if len(stopper.stopped) != 0 {
+		t.Fatalf("stopped %v before 20m of emptiness", stopper.stopped)
+	}
+	*clock = clock.Add(2 * time.Minute)
+	m.Tick(ctx)
+	if len(stopper.stopped) != 1 {
+		t.Fatalf("stopped = %v, want one stop 20m after the last player left", stopper.stopped)
+	}
+}
+
+func TestTick_StartupGraceExpiresWithNoPlayers(t *testing.T) {
+	status := &fakeStatus{status: games.StatusOnline}
+	players := &fakePlayers{count: 0, ok: true}
+	m, stopper, clock := newTestManager(t, status, players, 20*time.Minute)
+	m.StartupGrace = time.Hour
+	ctx := context.Background()
+
+	m.Tick(ctx)
+	*clock = clock.Add(61 * time.Minute)
+	m.Tick(ctx)
+	if len(stopper.stopped) != 1 {
+		t.Fatalf("stopped = %v, want stop after the startup grace with nobody joining", stopper.stopped)
 	}
 }
