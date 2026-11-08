@@ -155,7 +155,7 @@ h1, h2, h3, p { margin: 0; }
 /* ---------- layout ---------- */
 .shell {
   position: relative; z-index: 1;
-  max-width: 1120px; margin: 0 auto;
+  max-width: 1680px; margin: 0 auto;
   padding: 1.6rem clamp(1rem, 4vw, 2rem) 3rem;
 }
 
@@ -213,7 +213,7 @@ h1, h2, h3, p { margin: 0; }
 @keyframes sweep { to { transform: rotate(360deg); } }
 
 /* ---------- vessel cards ---------- */
-.games { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 1.1rem; align-items: start; }
+.games { display: grid; grid-template-columns: 1fr; gap: 1.1rem; align-items: start; }
 .empty { color: var(--muted); padding: 2rem 0; text-align: center; font-family: var(--mono); }
 
 .game-card {
@@ -443,3 +443,31 @@ h1, h2, h3, p { margin: 0; }
 .console-note:empty { display: none; }
 .console-output { margin: 0; max-height: 16rem; overflow: auto; padding: 0.6rem 0.75rem; font: 0.74rem/1.55 var(--mono); color: #8fa8b8; white-space: pre-wrap; word-break: break-all; border: 1px solid var(--border); border-radius: 8px; }
 .console-output:empty { display: none; }
+
+/* ---------- users dialog ---------- */
+.users-box { max-width: 34rem; max-height: 90vh; overflow-y: auto; }
+.users-list { list-style: none; margin: 0.75rem 0; padding: 0; display: grid; gap: 0.4rem; }
+.user-row { display: flex; align-items: center; gap: 0.6rem; flex-wrap: wrap; padding: 0.5rem 0.7rem; border: 1px solid var(--border-strong); border-radius: 10px; }
+.user-name { font-weight: 600; }
+.user-tags { color: var(--muted); font-size: 0.8rem; flex: 1; }
+.user-actions { display: flex; gap: 0.25rem; }
+.user-actions .btn { padding: 0.25rem 0.55rem; font-size: 0.8rem; }
+.btn-danger { color: var(--danger); }
+.user-form { margin-top: 1rem; border-top: 1px solid var(--border-strong); padding-top: 0.5rem; }
+.user-form h4 { margin: 0.5rem 0 0; }
+.user-form select { padding: 0.5rem; border-radius: 8px; background: transparent; color: inherit; border: 1px solid var(--border-strong); }
+
+/* ---------- wide cards: info on the left, panels on the right ---------- */
+.card-main { display: flex; flex-direction: column; min-width: 0; }
+.card-side { min-width: 0; }
+.card-side:not(:has(> :not([hidden]))) { display: none; }
+.card-side > :first-child { margin-top: 0; }
+.game-card:has(.card-side > :not([hidden])) { display: grid; grid-template-columns: minmax(18rem, 2fr) minmax(0, 3fr); gap: 1.25rem; align-items: start; }
+/* With the log open, give it most of the card so lines are readable. */
+.game-card:has(.log-panel:not([hidden])) { grid-template-columns: minmax(16rem, 1fr) minmax(0, 3fr); }
+.game-card .log-panel { max-height: 480px; }
+.game-card .log-output { font-size: 0.8rem; word-break: break-word; }
+@media (max-width: 820px) {
+  .game-card:has(.card-side > :not([hidden])), .game-card:has(.log-panel:not([hidden])) { grid-template-columns: 1fr; }
+  .card-side > :first-child { margin-top: 0.9rem; }
+}

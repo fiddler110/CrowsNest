@@ -215,7 +215,7 @@ func (g *Guard) captureID(resp *http.Response) error {
 		return nil
 	}
 	b, err := io.ReadAll(io.LimitReader(resp.Body, maxBody))
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if err != nil {
 		return err
 	}

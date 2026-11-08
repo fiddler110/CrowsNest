@@ -89,7 +89,7 @@ func newMux(app *web.App) *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-		w.Write([]byte("ok"))
+		_, _ = w.Write([]byte("ok"))
 	})
 	if app != nil {
 		app.Routes(mux)
@@ -230,8 +230,14 @@ func serve() error {
 		return err
 	}
 	if google != nil {
-		log.Printf("auth: Google sign-in enabled for %d account(s); password sign-in %s",
-			len(google.Users), map[bool]string{true: "disabled", false: "enabled"}[authSvc.DisablePasswordLogin])
+		password := "enabled"
+		if authSvc.DisablePasswordLogin {
+			password = "disabled"
+		}
+		log.Printf("auth: Google sign-in enabled; password sign-in %s", password)
+	}
+	if google != nil {
+		google.Store = userStore
 	}
 	sessions.Allowed = sessionAllowed(userStore.Snapshot, google, authSvc.DisablePasswordLogin)
 
@@ -522,7 +528,7 @@ func healthcheck() int {
 		return 1
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		fmt.Fprintf(os.Stderr, "healthz returned %d\n", resp.StatusCode)
 		return 1
@@ -538,10 +544,8 @@ func healthcheck() int {
 func sessionAllowed(users func() auth.Users, google *auth.GoogleLogin, passwordDisabled bool) func(string) bool {
 	return func(name string) bool {
 		if google != nil {
-			for _, g := range google.Users {
-				if g == name {
-					return true
-				}
+			if google.Allows(name) {
+				return true
 			}
 		}
 		if passwordDisabled {

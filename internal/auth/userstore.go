@@ -43,6 +43,9 @@ func (s *UserStore) stat() (time.Time, int64, bool) {
 	return fi.ModTime(), fi.Size(), true
 }
 
+// Path is the users file this store serves.
+func (s *UserStore) Path() string { return s.path }
+
 // Lookup returns username's record.
 func (s *UserStore) Lookup(username string) (UserRecord, bool) {
 	s.mu.RLock()
@@ -96,4 +99,18 @@ func (s *UserStore) Watch(ctx context.Context, interval time.Duration) {
 			}
 		}
 	}
+}
+
+// GoogleUsers returns the Google email -> username pairs recorded in the
+// users file.
+func (s *UserStore) GoogleUsers() GoogleUsers {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := GoogleUsers{}
+	for name, rec := range s.users {
+		if rec.GoogleEmail != "" {
+			out[rec.GoogleEmail] = name
+		}
+	}
+	return out
 }
