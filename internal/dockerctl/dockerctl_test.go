@@ -44,13 +44,13 @@ func readInvocations(t *testing.T, path string) []string {
 
 const logInvocation = `echo "$@" >> "$FAKE_DOCKER_LOG"` + "\n"
 
-func TestRunning_True(t *testing.T) {
+func TestCLI_Running_True(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
 if [ "$1" = "ps" ]; then
   echo "windrose"
 fi
 `)
-	running, err := c.Running(context.Background(), "windrose")
+	running, err := c.cliRunning(context.Background(), "windrose")
 	if err != nil {
 		t.Fatalf("Running() error = %v", err)
 	}
@@ -59,13 +59,13 @@ fi
 	}
 }
 
-func TestRunning_False(t *testing.T) {
+func TestCLI_Running_False(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
 if [ "$1" = "ps" ]; then
   :
 fi
 `)
-	running, err := c.Running(context.Background(), "windrose")
+	running, err := c.cliRunning(context.Background(), "windrose")
 	if err != nil {
 		t.Fatalf("Running() error = %v", err)
 	}
@@ -123,18 +123,18 @@ esac
 	}
 }
 
-func TestFinishedAt(t *testing.T) {
+func TestCLI_FinishedAt(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
 case "$4" in
   palworld) echo "2026-11-06T22:00:00.5Z" ;;
   fresh) echo "0001-01-01T00:00:00Z" ;;
 esac
 `)
-	got, err := c.FinishedAt(context.Background(), "palworld")
+	got, err := c.cliFinishedAt(context.Background(), "palworld")
 	if err != nil || got.UTC().Format(time.RFC3339) != "2026-11-06T22:00:00Z" {
 		t.Fatalf("FinishedAt(palworld) = %v, %v", got, err)
 	}
-	got, err = c.FinishedAt(context.Background(), "fresh")
+	got, err = c.cliFinishedAt(context.Background(), "fresh")
 	if err != nil || !got.IsZero() {
 		t.Fatalf("FinishedAt(never stopped) = %v, %v, want zero time", got, err)
 	}
@@ -191,11 +191,11 @@ exit 1
 	}
 }
 
-func TestStartedAt(t *testing.T) {
+func TestCLI_StartedAt(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
 [ "$1" = "inspect" ] && echo "2026-01-02T03:04:05.123456789Z"
 `)
-	got, err := c.StartedAt(context.Background(), "windrose")
+	got, err := c.cliStartedAt(context.Background(), "windrose")
 	if err != nil {
 		t.Fatalf("StartedAt() error = %v", err)
 	}
@@ -223,11 +223,11 @@ func TestExec(t *testing.T) {
 	}
 }
 
-func TestStats(t *testing.T) {
+func TestCLI_Stats(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
 [ "$1" = "stats" ] && printf '12.34%%\t100MiB / 512MiB\t19.53%%\n'
 `)
-	s, err := c.Stats(context.Background(), "windrose")
+	s, err := c.cliStats(context.Background(), "windrose")
 	if err != nil {
 		t.Fatalf("Stats() error = %v", err)
 	}
@@ -275,9 +275,9 @@ func TestGPUStats_MalformedOutput(t *testing.T) {
 	}
 }
 
-func TestLogs(t *testing.T) {
+func TestCLI_Logs(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\necho line1\necho line2\n")
-	rc, err := c.Logs(context.Background(), "windrose", "", "")
+	rc, err := c.cliLogs(context.Background(), "windrose", "", "")
 	if err != nil {
 		t.Fatalf("Logs() error = %v", err)
 	}
@@ -294,7 +294,7 @@ func TestLogs(t *testing.T) {
 
 func TestRun_ErrorIncludesStderr(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\necho boom >&2\nexit 1\n")
-	_, err := c.Running(context.Background(), "windrose")
+	_, err := c.cliRunning(context.Background(), "windrose")
 	if err == nil {
 		t.Fatal("Running() error = nil, want error")
 	}
@@ -321,7 +321,7 @@ func TestHost_PrependsGlobalFlag(t *testing.T) {
 func TestRun_Timeout(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\nsleep 5\n")
 	c.Timeout = 50 * time.Millisecond
-	_, err := c.Running(context.Background(), "windrose")
+	_, err := c.cliRunning(context.Background(), "windrose")
 	if err == nil {
 		t.Fatal("Running() error = nil, want timeout error")
 	}
@@ -355,13 +355,13 @@ func TestStart_FailedPullStillStarts(t *testing.T) {
 	}
 }
 
-func TestPing(t *testing.T) {
+func TestCLI_Ping(t *testing.T) {
 	c, _ := newFakeDocker(t, "#!/bin/sh\necho 29.0.0\n")
-	if err := c.Ping(context.Background()); err != nil {
+	if err := c.cliPing(context.Background()); err != nil {
 		t.Fatalf("Ping() = %v, want nil", err)
 	}
 	down, _ := newFakeDocker(t, "#!/bin/sh\necho 'Cannot connect to the Docker daemon' >&2\nexit 1\n")
-	if err := down.Ping(context.Background()); err == nil {
+	if err := down.cliPing(context.Background()); err == nil {
 		t.Fatal("Ping() = nil against a failing daemon, want an error")
 	}
 }
