@@ -23,6 +23,7 @@ func withAddress(t testing.TB, addr string) map[string]any {
 	body := composeBody(t)
 	ep := body["NetworkingConfig"].(map[string]any)["EndpointsConfig"].(map[string]any)["crowsnest-games-net"].(map[string]any)
 	ep["IPAMConfig"] = map[string]any{"IPv4Address": addr, "IPv6Address": "", "LinkLocalIPs": nil}
+	ep["IPAddress"] = addr // compose repeats a fixed address here (verified against compose v5.7 and Docker 29)
 	return body
 }
 
@@ -100,4 +101,38 @@ func TestBadIPv4PinsStopTheGuardStarting(t *testing.T) {
 	if got := strings.Join(sc[0].IPv4["crowsnest-games-net"], ","); got != "10.0.1.16,10.0.1.17" {
 		t.Errorf("pins = %s", got)
 	}
+}
+
+// Compose repeats a fixed address in the endpoint's IPAddress field. It follows the
+// same pin as IPAMConfig.IPv4Address; the two may not name different things.
+func TestIPAddressFieldFollowsThePin(t *testing.T) {
+	h := newHarness(t, pinnedScopes)
+	ok := composeBody(t)
+	ep := ok["NetworkingConfig"].(map[string]any)["EndpointsConfig"].(map[string]any)["crowsnest-games-net"].(map[string]any)
+	ep["IPAddress"] = "192.168.0.50" // IPAMConfig left empty: the same single address
+	if r := h.request("POST", create, ok); r.code != 201 {
+		t.Fatalf("pinned IPAddress alone refused: %s", r)
+	}
+	h.eng.clear()
+	for _, tc := range []struct{ ipam, field string }{
+		{"192.168.0.50", "192.168.0.51"}, // pinned in IPAMConfig, something else in IPAddress
+		{"", "192.168.0.51"},
+		{"", "172.30.0.3"},
+	} {
+		body := composeBody(t)
+		e := body["NetworkingConfig"].(map[string]any)["EndpointsConfig"].(map[string]any)["crowsnest-games-net"].(map[string]any)
+		e["IPAMConfig"] = map[string]any{"IPv4Address": tc.ipam, "IPv6Address": "", "LinkLocalIPs": nil}
+		e["IPAddress"] = tc.field
+		h.refused("POST", create, body)
+	}
+	if len(h.reached("POST", "/containers/create")) > 0 {
+		t.Fatal("engine saw a create")
+	}
+}
+
+func TestIPAddressFieldIsStillRefusedWithoutAPin(t *testing.T) {
+	h := newHarness(t, scopesJSON)
+	body := composeBody(t)
+	body["NetworkingConfig"].(map[string]any)["EndpointsConfig"].(map[string]any)["crowsnest-games-net"].(map[string]any)["IPAddress"] = "192.168.0.50"
+	h.refused("POST", create, body)
 }

@@ -492,6 +492,8 @@ func hostConfigRules(s *Scope) map[string]rule {
 
 // ipamRules: compose sends these empty for "no fixed address". IPv4Address may
 // also be one of the addresses the scope pins for this network (Scope.IPv4).
+// Compose repeats a fixed address in the endpoint's IPAddress field, which gets
+// the same rule (see endpointRules).
 func ipamRules(s *Scope, network string) map[string]rule {
 	return map[string]rule{"IPv4Address": ipv4Rule(s, network), "IPv6Address": ruleEmpty, "LinkLocalIPs": ruleEmpty}
 }
@@ -537,7 +539,7 @@ func endpointRules(s *Scope, network string) map[string]rule {
 	return map[string]rule{"Aliases": aliasesRule(s), "DNSNames": aliasesRule(s), "GwPriority": intMin(-(1 << 31)),
 		"IPAMConfig": objectRule(ipamRules(s, network)),
 		"Links":      ruleEmpty, "DriverOpts": ruleEmpty, "MacAddress": ruleEmpty, // DriverOpts can set sysctls
-		"NetworkID": ruleEmpty, "EndpointID": ruleEmpty, "Gateway": ruleEmpty, "IPAddress": ruleEmpty, "IPPrefixLen": ruleEmpty,
+		"NetworkID": ruleEmpty, "EndpointID": ruleEmpty, "Gateway": ruleEmpty, "IPAddress": ipv4Rule(s, network), "IPPrefixLen": ruleEmpty,
 		"IPv6Gateway": ruleEmpty, "GlobalIPv6Address": ruleEmpty, "GlobalIPv6PrefixLen": ruleEmpty}
 }
 
