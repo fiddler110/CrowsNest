@@ -43,7 +43,7 @@ func runExecGuard(args []string) error {
 	fs := flag.NewFlagSet("execguard", flag.ExitOnError)
 	listen := fs.String("listen", ":2375", "address to listen on")
 	upstream := fs.String("upstream", os.Getenv("EXECGUARD_UPSTREAM"), "docker-socket-proxy URL, e.g. tcp://dockerproxy:2375 (or $EXECGUARD_UPSTREAM)")
-	fs.Parse(args)
+	_ = fs.Parse(args)
 	if *upstream == "" {
 		return fmt.Errorf("execguard: --upstream or EXECGUARD_UPSTREAM is required")
 	}
@@ -57,7 +57,7 @@ func runExecGuard(args []string) error {
 		return err
 	}
 	g.Logf = log.Printf
-	log.Printf("execguard: %d allowlisted command(s), listening on %s, upstream %s", len(rules), *listen, *upstream)
+	log.Printf("execguard: %d allowlisted command(s), listening on %q, upstream %q", len(rules), *listen, *upstream) // #nosec G706 -- operator-supplied command-line flags, not request data
 
 	srv := &http.Server{Addr: *listen, Handler: g, ReadHeaderTimeout: 10 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -66,7 +66,7 @@ func runExecGuard(args []string) error {
 		<-ctx.Done()
 		sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(sc)
+		_ = srv.Shutdown(sc)
 	}()
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		return err

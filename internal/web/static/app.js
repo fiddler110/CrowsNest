@@ -177,13 +177,17 @@ function toggleLogs(id) {
 
   output.textContent = "";
   panel.hidden = false;
+  panel.scrollTop = 0; // empty panel counts as "at the bottom", so it follows
   setPressed(btn, true);
 
   const es = new EventSource(`/api/games/${id}/logs`);
   logSources[id] = es;
   // Plain lines arrive as default "message" events; games with a log
   // formatter tag lines warn/error/verbose, which only named listeners see.
+  // Follow the newest line unless the reader has scrolled back; scrolling
+  // back down to the end resumes following. The scroller is the panel.
   const addLine = (kind) => (e) => {
+    const atBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 24;
     const line = document.createElement("div");
     if (kind) line.className = `ln-${kind}`;
     line.textContent = stripAnsi(e.data);
@@ -191,7 +195,7 @@ function toggleLogs(id) {
     while (output.children.length > MAX_LOG_LINES) {
       output.removeChild(output.firstChild);
     }
-    output.scrollTop = output.scrollHeight;
+    if (atBottom) panel.scrollTop = panel.scrollHeight;
   };
   es.onmessage = addLine("");
   ["warn", "error", "verbose"].forEach((kind) => es.addEventListener(kind, addLine(kind)));
@@ -638,6 +642,146 @@ document.querySelectorAll(".copy-btn").forEach((btn) => {
   });
 })();
 
+// Users dialog: list, add, edit (role / password reset), sign out everywhere, delete.
+(() => {
+  const btn = document.getElementById("users-btn");
+  if (!btn) return; // players don't get user management
+  const dialog = document.getElementById("users-dialog");
+  const list = document.getElementById("users-list");
+  const form = document.getElementById("user-form");
+  const errorEl = document.getElementById("users-error");
+  const title = document.getElementById("user-form-title");
+  const submit = document.getElementById("user-form-submit");
+  const cancelEdit = document.getElementById("user-form-cancel");
+  const pwLabel = document.getElementById("user-pw-label");
+  const googleField = document.getElementById("user-google-field");
+  let editing = null; // username being edited, or null when adding
+  let googleEnabled = false;
+
+  const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = !msg; };
+  const close = () => { dialog.hidden = true; btn.focus(); };
+
+  const resetForm = () => {
+    editing = null;
+    form.reset();
+    form.elements.username.readOnly = false;
+    form.elements.role.disabled = false;
+    googleField.hidden = !googleEnabled;
+    title.textContent = "Add a user";
+    submit.textContent = "Add user";
+    pwLabel.textContent = googleEnabled ? "Password (8+ characters, optional for Google users)" : "Password (8+ characters)";
+    cancelEdit.hidden = true;
+    showError("");
+  };
+
+  const startEdit = (u) => {
+    resetForm();
+    editing = u.username;
+    form.elements.username.value = u.username;
+    form.elements.username.readOnly = true;
+    form.elements.role.value = u.role;
+    form.elements.role.disabled = u.self;
+    form.elements.google_email.value = u.google_email || "";
+    title.textContent = `Edit ${u.username}`;
+    submit.textContent = "Save changes";
+    pwLabel.textContent = "New password (leave blank to keep)";
+    cancelEdit.hidden = false;
+    form.elements.password.focus();
+  };
+
+  const request = async (path, method, body) => {
+    // Remember Google availability from every users response.
+    const res = await callAPI(path, { method, body: body ? JSON.stringify(body) : undefined });
+    if (!res.ok) {
+      showError((await res.text()).trim());
+      return null;
+    }
+    showError("");
+    const data = await res.json();
+    if ("google_enabled" in data) googleEnabled = data.google_enabled;
+    return data.users;
+  };
+
+  const render = (users) => {
+    list.replaceChildren();
+    users.forEach((u) => {
+      const li = document.createElement("li");
+      li.className = "user-row";
+      const name = document.createElement("span");
+      name.className = "user-name";
+      name.textContent = u.username + (u.self ? " (you)" : "");
+      const tags = document.createElement("span");
+      tags.className = "user-tags";
+      tags.textContent = [u.role, u.google_email ? `google: ${u.google_email}` : (u.google ? "google" : ""),
+        u.has_password ? "" : "no password"].filter(Boolean).join(" · ");
+      li.append(name, tags);
+      if (u.managed) {
+        const actions = document.createElement("span");
+        actions.className = "user-actions";
+        const mk = (label, fn, danger) => {
+          const b = document.createElement("button");
+          b.type = "button";
+          b.className = "btn btn-ghost" + (danger ? " btn-danger" : "");
+          b.textContent = label;
+          b.addEventListener("click", fn);
+          return b;
+        };
+        actions.append(mk("Edit", () => startEdit(u)));
+        if (!u.self) {
+          actions.append(mk("Sign out", async () => {
+            const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "PUT", { revoke_sessions: true });
+            if (r) toast(`Signed ${u.username} out everywhere.`);
+          }));
+          actions.append(mk("Delete", async () => {
+            if (!confirm(`Delete user ${u.username}? They will be signed out.`)) return;
+            const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "DELETE");
+            if (r) { render(r); if (editing === u.username) resetForm(); }
+          }, true));
+        }
+        li.append(actions);
+      }
+      list.append(li);
+    });
+  };
+
+  btn.addEventListener("click", async () => {
+    const res = await callAPI("/api/users");
+    if (!res.ok) { toast(`Could not load users: ${(await res.text()).trim()}`); return; }
+    const data = await res.json();
+    googleEnabled = !!data.google_enabled;
+    resetForm();
+    render(data.users);
+    dialog.hidden = false;
+    form.elements.username.focus();
+  });
+  document.getElementById("users-close").addEventListener("click", close);
+  cancelEdit.addEventListener("click", () => { form.elements.role.disabled = false; resetForm(); });
+  dialog.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  dialog.addEventListener("click", (e) => { if (e.target === dialog) close(); });
+
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = form.elements;
+    let users;
+    if (editing) {
+      const body = {};
+      if (!f.role.disabled) body.role = f.role.value;
+      if (f.password.value) body.password = f.password.value;
+      if (googleEnabled) body.google_email = f.google_email.value.trim();
+      users = await request(`/api/users/${encodeURIComponent(editing)}`, "PUT", body);
+    } else {
+      users = await request("/api/users", "POST",
+        { username: f.username.value.trim(), password: f.password.value, role: f.role.value,
+          google_email: googleEnabled ? f.google_email.value.trim() : "" });
+    }
+    if (!users) return;
+    f.role.disabled = false;
+    render(users);
+    toast(editing ? "User updated." : "User added.");
+    resetForm();
+  });
+})();
+
 document.getElementById("logout-btn").addEventListener("click", async () => {
   await callAPI("/logout", { method: "POST" });
   window.location.href = "/login";
@@ -674,6 +818,7 @@ setInterval(refreshStatuses, POLL_INTERVAL_MS);
       case "join": return [`${who} joined ${game}`, false];
       case "leave": return [`${who} left ${game}`, false];
       case "settings": return [`${who} changed settings${note}`, false];
+      case "users": return [`${who} ${e.detail || "changed users"}`, false];
       case "backup": return [`${who} backed up ${game}${note}`, false];
       case "console": return [`${who} used the ${game} console${note}`, false];
       default: return [`${e.kind} ${game}${note}`, false];

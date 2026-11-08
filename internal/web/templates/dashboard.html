@@ -33,6 +33,7 @@
   </a>
   <div class="user-bar">
     <span class="user-chip"><svg class="icon"><use href="#i-user"/></svg><b>{{.Username}}</b></span>
+    {{if .IsAdmin}}<button id="users-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-user"/></svg>Users</button>{{end}}
     {{if .IsAdmin}}<button id="settings-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-gear"/></svg>Settings</button>{{end}}
     <button id="logout-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-logout"/></svg>Log out</button>
   </div>
@@ -63,11 +64,11 @@
   <div id="games" class="games">
     {{range .Games}}
     <article class="game-card" data-id="{{.ID}}" data-game="{{.ID}}" data-name="{{.DisplayName}}" data-status="{{.Status}}">
+      <div class="card-main">
       <header class="card-head">
         <div class="emblem" aria-hidden="true">{{.Initial}}</div>
         <div class="card-title">
           <h2>{{.DisplayName}}</h2>
-          <p class="card-sub">{{.ID}}</p>
         </div>
         <span class="status status-{{.Status}}"><i class="beacon"></i><span class="status-text">{{.Status}}</span></span>
       </header>
@@ -112,6 +113,9 @@
         </div>
       </div>
 
+      </div>
+
+      <div class="card-side">
       <div class="log-panel" hidden>
         <div class="log-output"></div>
       </div>
@@ -161,6 +165,7 @@
           <div class="stat-row-head"><span>GPU Memory</span><span class="stat-value stat-gpu-mem-val">—</span></div>
           <div class="stat-track"><div class="stat-fill stat-gpu-mem-fill"></div></div>
         </div>
+      </div>
       </div>
     </article>
     {{else}}
@@ -223,6 +228,33 @@
       <button class="btn btn-primary" type="submit">Save</button>
     </div>
   </form>
+</div>
+
+<div id="users-dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="users-title" hidden>
+  <div class="dialog-box users-box">
+    <p class="eyebrow">// crew manifest</p>
+    <h3 id="users-title">Users</h3>
+    <p class="settings-help">Admins can change settings and manage users. Players can start, stop and switch games. Changes apply immediately.</p>
+    <ul id="users-list" class="users-list"></ul>
+
+    <form id="user-form" class="user-form" autocomplete="off">
+      <h4 id="user-form-title">Add a user</h4>
+      <label class="setting-field">Username
+        <input type="text" name="username" maxlength="32" pattern="[a-z0-9][a-z0-9_\-]*" autocapitalize="none" spellcheck="false" required></label>
+      <label class="setting-field" id="user-google-field" hidden>Google account email (lets them sign in with Google)
+        <input type="email" name="google_email" maxlength="254" autocapitalize="none" spellcheck="false"></label>
+      <label class="setting-field"><span id="user-pw-label">Password (8+ characters)</span>
+        <input type="password" name="password" minlength="8" maxlength="72" autocomplete="new-password"></label>
+      <label class="setting-field">Role
+        <select name="role"><option value="player">Player</option><option value="admin">Admin</option></select></label>
+      <p id="users-error" class="settings-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="user-form-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
+        <button id="users-close" class="btn btn-ghost" type="button">Close</button>
+        <button class="btn btn-primary" type="submit" id="user-form-submit">Add user</button>
+      </div>
+    </form>
+  </div>
 </div>
 
 <div id="toast" class="toast" role="status" hidden>

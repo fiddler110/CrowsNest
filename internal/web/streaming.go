@@ -127,12 +127,12 @@ func (a *App) handleStartupProgress(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if d.Startup == nil || len(d.Startup.Milestones) == 0 {
-		sw.WriteEvent("unsupported", "this game has no startup progress tracking")
+		_ = sw.WriteEvent("unsupported", "this game has no startup progress tracking")
 		return
 	}
 
 	if !a.acquireStream() {
-		sw.WriteEvent("error", "too many active log streams, try again shortly")
+		_ = sw.WriteEvent("error", "too many active log streams, try again shortly")
 		return
 	}
 	defer a.releaseStream()
@@ -143,7 +143,7 @@ func (a *App) handleStartupProgress(w http.ResponseWriter, r *http.Request) {
 	if a.Exclusivity != nil && a.Exclusivity.Starting(d.ID) {
 		if _, err := a.Docker.StartedAt(r.Context(), d.ContainerName); err != nil {
 			body, _ := json.Marshal(progressEvent{Pct: 2, Label: "Pulling image / creating container"})
-			sw.WriteEvent("progress", string(body))
+			_ = sw.WriteEvent("progress", string(body))
 			return
 		}
 	}
@@ -160,7 +160,7 @@ func (a *App) handleStartupProgress(w http.ResponseWriter, r *http.Request) {
 	}
 	rc, err := a.Docker.Logs(r.Context(), d.ContainerName, since, "all")
 	if err != nil {
-		sw.WriteEvent("error", err.Error())
+		_ = sw.WriteEvent("error", err.Error())
 		return
 	}
 	defer rc.Close()

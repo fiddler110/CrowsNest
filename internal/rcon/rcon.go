@@ -5,11 +5,13 @@
 package rcon
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"strings"
 	"time"
@@ -39,7 +41,7 @@ func Exec(ctx context.Context, addr, password, command string, timeout time.Dura
 	}
 	defer conn.Close()
 	if dl, ok := ctx.Deadline(); ok {
-		conn.SetDeadline(dl)
+		_ = conn.SetDeadline(dl)
 	}
 
 	if err := write(conn, 1, typeAuth, password); err != nil {
@@ -98,12 +100,20 @@ func write(w io.Writer, id int32, typ int32, body string) error {
 	if len(body) > maxPacket {
 		return errors.New("rcon: command too long")
 	}
-	buf := make([]byte, 4+4+4+len(body)+2)
-	binary.LittleEndian.PutUint32(buf[0:], uint32(4+4+len(body)+2)) // #nosec G115 -- bounded by maxPacket above
-	binary.LittleEndian.PutUint32(buf[4:], uint32(id))              // #nosec G115 -- wire format is the same 32 bits
-	binary.LittleEndian.PutUint32(buf[8:], uint32(typ))             // #nosec G115 -- wire format is the same 32 bits
-	copy(buf[12:], body)
-	_, err := w.Write(buf)
+	size := 4 + 4 + len(body) + 2 // id + type + body + two NULs
+	if size < 0 || size > math.MaxInt32 {
+		return errors.New("rcon: command too long")
+	}
+	// binary.Write encodes the signed fields as-is, so no integer
+	// conversion is involved (ids are signed on the wire: -1 = auth failure).
+	var buf bytes.Buffer
+	buf.Grow(4 + size)
+	if err := binary.Write(&buf, binary.LittleEndian, [3]int32{int32(size), id, typ}); err != nil {
+		return err
+	}
+	buf.WriteString(body)
+	buf.Write([]byte{0, 0})
+	_, err := w.Write(buf.Bytes())
 	return err
 }
 
@@ -120,8 +130,11 @@ func read(r io.Reader) (id int32, typ int32, body string, err error) {
 	if _, err = io.ReadFull(r, buf); err != nil {
 		return
 	}
-	id = int32(binary.LittleEndian.Uint32(buf[0:]))  // #nosec G115 -- ids are signed on the wire (-1 = auth failure)
-	typ = int32(binary.LittleEndian.Uint32(buf[4:])) // #nosec G115 -- small enum on the wire
+	var fields [2]int32
+	if err = binary.Read(bytes.NewReader(buf[:8]), binary.LittleEndian, &fields); err != nil {
+		return
+	}
+	id, typ = fields[0], fields[1]
 	body = strings.TrimRight(string(buf[8:]), "\x00")
 	return
 }

@@ -125,7 +125,7 @@ func (c *Client) post(ctx context.Context, path string, body any) error {
 		return err
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 	if resp.StatusCode != http.StatusOK {
 		return errStatus(resp.StatusCode)
 	}

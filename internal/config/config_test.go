@@ -119,8 +119,8 @@ games:
 	if cfg.Server.Addr != defaultAddr {
 		t.Errorf("Server.Addr = %q, want %q", cfg.Server.Addr, defaultAddr)
 	}
-	if cfg.Server.SessionSecretFile != defaultSessionSecretFile {
-		t.Errorf("Server.SessionSecretFile = %q, want %q", cfg.Server.SessionSecretFile, defaultSessionSecretFile)
+	if cfg.Server.SessionSecretFile != defaultSessionKeyFile {
+		t.Errorf("Server.SessionSecretFile = %q, want %q", cfg.Server.SessionSecretFile, defaultSessionKeyFile)
 	}
 	if cfg.Server.TZ != defaultTZ {
 		t.Errorf("Server.TZ = %q, want %q", cfg.Server.TZ, defaultTZ)

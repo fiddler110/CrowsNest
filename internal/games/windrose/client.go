@@ -125,7 +125,7 @@ func (c *Client) login(ctx context.Context) bool {
 		return false
 	}
 	defer resp.Body.Close()
-	io.Copy(io.Discard, resp.Body)
+	_, _ = io.Copy(io.Discard, resp.Body)
 
 	for _, ck := range resp.Cookies() {
 		if ck.Name == "wp_session" && ck.Value != "" {

@@ -18,7 +18,7 @@ import (
 
 const (
 	defaultAddr                 = ":5000"
-	defaultSessionSecretFile    = "/app/.session_secret"
+	defaultSessionKeyFile       = "/app/.session_secret"
 	defaultSettingsFile         = "/app/data/settings.json"
 	defaultHistoryFile          = "/app/data/events.jsonl"
 	defaultHistoryRetentionDays = 180
@@ -317,7 +317,7 @@ func (c *Config) applyDefaults() {
 		c.Server.Addr = defaultAddr
 	}
 	if c.Server.SessionSecretFile == "" {
-		c.Server.SessionSecretFile = defaultSessionSecretFile
+		c.Server.SessionSecretFile = defaultSessionKeyFile
 	}
 	if len(c.Server.HostDiskPaths) == 0 {
 		c.Server.HostDiskPaths = []string{"/app/data", "/data"}

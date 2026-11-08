@@ -161,7 +161,7 @@ func writeAtomic(path string, v Values) error {
 	}
 	defer os.Remove(tmp.Name()) // no-op after a successful rename
 	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("settings: save: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

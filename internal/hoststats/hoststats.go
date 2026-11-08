@@ -35,7 +35,7 @@ func Read(paths []string) Snapshot {
 	var s Snapshot
 	if f, err := os.Open("/proc/meminfo"); err == nil {
 		s.MemTotal, s.MemAvailable = parseMeminfo(f)
-		f.Close()
+		_ = f.Close()
 	}
 	if b, err := os.ReadFile("/proc/loadavg"); err == nil {
 		s.Load1 = parseLoad(string(b))
@@ -43,7 +43,7 @@ func Read(paths []string) Snapshot {
 	seen := map[[2]int32]bool{}
 	for _, p := range paths {
 		var st syscall.Statfs_t
-		if err := syscall.Statfs(p, &st); err != nil {
+		if err := syscall.Statfs(p, &st); err != nil || st.Bsize <= 0 {
 			continue
 		}
 		id := [2]int32{st.Fsid.X__val[0], st.Fsid.X__val[1]}
@@ -53,8 +53,8 @@ func Read(paths []string) Snapshot {
 		seen[id] = true
 		s.Disks = append(s.Disks, Disk{
 			Path:  p,
-			Total: st.Blocks * uint64(st.Bsize), // #nosec G115 -- block size is a small positive int
-			Free:  st.Bavail * uint64(st.Bsize), // #nosec G115 -- block size is a small positive int
+			Total: st.Blocks * uint64(st.Bsize),
+			Free:  st.Bavail * uint64(st.Bsize),
 		})
 	}
 	return s

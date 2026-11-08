@@ -181,6 +181,10 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/health", a.requireSession(http.HandlerFunc(a.handleHealth)))
 	mux.Handle("GET /api/settings", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleGetSettings))))
 	mux.Handle("PUT /api/settings", a.requireAdmin(http.HandlerFunc(a.handlePutSettings)))
+	mux.Handle("GET /api/users", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleListUsers))))
+	mux.Handle("POST /api/users", a.requireAdmin(http.HandlerFunc(a.handleCreateUser)))
+	mux.Handle("PUT /api/users/{name}", a.requireAdmin(http.HandlerFunc(a.handleUpdateUser)))
+	mux.Handle("DELETE /api/users/{name}", a.requireAdmin(http.HandlerFunc(a.handleDeleteUser)))
 	mux.Handle("POST /api/games/{id}/start", a.requireSessionAndCSRF(http.HandlerFunc(a.handleStart)))
 	mux.Handle("POST /api/games/{id}/switch", a.requireSessionAndCSRF(http.HandlerFunc(a.handleSwitch)))
 	mux.Handle("POST /api/games/{id}/stop", a.requireSessionAndCSRF(http.HandlerFunc(a.handleStop)))
@@ -680,12 +684,16 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, `invalid request: expected {"from": "<game id>"}`, http.StatusBadRequest)
 		return
 	}
-	if _, ok := a.Registry.Get(req.From); !ok {
+	// From here on use the registry's own ID, never the client-supplied
+	// string, so nothing a caller typed reaches the log.
+	fromDef, ok := a.Registry.Get(req.From)
+	if !ok {
 		http.Error(w, "unknown source game", http.StatusBadRequest)
 		return
 	}
-	if err := a.Exclusivity.RequestSwitch(exclusivity.WithActor(r.Context(), actor(r)), req.From, to.ID); err != nil {
-		log.Printf("audit: %s switch %s->%s failed: %v", actor(r), req.From, to.ID, err)
+	from := fromDef.ID
+	if err := a.Exclusivity.RequestSwitch(exclusivity.WithActor(r.Context(), actor(r)), from, to.ID); err != nil {
+		log.Printf("audit: %s switch %q->%q failed: %v", actor(r), from, to.ID, err)
 		var busy *exclusivity.BusyError
 		if errors.As(err, &busy) {
 			writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
@@ -694,9 +702,9 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, publicError(err), http.StatusBadGateway)
 		return
 	}
-	a.forgetGame(req.From)
+	a.forgetGame(from)
 	a.forgetGame(to.ID)
-	log.Printf("audit: %s requested switch %s->%s", actor(r), req.From, to.ID)
+	log.Printf("audit: %s requested switch %q->%q", actor(r), from, to.ID)
 	w.WriteHeader(http.StatusAccepted)
 }
 
@@ -790,7 +798,7 @@ func settingsChanges(before, after settings.Values) string {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
-	json.NewEncoder(w).Encode(v)
+	_ = json.NewEncoder(w).Encode(v)
 }
 
 // initialOf returns the upper-cased first letter of name (or "?" if empty).

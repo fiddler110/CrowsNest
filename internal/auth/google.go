@@ -124,7 +124,10 @@ type GoogleLogin struct {
 	// https://crowsnest.example.com/auth/google/callback.
 	RedirectURL string
 	Users       GoogleUsers
-	Service     *Service
+	// Store, when set, adds the Google emails recorded in the users file
+	// (managed from the dashboard) to the Users allowlist.
+	Store   *UserStore
+	Service *Service
 
 	// Overridable for tests; default to Google's endpoints and a 10s client.
 	AuthURL    string
@@ -220,7 +223,7 @@ func (g *GoogleLogin) ServeCallback(w http.ResponseWriter, r *http.Request) {
 		g.fail(w, r, LoginErrorFailed)
 		return
 	}
-	username, allowed := g.Users[claims.email]
+	username, allowed := g.Lookup(claims.email)
 	if !allowed {
 		log.Printf("audit: google sign-in refused for %q (not on the allowlist)", claims.email)
 		g.fail(w, r, LoginErrorNotAllowed)
@@ -473,4 +476,33 @@ func (m *SessionManager) purposeMAC(purpose, enc string) []byte {
 	mac := hmac.New(sha256.New, key.Sum(nil))
 	mac.Write([]byte(enc))
 	return mac.Sum(nil)
+}
+
+// Lookup returns the username a Google email may sign in as. The env
+// allowlist is checked first, then the users file.
+func (g *GoogleLogin) Lookup(email string) (string, bool) {
+	email = strings.ToLower(email)
+	if name, ok := g.Users[email]; ok {
+		return name, true
+	}
+	if g.Store != nil {
+		name, ok := g.Store.GoogleUsers()[email]
+		return name, ok
+	}
+	return "", false
+}
+
+// Allows reports whether username is reachable by some Google account.
+func (g *GoogleLogin) Allows(username string) bool {
+	for _, n := range g.Users {
+		if n == username {
+			return true
+		}
+	}
+	if g.Store != nil {
+		if rec, ok := g.Store.Lookup(username); ok && rec.GoogleEmail != "" {
+			return true
+		}
+	}
+	return false
 }

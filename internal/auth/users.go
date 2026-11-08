@@ -12,13 +12,80 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 )
+
+// usersMu serialises read-modify-write cycles on the users file, so two web
+// requests (or a request and the CLI in the same process) can't lose updates.
+var usersMu sync.Mutex
+
+// ValidateUsername checks name is usable as a users-file key: lowercase
+// letters, digits, '_' and '-', 1-32 characters, starting alphanumeric.
+func ValidateUsername(name string) error {
+	if !usernamePattern.MatchString(name) {
+		return fmt.Errorf("username must be 1-32 lowercase letters, digits, '_' or '-', starting with a letter or digit")
+	}
+	return nil
+}
+
+// ValidateEmail checks email looks like a plain address (ASCII only).
+func ValidateEmail(email string) error {
+	if !emailPattern.MatchString(email) {
+		return fmt.Errorf("that doesn't look like an email address")
+	}
+	return nil
+}
+
+// CreateUser adds a new user with a role and a password hash, a Google
+// email, or both (hash and googleEmail may each be empty, not both). It fails
+// if the name already has an entry.
+func CreateUser(path, username, hash, googleEmail string, role Role) error {
+	username = strings.ToLower(username)
+	if err := ValidateUsername(username); err != nil {
+		return err
+	}
+	if _, err := ParseRole(string(role)); err != nil {
+		return err
+	}
+	googleEmail = strings.ToLower(googleEmail)
+	if hash == "" && googleEmail == "" {
+		return fmt.Errorf("auth: a user needs a password or a Google email")
+	}
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	if _, ok := existing[username]; ok {
+		return fmt.Errorf("auth: user %q already exists", username)
+	}
+	existing[username] = UserRecord{Hash: hash, Role: role, GoogleEmail: googleEmail}
+	return writeUsers(path, existing)
+}
+
+// DeleteUser removes username's entry (password, role and revocation marker).
+func DeleteUser(path, username string) error {
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(username)
+	if _, ok := existing[key]; !ok {
+		return fmt.Errorf("auth: no such user %q in %s", username, path)
+	}
+	delete(existing, key)
+	return writeUsers(path, existing)
+}
 
 const (
 	passwordHashSuffix = "_PASSWORD_HASH"
 	validAfterSuffix   = "_VALID_AFTER"
 	roleSuffix         = "_ROLE"
+	googleEmailSuffix  = "_GOOGLE_EMAIL"
 )
 
 // UserRecord is one user's stored credential plus revocation state.
@@ -33,6 +100,11 @@ type UserRecord struct {
 
 	// Role is "admin" or "player"; empty means admin (see EffectiveRole).
 	Role Role
+
+	// GoogleEmail, when set, lets that Google account sign in as this user
+	// (in addition to any CROWSNEST_GOOGLE_USERS entry). Such a user may have
+	// no password at all.
+	GoogleEmail string
 }
 
 // Users maps username (lowercased) to their stored record.
@@ -93,8 +165,13 @@ func LoadUsers(path string) (Users, error) {
 			rec := users[username]
 			rec.Role = role
 			users[username] = rec
+		case strings.HasSuffix(key, googleEmailSuffix):
+			username := strings.ToLower(strings.TrimSuffix(key, googleEmailSuffix))
+			rec := users[username]
+			rec.GoogleEmail = strings.ToLower(value)
+			users[username] = rec
 		default:
-			return nil, fmt.Errorf("auth: %s:%d: key %q must end with %s, %s or %s", path, lineNo, key, passwordHashSuffix, validAfterSuffix, roleSuffix)
+			return nil, fmt.Errorf("auth: %s:%d: key %q must end with %s, %s, %s or %s", path, lineNo, key, passwordHashSuffix, validAfterSuffix, roleSuffix, googleEmailSuffix)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -107,6 +184,8 @@ func LoadUsers(path string) (Users, error) {
 // creating the file if it doesn't exist. Other entries (including an
 // existing ValidAfter marker) are preserved.
 func SetUserHash(path, username, hash string) error {
+	usersMu.Lock()
+	defer usersMu.Unlock()
 	existing, err := LoadUsers(path)
 	if err != nil {
 		return err
@@ -127,6 +206,8 @@ func SetUserHash(path, username, hash string) error {
 // caller passes true for a Google sign-in user (who has no password, so no
 // entry yet), and the marker is then written on its own.
 func RevokeSessions(path, username string, allowNew bool) error {
+	usersMu.Lock()
+	defer usersMu.Unlock()
 	existing, err := LoadUsers(path)
 	if err != nil {
 		return err
@@ -145,6 +226,8 @@ func RevokeSessions(path, username string, allowNew bool) error {
 // RevokeSessions, a name with no entry is an error unless allowNew is set
 // (a Google-only user, who has no password entry).
 func SetRole(path, username string, role Role, allowNew bool) error {
+	usersMu.Lock()
+	defer usersMu.Unlock()
 	if _, err := ParseRole(string(role)); err != nil {
 		return err
 	}
@@ -180,6 +263,9 @@ func writeUsers(path string, users Users) error {
 		if rec.Role != "" {
 			fmt.Fprintf(&b, "%s%s=%s\n", strings.ToUpper(name), roleSuffix, rec.Role)
 		}
+		if rec.GoogleEmail != "" {
+			fmt.Fprintf(&b, "%s%s=%s\n", strings.ToUpper(name), googleEmailSuffix, rec.GoogleEmail)
+		}
 		if !rec.ValidAfter.IsZero() {
 			fmt.Fprintf(&b, "%s%s=%d\n", strings.ToUpper(name), validAfterSuffix, rec.ValidAfter.Unix())
 		}
@@ -189,4 +275,23 @@ func writeUsers(path string, users Users) error {
 		return fmt.Errorf("auth: write users file %s: %w", path, err)
 	}
 	return nil
+}
+
+// SetGoogleEmail sets (or, with "", clears) the Google account allowed to
+// sign in as username. The user must already have an entry.
+func SetGoogleEmail(path, username, email string) error {
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(username)
+	rec, ok := existing[key]
+	if !ok {
+		return fmt.Errorf("auth: no such user %q in %s", username, path)
+	}
+	rec.GoogleEmail = strings.ToLower(email)
+	existing[key] = rec
+	return writeUsers(path, existing)
 }

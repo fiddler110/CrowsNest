@@ -177,3 +177,26 @@ func TestRoles(t *testing.T) {
 		t.Fatal("LoadUsers accepted an invalid role")
 	}
 }
+
+func TestCreateAndDeleteUser(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users")
+	if err := CreateUser(path, "Alice", "h1", "", RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateUser(path, "alice", "h2", "", RolePlayer); err == nil {
+		t.Error("duplicate create succeeded")
+	}
+	if err := CreateUser(path, "a=b", "h", "", RolePlayer); err == nil {
+		t.Error("invalid username accepted")
+	}
+	users, _ := LoadUsers(path)
+	if users["alice"].Hash != "h1" || users["alice"].Role != RolePlayer {
+		t.Errorf("alice = %+v", users["alice"])
+	}
+	if err := DeleteUser(path, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := DeleteUser(path, "alice"); err == nil {
+		t.Error("deleting a missing user succeeded")
+	}
+}

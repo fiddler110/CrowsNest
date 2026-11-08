@@ -302,8 +302,8 @@ func (c *Client) Logs(ctx context.Context, name, since, tail string) (io.ReadClo
 	cmd.Stderr = pw
 
 	if err := cmd.Start(); err != nil {
-		pr.Close()
-		pw.Close()
+		_ = pr.Close()
+		_ = pw.Close()
 		return nil, fmt.Errorf("dockerctl: start %s %s: %w", c.bin(), strings.Join(args, " "), err)
 	}
 

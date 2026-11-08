@@ -29,6 +29,7 @@ const (
 	KindJoin        = "join"
 	KindLeave       = "leave"
 	KindSettings    = "settings"
+	KindUsers       = "users"
 	KindBackup      = "backup"
 	KindConsole     = "console"
 )
@@ -168,10 +169,10 @@ func (s *Store) Prune() error {
 	w := bufio.NewWriter(tmp)
 	for _, e := range s.events {
 		b, _ := json.Marshal(e)
-		w.Write(append(b, '\n'))
+		_, _ = w.Write(append(b, '\n'))
 	}
 	if err := w.Flush(); err != nil {
-		tmp.Close()
+		_ = tmp.Close()
 		return fmt.Errorf("history: prune: %w", err)
 	}
 	if err := tmp.Close(); err != nil {

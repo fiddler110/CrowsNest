@@ -144,7 +144,7 @@ func (a *App) finishConsole(w http.ResponseWriter, r *http.Request, d games.Game
 	if err != nil {
 		detail += " (failed)"
 	}
-	log.Printf("audit: %s console %s: %s", actor(r), d.ID, detail)
+	log.Printf("audit: %s console %s: %q", actor(r), d.ID, detail)
 	if a.History != nil {
 		a.History.Record(history.KindConsole, d.ID, actor(r), detail)
 	}

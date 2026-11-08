@@ -109,7 +109,7 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(loginResponse{CSRFToken: session.CSRFToken})
+	_ = json.NewEncoder(w).Encode(loginResponse{CSRFToken: session.CSRFToken})
 }
 
 // startSession signs a new session for username and sets its cookie; used by
