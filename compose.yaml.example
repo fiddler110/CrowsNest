@@ -166,6 +166,34 @@ services:
   #   crowsnest_front: {}
   #   crowsnest_back: {internal: true}
 
+  # Alternative to dockerproxy: `crowsnest guard`, a scoped Docker API filter built into the same image. It
+  # sees and controls only the containers listed in GUARD_SCOPES (one scope per container: image repository,
+  # exact bind paths, networks, published ports, labels, aliases, and whether exec is on), pulls only those
+  # images, creates only matching containers (compose's recreate included), filters lists and inspects and
+  # redacts /info. Refusals are logged: `docker logs dockerproxy-crowsnest 2>&1 | grep DENY`. It refuses to
+  # start without a valid GUARD_SCOPES. Use it in place of `dockerproxy` above (execguard's --upstream
+  # then points at it); exec is still switched on per scope here and restricted by execguard.
+  # guard:
+  #   image: ghcr.io/fiddler110/crowsnest:latest
+  #   container_name: dockerproxy-crowsnest
+  #   command: ["guard", "--listen", ":2375"]
+  #   restart: unless-stopped
+  #   user: "1000"
+  #   group_add: ["${DOCKER_GID:-988}"]
+  #   read_only: true
+  #   cap_drop: [ALL]
+  #   security_opt: ["no-new-privileges:true"]
+  #   environment:
+  #     - >-
+  #       GUARD_SCOPES=[{"name": "palworld", "images": ["thijsvanloef/palworld-server-docker"],
+  #         "binds": ["${USERDIR}/Palworld"], "networks": ["crowsnest-games-net"],
+  #         "ports": [{"host_ip": "10.0.0.2", "host_port": "8211", "container_port": "8211", "proto": "udp"}],
+  #         "labels": {"com.centurylinklabs.watchtower.enable": "false"}, "exec": true}]
+  #   healthcheck:
+  #     test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2375/_ping"]
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+
   # Windrose: host networking and an invite code (the game's own P2P relay), so players need no port forward.
   # Everything lives in one directory, ${USERDIR}/Windrose, which is the server's install folder: the world
   # is R5/Saved/SaveProfiles/Default/ inside it, and Windrose+ keeps windrose_plus.json beside it. Point

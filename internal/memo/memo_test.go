@@ -99,3 +99,20 @@ func TestDo_ZeroTTLBypasses(t *testing.T) {
 		t.Fatalf("got %d, want uncached", v)
 	}
 }
+
+func TestPeek(t *testing.T) {
+	var m Memo[int]
+	if _, ok := m.Peek("k"); ok {
+		t.Fatal("Peek on empty memo reported a value")
+	}
+	if _, err := m.Do(context.Background(), "k", time.Hour, func(context.Context) int { return 7 }); err != nil {
+		t.Fatal(err)
+	}
+	if v, ok := m.Peek("k"); !ok || v != 7 {
+		t.Fatalf("Peek = %d, %v; want 7, true", v, ok)
+	}
+	m.Forget("k")
+	if _, ok := m.Peek("k"); ok {
+		t.Fatal("Peek after Forget reported a value")
+	}
+}

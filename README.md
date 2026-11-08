@@ -159,7 +159,10 @@ limit *which* commands run, put the bundled **exec guard** in front of it
 It allows exactly the commands your config implies (each `backup.exec`, the
 `list_dir` listing, Windrose's readiness check), refuses exec options such as
 `Privileged`, `User` and `Env`, and only lets `exec/<id>/start` through for ids
-it approved itself. Restart it after changing `backup:` settings. With `before_stop: true`
+it approved itself. Restart it after changing `backup:` settings. For the Docker API
+itself, `crowsnest guard` replaces the generic socket proxy: a scoped filter that
+lets CrowsNest see and control only the containers named in `GUARD_SCOPES` (see
+the `guard` service in `compose.yaml.example`). With `before_stop: true`
 CrowsNest also takes a backup every time it stops that game on purpose, after
 the world is saved, so an "update on start" pull always has a fresh backup
 behind it. A failed backup is logged and never stops the game from stopping.

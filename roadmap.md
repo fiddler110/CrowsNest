@@ -6,6 +6,40 @@ grouped by priority, not phase; check them off as they land.
 
 ## Done
 
+- [x] **Go scoped Docker API guard (2026-11-08).** `crowsnest guard` is a
+  port of the Python guard's scoped mode (`GUARD_SCOPES`: per-container image,
+  exact bind, volume, network, port, label, alias, secopt, cap_add and exec
+  allowlists), so the stack no longer needs the labdash-worker image. It
+  refuses to start without a valid config, validates create bodies against an
+  allowlist, filters container/image/network/volume lists and inspects,
+  redacts `/info`, tracks exec ids, rebuilds every request target for the
+  engine, and tunnels exec start and log-follow streams. It also supports
+  compose's recreate (create `<old id12>_<name>`, delete the stopped old
+  container, rename), which the Python guard refused. Stricter than the Python
+  in a few places (see `internal/dockerguard` tests). execguard stays a
+  separate layer in front of it.
+
+- [x] **Log-followed Windrose status, non-blocking dashboard, quiet tabs
+  (2026-11-08).** Windrose readiness now comes from a `windrose.Tracker`
+  following `docker logs -f` (like Valheim's), so the Windrose `docker exec`
+  rule is gone from the exec guard (only backup commands remain). The
+  dashboard page renders from the last cached snapshot (`memo.Peek`) or a
+  neutral "checking..." badge instead of waiting on every game probe; the JS
+  refreshes statuses on load. All network pollers in `app.js` go through a
+  `poll()` helper that skips hidden tabs and refreshes on return. Removed the
+  unused `env_file` config field (old configs still load).
+
+- [x] **Docker reads over the Engine API; Windrose+ 1.3 player counts
+  (2026-11-08).** `dockerctl` Ping/Exists/Running/StartedAt/FinishedAt/
+  Stats/Logs talk HTTP to the daemon or proxy instead of running the docker
+  CLI (compose up/pull, stop and exec stay on the CLI). Measured through
+  execguard + the scoped guard: ~3 ms per status call (CLI: ~61 ms), stats
+  ~6 ms after the first reading (CLI: 1-2 s, it samples twice). Windrose+
+  1.3.x leaves `mode` out of normal status snapshots, which CrowsNest read as
+  "boot" and so never counted Windrose players (idle shutdown never stopped
+  it); an empty mode now counts as a live reading (stale snapshots are still
+  rejected). Verified against a real Windrose+ 1.3.28 server.
+
 - [x] **Roles, activity log, host health, backups (2026-11-07).** Roles:
   `<NAME>_ROLE=admin|player` in the users file (no role = admin),
   `crowsnest set-role`, players can't open settings or backups, role looked up

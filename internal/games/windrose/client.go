@@ -332,11 +332,14 @@ func (c *Client) PlayerCount(ctx context.Context) (count int, names []string, ok
 	if data == nil || c.isStale(ctx, data) {
 		return 0, nil, false
 	}
-	if data.Mode == "" || data.Mode == "boot" {
-		// Boot mode: the HTTP API can't query the game thread yet, so a
-		// player count here would be a guess, not a reading.
+	if data.Mode == "boot" {
+		// Boot mode (older Windrose+): the HTTP API can't query the game
+		// thread yet, so a player count here would be a guess, not a reading.
 		return 0, nil, false
 	}
+	// Windrose+ 1.3.x leaves "mode" out of a normal snapshot (it only sets
+	// "degraded"), so an empty mode is a live reading. A snapshot left over
+	// from before this run was already rejected by isStale above.
 
 	names = make([]string, 0, len(data.Players))
 	for _, p := range data.Players {

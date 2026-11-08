@@ -70,7 +70,7 @@
         <div class="card-title">
           <h2>{{.DisplayName}}</h2>
         </div>
-        <span class="status status-{{.Status}}"><i class="beacon"></i><span class="status-text">{{.Status}}</span></span>
+        {{if eq .Status "unknown"}}<span class="status status-checking"><i class="beacon"></i><span class="status-text">checking…</span></span>{{else}}<span class="status status-{{.Status}}"><i class="beacon"></i><span class="status-text">{{.Status}}</span></span>{{end}}
       </header>
 
       {{$name := .DisplayName}}

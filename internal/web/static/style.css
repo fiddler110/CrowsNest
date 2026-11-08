@@ -264,6 +264,7 @@ h1, h2, h3, p { margin: 0; }
 .status-starting .beacon { background: var(--warn); animation: blink 0.9s steps(2) infinite; }
 .status-stopping { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 40%, transparent); }
 .status-stopping .beacon { background: var(--warn); animation: blink 1.6s steps(2) infinite; }
+.status-checking .beacon { background: var(--muted); opacity: 0.6; }
 .status-unknown { color: var(--danger); }
 .status-unknown .beacon { background: var(--danger); }
 @keyframes pulse { 70% { box-shadow: 0 0 0 0.5rem transparent; } 100% { box-shadow: 0 0 0 0 transparent; } }

@@ -1,6 +1,9 @@
-// Package dockerctl wraps the docker/docker-compose CLI: every process this
-// application spawns to control a game server container goes through here.
-// It shells out rather than using the Docker Engine SDK so that compose
+// Package dockerctl wraps Docker: the read operations (Ping, Exists, Running,
+// StartedAt, FinishedAt, Stats, Logs) speak the Docker Engine HTTP API
+// directly (see http.go), because a CLI process costs ~10x more per call.
+// Everything else — and the read operations too when the engine is reached
+// over TLS, which the HTTP path does not implement — shells out to the CLI
+// so that compose
 // profiles/services (used to keep game servers out of a bare `docker compose
 // up`) map directly onto CLI commands, matching the container image's staged
 // docker CLI + compose plugin.
@@ -16,8 +19,10 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 )
@@ -118,6 +123,16 @@ type Client struct {
 	// Timeout, when non-zero, overrides every operation's default timeout.
 	// Intended for tests; production callers should leave it unset.
 	Timeout time.Duration
+
+	// HTTP, when non-nil, is the client used for Engine API requests
+	// (tests; also lets callers supply their own transport). When nil a
+	// client is built from Host: a unix socket dialer or plain HTTP.
+	HTTP *http.Client
+
+	mu      sync.Mutex
+	httpc   *http.Client
+	apiVer  string
+	samples map[string]cpuSample
 }
 
 func (c *Client) bin() string {
@@ -160,8 +175,8 @@ func (c *Client) run(ctx context.Context, defaultTimeout time.Duration, args ...
 	return stdout.String(), nil
 }
 
-// exists reports whether a container by this name exists (running or not).
-func (c *Client) exists(ctx context.Context, name string) (bool, error) {
+// cliExists reports whether a container by this name exists (running or not).
+func (c *Client) cliExists(ctx context.Context, name string) (bool, error) {
 	out, err := c.run(ctx, defaultShortTimeout, "ps", "-a", "--filter", "name=^"+name+"$", "--format", "{{.Names}}")
 	if err != nil {
 		return false, err
@@ -169,21 +184,16 @@ func (c *Client) exists(ctx context.Context, name string) (bool, error) {
 	return strings.TrimSpace(out) != "", nil
 }
 
-// Ping reports whether the Docker daemon (or the socket proxy in front of it)
+// cliPing is the CLI fallback for Ping (see http.go): it reports whether the Docker daemon (or the socket proxy in front of it)
 // answers. Unlike the status checks it says nothing about any one container;
 // it is how the dashboard tells "docker is down" from "every game is offline".
-func (c *Client) Ping(ctx context.Context) error {
+func (c *Client) cliPing(ctx context.Context) error {
 	_, err := c.run(ctx, defaultShortTimeout, "version", "--format", "{{.Server.Version}}")
 	return err
 }
 
-// Exists reports whether a container by this name exists, running or not.
-func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
-	return c.exists(ctx, name)
-}
-
-// Running reports whether the container is currently running.
-func (c *Client) Running(ctx context.Context, name string) (bool, error) {
+// cliRunning is the CLI fallback for Running.
+func (c *Client) cliRunning(ctx context.Context, name string) (bool, error) {
 	out, err := c.run(ctx, defaultShortTimeout, "ps", "--filter", "name=^"+name+"$", "--format", "{{.Names}}")
 	if err != nil {
 		return false, err
@@ -199,7 +209,7 @@ func (c *Client) Running(ctx context.Context, name string) (bool, error) {
 // start` of an existing container.
 func (c *Client) Start(ctx context.Context, t Target) error {
 	if t.ComposeFile == "" {
-		exists, err := c.exists(ctx, t.ContainerName)
+		exists, err := c.cliExists(ctx, t.ContainerName)
 		if err != nil {
 			return err
 		}
@@ -235,8 +245,8 @@ func (c *Client) Stop(ctx context.Context, name string) error {
 	return err
 }
 
-// StartedAt returns the container's current-run start time.
-func (c *Client) StartedAt(ctx context.Context, name string) (time.Time, error) {
+// cliStartedAt is the CLI fallback for StartedAt: the container's current-run start time.
+func (c *Client) cliStartedAt(ctx context.Context, name string) (time.Time, error) {
 	out, err := c.run(ctx, defaultShortTimeout, "inspect", "--format", "{{.State.StartedAt}}", name)
 	if err != nil {
 		return time.Time{}, err
@@ -249,9 +259,9 @@ func (c *Client) StartedAt(ctx context.Context, name string) (time.Time, error) 
 	return t, nil
 }
 
-// FinishedAt returns when the container's most recent run ended. It's the
+// cliFinishedAt is the CLI fallback for FinishedAt: when the container's most recent run ended. It's the
 // zero time for a container that has never stopped.
-func (c *Client) FinishedAt(ctx context.Context, name string) (time.Time, error) {
+func (c *Client) cliFinishedAt(ctx context.Context, name string) (time.Time, error) {
 	out, err := c.run(ctx, defaultShortTimeout, "inspect", "--format", "{{.State.FinishedAt}}", name)
 	if err != nil {
 		return time.Time{}, err
@@ -282,11 +292,11 @@ func (c *Client) ExecTimeout(ctx context.Context, name string, timeout time.Dura
 	return c.run(ctx, timeout, full...)
 }
 
-// Logs streams `docker logs -f` for the named container. since and tail are
+// cliLogs is the CLI fallback for Logs: it streams `docker logs -f` for the named container. since and tail are
 // passed through to the docker CLI verbatim when non-empty (since accepts
 // docker's RFC3339 or relative syntax, e.g. "1h"). The caller must cancel
 // ctx to stop the stream and release the underlying process.
-func (c *Client) Logs(ctx context.Context, name, since, tail string) (io.ReadCloser, error) {
+func (c *Client) cliLogs(ctx context.Context, name, since, tail string) (io.ReadCloser, error) {
 	args := []string{"logs", "-f"}
 	if since != "" {
 		args = append(args, "--since", since)
@@ -314,9 +324,9 @@ func (c *Client) Logs(ctx context.Context, name, since, tail string) (io.ReadClo
 	return pr, nil
 }
 
-// Stats returns a `docker stats --no-stream` snapshot for the named
+// cliStats is the CLI fallback for Stats: a `docker stats --no-stream` snapshot for the named
 // container.
-func (c *Client) Stats(ctx context.Context, name string) (Stats, error) {
+func (c *Client) cliStats(ctx context.Context, name string) (Stats, error) {
 	out, err := c.run(ctx, defaultShortTimeout, "stats", "--no-stream", "--format", "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}", name)
 	if err != nil {
 		return Stats{}, err
