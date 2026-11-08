@@ -624,6 +624,23 @@ func TestHandleDashboard_Authenticated(t *testing.T) {
 	}
 }
 
+// A dashboard load must not wait on probes: with no cached snapshot it
+// renders the neutral "checking" badge without ever calling the status
+// checker (here a docker that would hang).
+func TestHandleDashboard_DoesNotBlockOnProbes(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nsleep 5\n")
+	rec := httptest.NewRecorder()
+	start := time.Now()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/", nil))
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("dashboard took %v; first paint must not wait on probes", d)
+	}
+	body := rec.Body.String()
+	if rec.Code != http.StatusOK || !strings.Contains(body, `data-status="unknown"`) || !strings.Contains(body, "checking") {
+		t.Fatalf("want unknown/checking badge, got %d: %s", rec.Code, body)
+	}
+}
+
 func TestHandleLoginPage(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\nexit 0\n")
 	rec := httptest.NewRecorder()

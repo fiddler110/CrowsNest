@@ -14,18 +14,14 @@ import (
 	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/execguard"
-	"github.com/fiddler110/crowsnest/internal/games/windrose"
 )
 
 // execRules lists every command CrowsNest itself ever runs with `docker
-// exec`: each game's configured backup (and its file listing) plus Windrose's
-// readiness check. Nothing else is allowed through the guard.
+// exec`: each game's configured backup (and its file listing). Nothing
+// else is allowed through the guard.
 func execRules(cfg *config.Config) []execguard.Rule {
 	var rules []execguard.Rule
 	for _, g := range cfg.Games {
-		if g.ID == "windrose" {
-			rules = append(rules, execguard.Rule{Container: g.ContainerName, Cmd: windrose.ReadyArgs()})
-		}
 		if g.Backup == nil {
 			continue
 		}

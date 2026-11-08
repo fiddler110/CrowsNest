@@ -118,17 +118,19 @@ func serve() error {
 	docker := &dockerctl.Client{Host: cfg.Server.DockerHost}
 	defs := games.FromConfig(cfg.Games, docker)
 	var valheimTrackers []*valheim.Tracker
+	var windroseTrackers []*windrose.Tracker
 	for i, d := range defs {
 		// cfg.Games[i] lines up 1:1 with defs[i]: FromConfig builds defs by
 		// iterating cfg.Games in order without filtering or reordering.
 		switch d.ID {
 		case "windrose":
-			// Real status/startup detection (a direct port of the original
-			// Python CrowsNest's log-marker grep) plus, when configured,
+			// Real status/startup detection (a log-following tracker, no docker exec) plus, when configured,
 			// the Windrose+ HTTP/RCON integration for player count and the
 			// rich info panel — see docs/implementation-plan.md phases 7
 			// and 10.
-			defs[i].Status = &windrose.StatusChecker{Docker: docker}
+			wtracker := windrose.NewTracker(docker, d.ContainerName)
+			defs[i].Status = wtracker
+			windroseTrackers = append(windroseTrackers, wtracker)
 			defs[i].Startup = windrose.Startup
 			if wc := cfg.Games[i].Windrose; wc != nil {
 				client := &windrose.Client{
@@ -195,6 +197,9 @@ func serve() error {
 		}
 	}
 	for _, tr := range valheimTrackers {
+		go tr.Run(ctx)
+	}
+	for _, tr := range windroseTrackers {
 		go tr.Run(ctx)
 	}
 
