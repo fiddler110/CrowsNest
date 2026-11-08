@@ -48,6 +48,7 @@ type fakeWplusServer struct {
 	rconFunc func(command string) (message string, ok bool)
 
 	loginFails    bool
+	portSuffix    bool // issue wp_session_<port> like newer Windrose+
 	rejectCookies bool // when true, every authenticated request reports "Authentication required"
 }
 
@@ -64,7 +65,7 @@ func newFakeWplusServer(t *testing.T, password string) *fakeWplusServer {
 			w.WriteHeader(http.StatusForbidden)
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "wp_session", Value: "sess-token"})
+		http.SetCookie(w, &http.Cookie{Name: f.cookieName(), Value: "sess-token"})
 	})
 	mux.HandleFunc("GET /api/status", func(w http.ResponseWriter, r *http.Request) {
 		if !f.hasValidCookie(r) {
@@ -106,11 +107,20 @@ func newFakeWplusServer(t *testing.T, password string) *fakeWplusServer {
 	return f
 }
 
+// cookieName is what the fake issues: the per-port name newer Windrose+
+// releases use when portSuffix is set, the original name otherwise.
+func (f *fakeWplusServer) cookieName() string {
+	if f.portSuffix {
+		return "wp_session_8780"
+	}
+	return "wp_session"
+}
+
 func (f *fakeWplusServer) hasValidCookie(r *http.Request) bool {
 	if f.rejectCookies {
 		return false
 	}
-	ck, err := r.Cookie("wp_session")
+	ck, err := r.Cookie(f.cookieName())
 	return err == nil && ck.Value == "sess-token"
 }
 
@@ -337,5 +347,29 @@ func TestInfo_UnreachableAPIReportsUnavailable(t *testing.T) {
 	}
 	if info["available"] != false {
 		t.Errorf("available = %v, want false", info["available"])
+	}
+}
+
+func TestPlayerCount_PerPortSessionCookie(t *testing.T) {
+	srv := newFakeWplusServer(t, "secret")
+	srv.portSuffix = true
+	srv.statusFunc = func(int) map[string]any {
+		return map[string]any{
+			"mode":      "active",
+			"timestamp": float64(time.Now().Unix()),
+			"server":    map[string]any{"windrose_plus": "1.3.16", "player_count": 1, "max_players": 4, "version": "0.10"},
+			"players":   []map[string]any{{"name": "Alice"}},
+		}
+	}
+	docker := newFakeDockerInspect(t, time.Now().Add(-time.Hour))
+	c := newTestClient(srv.URL, "secret", docker)
+
+	count, names, ok := c.PlayerCount(context.Background())
+	if !ok || count != 1 || len(names) != 1 || names[0] != "Alice" {
+		t.Fatalf("PlayerCount = %d %v %v, want 1 [Alice] true", count, names, ok)
+	}
+	info, _ := c.Info(context.Background())
+	if info["max_players"] != 4 || info["game_version"] != "0.10" {
+		t.Errorf("info = %v, want max_players 4 and game_version 0.10", info)
 	}
 }

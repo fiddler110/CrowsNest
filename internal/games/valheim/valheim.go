@@ -39,6 +39,11 @@ var (
 	// readyRe marks the world loaded and the server open for joins:
 	//   "Loading: Done. Total seconds sinze ZNet start: ..."  (sic)
 	//   "Opened Steam server"
+	// worldRe captures the world name from the "Load world: <name>" line the
+	// startup milestone already keys on (the name's exact format is
+	// unverified, so it is only shown, never relied on).
+	worldRe = regexp.MustCompile(`Load world:\s*(.+?)\s*$`)
+
 	readyRe = regexp.MustCompile(`Loading: Done\.|Opened Steam server`)
 )
 
@@ -87,6 +92,48 @@ type Tracker struct {
 	connected map[string]struct{}
 	attached  bool
 	ready     bool // saw readyRe in the current run's log
+	world     string
+}
+
+// Info implements games.InfoProvider from what the log tail knows: the
+// server has no query API enabled by default. available=false until the tail
+// is attached to a running container.
+func (t *Tracker) Info(ctx context.Context) (map[string]any, bool) {
+	out := map[string]any{"available": false}
+	t.mu.Lock()
+	attached, ready, world, players := t.attached, t.ready, t.world, len(t.connected)
+	t.mu.Unlock()
+	if !attached {
+		return out, true
+	}
+	out["available"] = true
+	if ready {
+		out["state"] = "online"
+	} else {
+		out["state"] = "starting"
+	}
+	if started, err := t.docker.StartedAt(ctx, t.containerName); err == nil {
+		out["uptime"] = uptimeString(time.Since(started))
+	}
+	if world != "" {
+		out["world"] = world
+	}
+	out["players_connected"] = players
+	return out, true
+}
+
+func uptimeString(d time.Duration) string {
+	if d < 0 {
+		d = 0
+	}
+	days, hours, mins := int(d.Hours())/24, int(d.Hours())%24, int(d.Minutes())%60
+	switch {
+	case days > 0:
+		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
+	case hours > 0:
+		return fmt.Sprintf("%dh %dm", hours, mins)
+	}
+	return fmt.Sprintf("%dm", mins)
 }
 
 // Check implements games.StatusChecker: offline when the container isn't
@@ -163,6 +210,7 @@ func (t *Tracker) reset() {
 	t.connected = make(map[string]struct{})
 	t.attached = false
 	t.ready = false
+	t.world = ""
 	t.mu.Unlock()
 }
 
@@ -209,6 +257,11 @@ func (t *Tracker) scan(r io.Reader) {
 }
 
 func (t *Tracker) handleLine(line string) {
+	if m := worldRe.FindStringSubmatch(line); m != nil {
+		t.mu.Lock()
+		t.world = m[1]
+		t.mu.Unlock()
+	}
 	if readyRe.MatchString(line) {
 		t.mu.Lock()
 		t.ready = true

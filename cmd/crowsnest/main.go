@@ -179,6 +179,7 @@ func serve() error {
 			// (2026-09-30), joins/leaves not yet with a real player.
 			tracker := valheim.NewTracker(docker, d.ContainerName)
 			defs[i].Players = tracker
+			defs[i].Info = tracker
 			defs[i].Status = tracker
 			defs[i].Startup = valheim.Startup
 			valheimTrackers = append(valheimTrackers, tracker)
