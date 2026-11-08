@@ -44,6 +44,7 @@ var (
 	lastPlayerRe  = regexp.MustCompile(`Last Player:\s*(.+)`)
 	workingSetRe  = regexp.MustCompile(`Working Set:\s*([\d,]+\s*\w+)`)
 	virtualRe     = regexp.MustCompile(`Virtual:\s*([\d,]+\s*\w+)`)
+	luaHeapRe     = regexp.MustCompile(`Lua Heap:\s*([\d,]+\s*\w+)`)
 	pageFileRe    = regexp.MustCompile(`Page File:\s*([\d,]+\s*\w+)`)
 
 	multiplierKeys = []string{"loot", "xp", "stack_size", "craft_efficiency", "crop_speed", "weight"}
@@ -68,6 +69,8 @@ type Client struct {
 	// module-level cache.
 	mu            sync.Mutex
 	cookie        string
+	nameMu        sync.Mutex // guards cookieName alone: it is read while mu is held and while it is not
+	cookieName    string     // wp_session (older Windrose+) or wp_session_<port> (newer)
 	cookieExpires time.Time
 	statusCache   *wplusStatus
 	statusCacheAt time.Time
@@ -75,6 +78,16 @@ type Client struct {
 	startedAt     time.Time
 	startedAtAt   time.Time
 	haveStartedAt bool
+}
+
+// sessionCookieName is the cookie name the server issued at login.
+func (c *Client) sessionCookieName() string {
+	c.nameMu.Lock()
+	defer c.nameMu.Unlock()
+	if c.cookieName == "" {
+		return "wp_session"
+	}
+	return c.cookieName
 }
 
 func (c *Client) client() *http.Client {
@@ -95,6 +108,8 @@ type wplusStatus struct {
 	Server    struct {
 		WindrosePlus string `json:"windrose_plus"`
 		PlayerCount  int    `json:"player_count"`
+		MaxPlayers   int    `json:"max_players"`
+		Version      string `json:"version"`
 	} `json:"server"`
 	Players []struct {
 		Name string   `json:"name"`
@@ -128,8 +143,11 @@ func (c *Client) login(ctx context.Context) bool {
 	_, _ = io.Copy(io.Discard, resp.Body)
 
 	for _, ck := range resp.Cookies() {
-		if ck.Name == "wp_session" && ck.Value != "" {
+		if (ck.Name == "wp_session" || strings.HasPrefix(ck.Name, "wp_session_")) && ck.Value != "" {
 			c.cookie = ck.Value
+			c.nameMu.Lock()
+			c.cookieName = ck.Name
+			c.nameMu.Unlock()
 			c.cookieExpires = time.Now().Add(cookieTTL)
 			return true
 		}
@@ -164,7 +182,7 @@ func (c *Client) sendRCON(ctx context.Context, cookie, command string, timeout t
 	}
 	req.Header.Set("Content-Type", "application/json")
 	// #nosec G124 -- outgoing request cookie to the Windrose+ API; Secure/HttpOnly/SameSite are response-cookie attributes
-	req.AddCookie(&http.Cookie{Name: "wp_session", Value: cookie})
+	req.AddCookie(&http.Cookie{Name: c.sessionCookieName(), Value: cookie})
 
 	hc := c.client()
 	if timeout > 0 {
@@ -226,7 +244,7 @@ func (c *Client) fetchStatus(ctx context.Context, cookie string) (*wplusStatus, 
 		return nil, false, false
 	}
 	// #nosec G124 -- outgoing request cookie to the Windrose+ API; Secure/HttpOnly/SameSite are response-cookie attributes
-	req.AddCookie(&http.Cookie{Name: "wp_session", Value: cookie})
+	req.AddCookie(&http.Cookie{Name: c.sessionCookieName(), Value: cookie})
 
 	resp, err := c.client().Do(req)
 	if err != nil {
@@ -390,6 +408,12 @@ func (c *Client) Info(ctx context.Context) (map[string]any, bool) {
 	out["available"] = true
 	out["mode"] = data.Mode
 	out["version"] = data.Server.WindrosePlus
+	if data.Server.Version != "" {
+		out["game_version"] = data.Server.Version
+	}
+	if data.Server.MaxPlayers > 0 {
+		out["max_players"] = data.Server.MaxPlayers
+	}
 
 	mults := map[string]float64{}
 	for _, key := range multiplierKeys {
@@ -507,6 +531,9 @@ func (c *Client) Info(ctx context.Context) (map[string]any, bool) {
 			}
 			if m := virtualRe.FindStringSubmatch(r.msg); m != nil {
 				out["memory_virtual"] = strings.TrimSpace(m[1])
+			}
+			if m := luaHeapRe.FindStringSubmatch(r.msg); m != nil {
+				out["memory_lua_heap"] = strings.TrimSpace(m[1])
 			}
 			if m := pageFileRe.FindStringSubmatch(r.msg); m != nil {
 				out["memory_page_file"] = strings.TrimSpace(m[1])

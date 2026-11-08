@@ -136,3 +136,23 @@ func TestStartup_RealLogLines(t *testing.T) {
 		}
 	}
 }
+
+func TestScan_CapturesWorldNameAndResetClearsIt(t *testing.T) {
+	tr := NewTracker(nil, "valheim")
+	tr.scan(strings.NewReader("02/06/2026 15:00:00: Load world: Midgard\n"))
+	if tr.world != "Midgard" {
+		t.Fatalf("world = %q, want Midgard", tr.world)
+	}
+	tr.reset()
+	if tr.world != "" {
+		t.Errorf("world after reset = %q, want empty", tr.world)
+	}
+}
+
+func TestInfo_UnattachedIsUnavailable(t *testing.T) {
+	tr := NewTracker(nil, "valheim")
+	info, ok := tr.Info(context.Background())
+	if !ok || info["available"] != false {
+		t.Errorf("Info = %v %v, want available=false", info, ok)
+	}
+}
