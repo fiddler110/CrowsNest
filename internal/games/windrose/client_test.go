@@ -175,6 +175,41 @@ func TestPlayerCount_BootModeIsUndeterminable(t *testing.T) {
 	}
 }
 
+// Windrose+ 1.3.x omits "mode" from a normal status snapshot; that is a live
+// reading, not boot.
+func TestPlayerCount_NoModeIsALiveReading(t *testing.T) {
+	srv := newFakeWplusServer(t, "secret")
+	srv.statusFunc = func(int) map[string]any {
+		return map[string]any{
+			"timestamp": float64(time.Now().Unix()),
+			"server":    map[string]any{"player_count": 1},
+			"players":   []any{map[string]any{"name": "Alice"}},
+		}
+	}
+	docker := newFakeDockerInspect(t, time.Now().Add(-time.Hour))
+	c := newTestClient(srv.URL, "secret", docker)
+
+	count, names, ok := c.PlayerCount(context.Background())
+	if !ok || count != 1 || len(names) != 1 {
+		t.Fatalf("PlayerCount() = %d, %v, %v; want 1, [Alice], true", count, names, ok)
+	}
+}
+
+// A snapshot without "mode" written before the container started (the
+// previous run's file) must still be ignored.
+func TestPlayerCount_NoModeButStaleIsUndeterminable(t *testing.T) {
+	srv := newFakeWplusServer(t, "secret")
+	srv.statusFunc = func(int) map[string]any {
+		return map[string]any{"timestamp": float64(time.Now().Add(-2 * time.Hour).Unix())}
+	}
+	docker := newFakeDockerInspect(t, time.Now().Add(-time.Hour))
+	c := newTestClient(srv.URL, "secret", docker)
+
+	if _, _, ok := c.PlayerCount(context.Background()); ok {
+		t.Fatal("PlayerCount() ok = true for a snapshot from before this run, want false")
+	}
+}
+
 func TestPlayerCount_LoginFailureIsUndeterminable(t *testing.T) {
 	srv := newFakeWplusServer(t, "secret")
 	srv.loginFails = true
