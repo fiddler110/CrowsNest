@@ -118,7 +118,7 @@ games:
       # rcon_password_env: PALWORLD_ADMIN_PASSWORD
     # Admin-only "Backups" panel. Runs inside the container with `docker exec`
     # (the socket proxy needs EXEC=1, behind
-    # `crowsnest execguard`, which only allows the commands set here). palworld-server-docker ships a `backup`
+    # `crowsnest execguard`, which only allows the commands set here; with `crowsnest guard` the scope needs "exec": true). palworld-server-docker ships a `backup`
     # command and writes to /palworld/backups; check both against your image.
     # backup:
     #   exec: ["backup"]

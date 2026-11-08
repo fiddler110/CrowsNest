@@ -50,6 +50,11 @@ func main() {
 		if err := runExecGuard(os.Args[2:]); err != nil {
 			log.Fatal(err)
 		}
+	case "guard":
+		if err := runGuard(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
 	case "healthcheck":
 		os.Exit(healthcheck())
 	case "set-password":
@@ -77,7 +82,7 @@ func main() {
 			log.Fatal(err)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, execguard, guard, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
 		os.Exit(2)
 	}
 }

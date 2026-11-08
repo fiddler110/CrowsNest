@@ -6,6 +6,19 @@ grouped by priority, not phase; check them off as they land.
 
 ## Done
 
+- [x] **Go scoped Docker API guard (2026-11-08).** `crowsnest guard` is a
+  port of the Python guard's scoped mode (`GUARD_SCOPES`: per-container image,
+  exact bind, volume, network, port, label, alias, secopt, cap_add and exec
+  allowlists), so the stack no longer needs the labdash-worker image. It
+  refuses to start without a valid config, validates create bodies against an
+  allowlist, filters container/image/network/volume lists and inspects,
+  redacts `/info`, tracks exec ids, rebuilds every request target for the
+  engine, and tunnels exec start and log-follow streams. It also supports
+  compose's recreate (create `<old id12>_<name>`, delete the stopped old
+  container, rename), which the Python guard refused. Stricter than the Python
+  in a few places (see `internal/dockerguard` tests). execguard stays a
+  separate layer in front of it.
+
 - [x] **Log-followed Windrose status, non-blocking dashboard, quiet tabs
   (2026-11-08).** Windrose readiness now comes from a `windrose.Tracker`
   following `docker logs -f` (like Valheim's), so the Windrose `docker exec`
