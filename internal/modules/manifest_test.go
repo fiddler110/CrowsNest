@@ -101,7 +101,7 @@ players: {type: log_markers, join: 'Got handshake from client (\S+)', leave: 'Cl
 
 func TestProbeWire(t *testing.T) {
 	for _, y := range []string{
-		"api_version: 1\nid: a\nname: A\nplayers: {type: http_json, url: 'http://x:1/p', count_path: players, name_field: name}\n",
+		"api_version: 1\nid: a\nname: A\napi: {base_url: 'http://x:1'}\nplayers: {type: http_json, path: /p, count_path: players, name_field: name}\n",
 		"api_version: 1\nid: a\nname: A\nplayers: {type: source_rcon, addr: 'x:27015', command: status, pattern: '^# \\d+ \"(.+?)\"'}\n",
 	} {
 		m, err := Parse(strings.NewReader(y))
@@ -141,6 +141,25 @@ func TestValheimStartup_RealLogLines(t *testing.T) {
 	} {
 		if got := pct(line); got != want {
 			t.Errorf("pct(%q) = %d, want %d", line, got, want)
+		}
+	}
+}
+
+func TestRESTSectionsRejected(t *testing.T) {
+	base := "api_version: 1\nid: a\nname: A\n"
+	for name, y := range map[string]string{
+		"actions without api":      base + "actions: [{id: x, label: X, request: {path: /x}}]\n",
+		"bad api url":              base + "api: {base_url: 'ftp://x'}\n",
+		"action path not absolute": base + "api: {base_url: 'http://x'}\nactions: [{id: x, label: X, request: {path: x}}]\n",
+		"bad method":               base + "api: {base_url: 'http://x'}\nactions: [{id: x, label: X, request: {method: PATCH, path: /x}}]\n",
+		"duplicate action":         base + "api: {base_url: 'http://x'}\nactions: [{id: x, label: X, request: {path: /x}}, {id: x, label: Y, request: {path: /y}}]\n",
+		"http_json without path":   base + "api: {base_url: 'http://x'}\nplayers: {type: http_json, count_path: p}\n",
+		"info source no slash":     base + "api: {base_url: 'http://x'}\ninfo: {sources: [{name: i, path: i}]}\n",
+		"long pre_stop pause":      base + "api: {base_url: 'http://x'}\npre_stop: [{pause: 5m, request: {path: /x}}]\n",
+		"duplicate option":         base + "options: [{key: k}, {key: k}]\n",
+	} {
+		if _, err := Parse(strings.NewReader(y)); err == nil {
+			t.Errorf("%s: want error", name)
 		}
 	}
 }

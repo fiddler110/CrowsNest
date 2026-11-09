@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"net/url"
+	"log"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,22 +47,51 @@ type Manifest struct {
 		Leave string `yaml:"leave"` // regexp, group 1 = player id
 		World string `yaml:"world"` // regexp, group 1 = world name (optional)
 
-		// http_json: poll URL (also the online check); PlayersURL overrides
-		// it for the count. CountPath/NamesPath/NameField pick fields.
-		URL         string `yaml:"url"`
-		PlayersURL  string `yaml:"players_url"`
-		User        string `yaml:"user"`
-		PasswordEnv string `yaml:"password_env"` // env var holding the password
-		CountPath   string `yaml:"count_path"`
-		NamesPath   string `yaml:"names_path"`
-		NameField   string `yaml:"name_field"`
+		// http_json (needs the api block): Path is polled for the count
+		// (and, unless status_path is set, for online/starting). CountPath/
+		// NamesPath/NameField pick the fields.
+		Path      string `yaml:"path"`
+		CountPath string `yaml:"count_path"`
+		NamesPath string `yaml:"names_path"`
+		NameField string `yaml:"name_field"`
 
 		// source_rcon: run Command at Addr, each line matching Pattern
 		// (group 1 = name) is one player. Password from PasswordEnv.
-		Addr    string `yaml:"addr"`
-		Command string `yaml:"command"`
-		Pattern string `yaml:"pattern"`
+		Addr        string `yaml:"addr"`
+		PasswordEnv string `yaml:"password_env"`
+		Command     string `yaml:"command"`
+		Pattern     string `yaml:"pattern"`
 	} `yaml:"players"`
+
+	// Options declares the per-game settings a config.yaml entry may give
+	// under "options:". ${key} in api/rcon/players string fields is replaced
+	// by the value (or the default).
+	Options []Option `yaml:"options"`
+
+	// API is the game's JSON-over-HTTP admin API (players.type http_json,
+	// info, actions and pre_stop all use it). If a required option is unset
+	// the API is left unwired and the game keeps the baseline.
+	API struct {
+		BaseURL     string `yaml:"base_url"`
+		User        string `yaml:"user"`
+		PasswordEnv string `yaml:"password_env"` // env var holding the password
+		StatusPath  string `yaml:"status_path"`  // default players.path
+	} `yaml:"api"`
+
+	Info struct {
+		Sources []probes.InfoSource `yaml:"sources"`
+		Fields  []probes.InfoField  `yaml:"fields"`
+	} `yaml:"info"`
+
+	Actions []probes.Action `yaml:"actions"`
+	PreStop []probes.Step   `yaml:"pre_stop"`
+
+	// RCON enables the admin-only raw console. Empty addr (after option
+	// substitution) leaves it off.
+	RCON struct {
+		Addr        string `yaml:"addr"`
+		PasswordEnv string `yaml:"password_env"`
+	} `yaml:"rcon"`
 
 	Startup []StartupStep `yaml:"startup"`
 
@@ -78,6 +107,14 @@ type StartupProgress struct {
 	From  int    `yaml:"from"`
 	To    int    `yaml:"to"`
 	Label string `yaml:"label"`
+}
+
+// Option is one declared per-game setting.
+type Option struct {
+	Key      string `yaml:"key"`
+	Label    string `yaml:"label"`
+	Default  string `yaml:"default"`
+	Required bool   `yaml:"required"`
 }
 
 // StartupStep maps a log pattern to a startup progress percentage.
@@ -106,6 +143,65 @@ func Parse(r io.Reader) (*Manifest, error) {
 		return nil, err
 	}
 	return &m, nil
+}
+
+var actionIDRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,31}$`)
+
+// validateREST checks the actions, info and pre_stop sections.
+func (m *Manifest) validateREST() error {
+	checkReq := func(where string, r probes.Request) error {
+		switch r.Method {
+		case "", "GET", "POST", "PUT", "DELETE":
+		default:
+			return fmt.Errorf("module %q: %s: method %q not allowed", m.ID, where, r.Method)
+		}
+		if !strings.HasPrefix(r.Path, "/") {
+			return fmt.Errorf("module %q: %s: path must start with /", m.ID, where)
+		}
+		return nil
+	}
+	ids := map[string]bool{}
+	for i, a := range m.Actions {
+		w := fmt.Sprintf("actions[%d]", i)
+		if !actionIDRe.MatchString(a.ID) || ids[a.ID] || a.Label == "" {
+			return fmt.Errorf("module %q: %s needs a unique id [a-z0-9_] and a label", m.ID, w)
+		}
+		ids[a.ID] = true
+		if err := checkReq(w, a.Request); err != nil {
+			return err
+		}
+		names := map[string]bool{}
+		for _, f := range a.Fields {
+			if f.Name == "" || names[f.Name] || f.Max < 0 {
+				return fmt.Errorf("module %q: %s has a bad field %q", m.ID, w, f.Name)
+			}
+			names[f.Name] = true
+		}
+		if a.List != nil && (a.List.Path == "" || a.List.Line == "") {
+			return fmt.Errorf("module %q: %s list needs path and line", m.ID, w)
+		}
+	}
+	for i, st := range m.PreStop {
+		if err := checkReq(fmt.Sprintf("pre_stop[%d]", i), st.Request); err != nil {
+			return err
+		}
+		if st.Pause < 0 || st.Pause > time.Minute {
+			return fmt.Errorf("module %q: pre_stop[%d].pause must be 0-1m", m.ID, i)
+		}
+	}
+	srcs := map[string]bool{}
+	for _, src := range m.Info.Sources {
+		if src.Name == "" || srcs[src.Name] || !strings.HasPrefix(src.Path, "/") {
+			return fmt.Errorf("module %q: info source %q needs a unique name and a path starting with /", m.ID, src.Name)
+		}
+		srcs[src.Name] = true
+	}
+	for _, f := range m.Info.Fields {
+		if f.Key == "" || f.Template == "" {
+			return fmt.Errorf("module %q: info fields need key and template", m.ID)
+		}
+	}
+	return nil
 }
 
 func (m *Manifest) validate() error {
@@ -139,18 +235,27 @@ func (m *Manifest) validate() error {
 			}
 		}
 	}
+	seen := map[string]bool{}
+	for _, o := range m.Options {
+		if o.Key == "" || seen[o.Key] {
+			return fmt.Errorf("module %q: option key %q is empty or duplicated", m.ID, o.Key)
+		}
+		seen[o.Key] = true
+	}
+	hasAPI := m.API.BaseURL != ""
+	if (len(m.Info.Fields) > 0 || len(m.Actions) > 0 || len(m.PreStop) > 0 || m.Players.Type == "http_json") && !hasAPI {
+		return fmt.Errorf("module %q: http_json, info, actions and pre_stop need api.base_url", m.ID)
+	}
+	if hasAPI && !strings.HasPrefix(m.API.BaseURL, "http://") && !strings.HasPrefix(m.API.BaseURL, "https://") && !strings.HasPrefix(m.API.BaseURL, "${") {
+		return fmt.Errorf("module %q: api.base_url must be http(s) or an ${option}", m.ID)
+	}
+	if err := m.validateREST(); err != nil {
+		return err
+	}
 	switch m.Players.Type {
 	case "http_json":
-		if u, err := url.Parse(m.Players.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("module %q: players.url must be an http(s) URL", m.ID)
-		}
-		if m.Players.PlayersURL != "" {
-			if u, err := url.Parse(m.Players.PlayersURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-				return fmt.Errorf("module %q: players.players_url must be an http(s) URL", m.ID)
-			}
-		}
-		if m.Players.CountPath == "" {
-			return fmt.Errorf("module %q: http_json needs players.count_path", m.ID)
+		if m.Players.Path == "" || m.Players.CountPath == "" {
+			return fmt.Errorf("module %q: http_json needs players.path and players.count_path", m.ID)
 		}
 	case "source_rcon":
 		if m.Players.Addr == "" || m.Players.Command == "" || m.Players.Pattern == "" {
@@ -198,17 +303,42 @@ func (m *Manifest) Wire() WireFunc {
 			def.Status, def.Players, def.Info = tr, tr, tr
 			runners = append(runners, tr)
 		}
-		switch m.Players.Type {
-		case "http_json":
-			p := &probes.HTTPJSON{
-				Docker: env.Docker, URL: m.Players.URL, PlayersURL: m.Players.PlayersURL,
-				User: m.Players.User, Pass: os.Getenv(m.Players.PasswordEnv),
-				CountPath: m.Players.CountPath, NamesPath: m.Players.NamesPath, NameField: m.Players.NameField,
+		opts := newOptions(m, env.Config.Options)
+		if m.API.BaseURL != "" {
+			if missing := opts.missingRequired(); len(missing) > 0 {
+				log.Printf("%s: option(s) %s not set in config.yaml; API integration is off", m.ID, strings.Join(missing, ", "))
+			} else {
+				api := &probes.HTTPJSON{
+					Docker: env.Docker, Name: m.ID,
+					BaseURL: strings.TrimRight(opts.sub(m.API.BaseURL), "/"),
+					User:    opts.sub(m.API.User), Pass: os.Getenv(opts.sub(m.API.PasswordEnv)),
+					StatusPath: m.API.StatusPath, PlayersPath: m.Players.Path,
+					CountPath: m.Players.CountPath, NamesPath: m.Players.NamesPath, NameField: m.Players.NameField,
+					InfoSources: m.Info.Sources, InfoFields: m.Info.Fields,
+					ActionDefs: m.Actions, Steps: m.PreStop,
+				}
+				def.Status = api
+				if m.Players.Type == "http_json" {
+					def.Players = api
+				}
+				if len(m.Info.Fields) > 0 {
+					def.Info = api
+				}
+				if len(m.Actions) > 0 {
+					def.Console = api
+				}
+				if len(m.PreStop) > 0 {
+					def.PreStop = api
+				}
+				if addr := opts.sub(m.RCON.Addr); addr != "" {
+					def.RawConsole = &probes.RawRCON{Addr: addr, Password: os.Getenv(opts.sub(m.RCON.PasswordEnv))}
+				}
 			}
-			def.Status, def.Players = p, p
+		}
+		switch m.Players.Type {
 		case "source_rcon":
 			def.Players = &probes.SourceRCON{
-				Addr: m.Players.Addr, Password: os.Getenv(m.Players.PasswordEnv),
+				Addr: opts.sub(m.Players.Addr), Password: os.Getenv(opts.sub(m.Players.PasswordEnv)),
 				Command: m.Players.Command, Pattern: regexp.MustCompile(m.Players.Pattern),
 			}
 		}
@@ -281,4 +411,40 @@ func (s *Set) LoadDir(dir string) error {
 		s.Register(m.ID, m.Wire())
 	}
 	return nil
+}
+
+// options resolves ${key} placeholders from a game's config options, falling
+// back to the manifest defaults.
+type options struct {
+	m    *Manifest
+	vals map[string]string
+}
+
+var optRe = regexp.MustCompile(`\$\{([A-Za-z0-9_]+)\}`)
+
+func newOptions(m *Manifest, given map[string]string) *options {
+	v := map[string]string{}
+	for _, o := range m.Options {
+		v[o.Key] = o.Default
+	}
+	for k, val := range given {
+		if _, known := v[k]; known {
+			v[k] = val
+		}
+	}
+	return &options{m: m, vals: v}
+}
+
+func (o *options) sub(s string) string {
+	return optRe.ReplaceAllStringFunc(s, func(tok string) string { return o.vals[optRe.FindStringSubmatch(tok)[1]] })
+}
+
+func (o *options) missingRequired() []string {
+	var out []string
+	for _, d := range o.m.Options {
+		if d.Required && o.vals[d.Key] == "" {
+			out = append(out, d.Key)
+		}
+	}
+	return out
 }

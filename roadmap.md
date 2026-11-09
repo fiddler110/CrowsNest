@@ -47,7 +47,7 @@ derived from it.
     bundled games and manifest games share one path. A local module may not
     shadow a bundled id; unused local modules log a warning. A manifest game
     still needs a `config.yaml` entry for its container/compose until Phase 2.
-- [ ] **Phase 2: dogfood.** (step 1 done: Valheim is an embedded `module.yaml`, `internal/games/valheim` removed; Palworld, Windrose+ and the typed config fields remain) Re-express Valheim, Palworld, then Windrose+ as
+- [ ] **Phase 2: dogfood.** (done: Valheim and Palworld are embedded `module.yaml` files with REST info/actions/pre-stop in the manifest, `options:` replaces the typed config blocks (legacy blocks still read); remaining: Windrose+ adapter contract and adapter, then the fourth-game test) Re-express Valheim, Palworld, then Windrose+ as
   bundled modules; adapter-sidecar contract v0 (Windrose+ first); remove the
   typed per-game fields from `config`. Done when a fourth game (Minecraft or a
   Source game) is added with a manifest only, in under 30 minutes.

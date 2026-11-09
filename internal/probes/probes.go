@@ -6,14 +6,18 @@
 package probes
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
@@ -23,21 +27,39 @@ import (
 
 const timeout = 4 * time.Second
 
-// HTTPJSON polls a JSON endpoint. The endpoint answering 2xx means online
-// (starting while the container runs but the endpoint does not answer).
+// HTTPJSON is a declarative client for a game's JSON-over-HTTP admin API
+// (Palworld's REST API is the reference user). Beyond the player probe it can
+// serve the info panel, a fixed set of console actions and a pre-stop
+// sequence, all described in module.yaml; see rest.go.
+//
+// The endpoint answering 2xx means online (starting while the container runs
+// but the endpoint does not answer).
 type HTTPJSON struct {
 	Docker *dockerctl.Client
-	// URL is polled for status and for players (a module may point
-	// PlayersURL elsewhere).
-	URL        string
-	PlayersURL string
+	Name   string // module id, for log lines
+
+	BaseURL    string // e.g. http://palworld:8212, no trailing slash
 	User, Pass string // optional basic auth
+
+	// StatusPath is polled for status; PlayersPath (default StatusPath)
+	// for the count.
+	StatusPath, PlayersPath string
 	// CountPath is a dotted path to a number ("metrics.players") or, if it
 	// resolves to an array, its length. NamesPath/NameField optionally list
 	// players: NamesPath is an array of strings or of objects whose NameField
 	// is the name. With neither, the array at CountPath supplies the names.
 	CountPath, NamesPath, NameField string
-	HTTP                            *http.Client
+
+	InfoSources []InfoSource
+	InfoFields  []InfoField
+	ActionDefs  []Action
+	Steps       []Step
+
+	HTTP *http.Client
+	// Sleep replaces the pre-stop pause (tests).
+	Sleep func(ctx context.Context, d time.Duration)
+
+	authWarned atomic.Bool
 }
 
 func (p *HTTPJSON) client() *http.Client {
@@ -47,13 +69,26 @@ func (p *HTTPJSON) client() *http.Client {
 	return &http.Client{Timeout: timeout}
 }
 
-func (p *HTTPJSON) get(ctx context.Context, url string) (any, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+// do sends one request and returns the decoded JSON body (nil when the body
+// is empty or not wanted).
+func (p *HTTPJSON) do(ctx context.Context, method, path string, body map[string]string) (any, error) {
+	var rdr io.Reader
+	if body != nil {
+		b, err := json.Marshal(body)
+		if err != nil {
+			return nil, err
+		}
+		rdr = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, p.BaseURL+path, rdr)
 	if err != nil {
 		return nil, err
 	}
 	if p.User != "" || p.Pass != "" {
 		req.SetBasicAuth(p.User, p.Pass)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
 	}
 	resp, err := p.client().Do(req)
 	if err != nil {
@@ -62,13 +97,49 @@ func (p *HTTPJSON) get(ctx context.Context, url string) (any, error) {
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		return nil, fmt.Errorf("http_json: status %d", resp.StatusCode)
+		err := statusError(resp.StatusCode)
+		p.noteAuth(err)
+		return nil, err
+	}
+	p.noteAuth(nil)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	if len(bytes.TrimSpace(raw)) == 0 {
+		return nil, nil
 	}
 	var v any
-	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&v); err != nil {
+	if err := json.Unmarshal(raw, &v); err != nil {
+		if method != http.MethodGet {
+			return nil, nil // action replies need not be JSON
+		}
 		return nil, err
 	}
 	return v, nil
+}
+
+func (p *HTTPJSON) get(ctx context.Context, path string) (any, error) {
+	return p.do(ctx, http.MethodGet, path, nil)
+}
+
+type statusError int
+
+func (e statusError) Error() string { return fmt.Sprintf("http_json: status %d", int(e)) }
+
+// noteAuth logs once per failure streak that the credentials were rejected:
+// otherwise a wrong password just looks like a server stuck on "starting".
+func (p *HTTPJSON) noteAuth(err error) {
+	var st statusError
+	if errors.As(err, &st) && (st == 401 || st == 403) {
+		if !p.authWarned.Swap(true) {
+			log.Printf("%s: API at %s rejected the credentials (HTTP %d) - check the password env var; status stays \"starting\" and idle auto-stop is disabled until it matches", p.Name, p.BaseURL, int(st))
+		}
+		return
+	}
+	if err == nil {
+		p.authWarned.Store(false)
+	}
 }
 
 // Check implements games.StatusChecker.
@@ -80,7 +151,7 @@ func (p *HTTPJSON) Check(ctx context.Context, containerName string) (games.Statu
 	if !running {
 		return games.StatusOffline, nil
 	}
-	if _, err := p.get(ctx, p.URL); err != nil {
+	if _, err := p.get(ctx, p.statusPath()); err != nil {
 		return games.StatusStarting, nil
 	}
 	return games.StatusOnline, nil
@@ -88,15 +159,25 @@ func (p *HTTPJSON) Check(ctx context.Context, containerName string) (games.Statu
 
 // PlayerCount implements games.PlayerCounter.
 func (p *HTTPJSON) PlayerCount(ctx context.Context) (int, []string, bool) {
-	u := p.PlayersURL
-	if u == "" {
-		u = p.URL
-	}
-	doc, err := p.get(ctx, u)
+	doc, err := p.get(ctx, p.playersPath())
 	if err != nil {
 		return 0, nil, false
 	}
 	return extract(doc, p.CountPath, p.NamesPath, p.NameField)
+}
+
+func (p *HTTPJSON) playersPath() string {
+	if p.PlayersPath != "" {
+		return p.PlayersPath
+	}
+	return p.StatusPath
+}
+
+func (p *HTTPJSON) statusPath() string {
+	if p.StatusPath != "" {
+		return p.StatusPath
+	}
+	return p.PlayersPath
 }
 
 func extract(doc any, countPath, namesPath, nameField string) (int, []string, bool) {

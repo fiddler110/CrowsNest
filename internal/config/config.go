@@ -264,6 +264,15 @@ type GameConfig struct {
 	// same as every other game, so long as night_shutdown.enabled is true.
 	NightShutdown *bool `yaml:"night_shutdown,omitempty"`
 
+	// Options are this game's module settings; the module's manifest
+	// declares which keys it understands (modules/<id>/module.yaml
+	// "options"). Values for env-var options name the variable, never the
+	// secret itself.
+	Options map[string]string `yaml:"options,omitempty"`
+
+	// Deprecated: the typed per-game blocks are folded into Options at load
+	// time (see foldLegacyOptions); write "options:" instead. Kept so
+	// existing config.yaml files keep working.
 	Windrose *WindroseConfig `yaml:"windrose,omitempty"`
 	Palworld *PalworldConfig `yaml:"palworld,omitempty"`
 
@@ -315,7 +324,44 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// foldLegacyOptions maps the deprecated windrose:/palworld: blocks onto
+// Options so modules only ever read one place. Explicit options win.
+func (c *Config) foldLegacyOptions() {
+	for i := range c.Games {
+		g := &c.Games[i]
+		set := func(k, v string) {
+			if v == "" {
+				return
+			}
+			if g.Options == nil {
+				g.Options = map[string]string{}
+			}
+			if _, ok := g.Options[k]; !ok {
+				g.Options[k] = v
+			}
+		}
+		if w := g.Windrose; w != nil {
+			set("http_api_url", w.HTTPAPIURL)
+			set("rcon_password_env", w.RCONPasswordEnv)
+		}
+		if p := g.Palworld; p != nil {
+			set("rest_api_url", p.RESTAPIURL)
+			set("rest_api_user", p.RESTAPIUser)
+			set("rest_api_password_env", p.RESTAPIPasswordEnv)
+			set("rcon_addr", p.RCONAddr)
+			pw := p.RCONPasswordEnv
+			if pw == "" {
+				pw = p.RESTAPIPasswordEnv // palworld-server-docker uses ADMIN_PASSWORD for both
+			}
+			if p.RCONAddr != "" {
+				set("rcon_password_env", pw)
+			}
+		}
+	}
+}
+
 func (c *Config) applyDefaults() {
+	c.foldLegacyOptions()
 	if c.Server.Addr == "" {
 		c.Server.Addr = defaultAddr
 	}

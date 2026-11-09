@@ -556,3 +556,26 @@ func TestLoad_BackupValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestLegacyBlocksFoldIntoOptions(t *testing.T) {
+	c := &Config{Games: []GameConfig{
+		{ID: "windrose", Windrose: &WindroseConfig{HTTPAPIURL: "http://w:8780", RCONPasswordEnv: "WR_PW"}},
+		{ID: "palworld", Palworld: &PalworldConfig{RESTAPIURL: "http://p:8212", RESTAPIUser: "admin", RESTAPIPasswordEnv: "ADMIN", RCONAddr: "p:25575"}},
+		{ID: "pal2", Options: map[string]string{"rest_api_url": "explicit"}, Palworld: &PalworldConfig{RESTAPIURL: "legacy"}},
+		{ID: "pal3", Palworld: &PalworldConfig{RESTAPIURL: "http://p:8212", RESTAPIPasswordEnv: "ADMIN"}},
+	}}
+	c.foldLegacyOptions()
+	w, p, p2, p3 := c.Games[0].Options, c.Games[1].Options, c.Games[2].Options, c.Games[3].Options
+	if w["http_api_url"] != "http://w:8780" || w["rcon_password_env"] != "WR_PW" {
+		t.Errorf("windrose options = %v", w)
+	}
+	if p["rest_api_url"] != "http://p:8212" || p["rcon_addr"] != "p:25575" || p["rcon_password_env"] != "ADMIN" {
+		t.Errorf("palworld options = %v (rcon password must default to the REST one)", p)
+	}
+	if p2["rest_api_url"] != "explicit" {
+		t.Errorf("explicit option must win, got %v", p2)
+	}
+	if _, set := p3["rcon_password_env"]; set {
+		t.Errorf("no rcon_addr: rcon_password_env must not be set, got %v", p3)
+	}
+}
