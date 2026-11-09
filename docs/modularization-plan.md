@@ -155,8 +155,8 @@ bundled modules and calling `LoadDir` from `main`.
 ## 5. Risks
 
 - Windrose+'s cookie session and Palworld's RCON edge cases are the hardest to express declaratively (hence Tier 2).
-- Valheim join/leave markers were never verified with a real player; the golden for them is only as good as the
-  recorded fixture. Record real logs before Phase 1 relies on them.
+- Valheim join/leave markers were verified on 2026-11-07 against a real player session (anonymised fixture in
+  `internal/logtrack/testdata`). Other games' markers need the same treatment before they are trusted.
 - Keep the legacy config path for at least one minor release; production runs on it.
 - Phase 3 changes the security model and needs a dedicated review.
 
