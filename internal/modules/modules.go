@@ -82,3 +82,31 @@ func (s *Set) Build(cfg *config.Config, docker *dockerctl.Client) ([]games.GameD
 	}
 	return defs, runners
 }
+
+// ForConfig returns the module set for a configuration: the bundled modules
+// plus any module.yaml directories under cfg.ModulesDir. A local module may
+// not reuse a bundled id. Local modules no configured game uses are reported
+// through warn (a typo'd game id would otherwise fail silently).
+func ForConfig(cfg *config.Config, warn func(format string, args ...any)) (*Set, error) {
+	s := Bundled()
+	if cfg.ModulesDir == "" {
+		return s, nil
+	}
+	bundled := map[string]bool{}
+	for _, id := range s.IDs() {
+		bundled[id] = true
+	}
+	if err := s.LoadDir(cfg.ModulesDir); err != nil {
+		return nil, fmt.Errorf("modules_dir %s: %w", cfg.ModulesDir, err)
+	}
+	used := map[string]bool{}
+	for _, g := range cfg.Games {
+		used[g.ID] = true
+	}
+	for _, id := range s.IDs() {
+		if !bundled[id] && !used[id] && warn != nil {
+			warn("modules: module %q is not used by any game in config.yaml", id)
+		}
+	}
+	return s, nil
+}

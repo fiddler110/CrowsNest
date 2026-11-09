@@ -42,7 +42,11 @@ type Config struct {
 	Notifications *NotificationsConfig `yaml:"notifications"`
 	Auth          AuthConfig           `yaml:"auth"`
 	UsersFile     string               `yaml:"users_file"`
-	Games         []GameConfig         `yaml:"games"`
+	// ModulesDir is an optional directory of <id>/module.yaml game modules
+	// (docs/modularization-plan.md). A module is used by the game in Games
+	// with the same id. Empty means only the bundled modules.
+	ModulesDir string       `yaml:"modules_dir"`
+	Games      []GameConfig `yaml:"games"`
 }
 
 // ServerConfig holds top-level HTTP server settings.

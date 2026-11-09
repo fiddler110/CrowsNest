@@ -3,8 +3,8 @@
 Goal: add a game server to CrowsNest by dropping in a module (a directory), with no change to the Go core,
 and with the Docker guard, exec allowlist, secrets and UI form all derived from that one module.
 
-Status: **Phase 0 done** (golden tests, `buildGameDefs` seam, PR #22). **Phase 1 steps 1-3 done** (module registry,
-manifest loader, shared log engine and probes). Step 4 and Phases 2-6 are not started.
+Status: **Phase 0 done** (golden tests, `buildGameDefs` seam, PR #22). **Phase 1 done** (module registry,
+manifest loader, shared log engine and probes, `modules_dir`). Phases 2-6 are not started.
 Progress and the related accounts/settings and verification work are tracked in [`roadmap.md`](../roadmap.md);
 this file holds the design only.
 This document is the plan referenced from `cmd/crowsnest/gamewiring.go` and `cmd/crowsnest/golden_test.go`.
@@ -128,8 +128,8 @@ Steps 2-3 added `manifest.go` (strict `module.yaml` v1 parser; `Set.LoadDir` reg
 `internal/logtrack` (the one log-follow engine behind Valheim, Windrose and `players.type: log_markers`) and
 `internal/probes` (`http_json`: dotted-path count/names with optional basic auth; `source_rcon`: a command plus a
 line regexp). Manifest URLs and addresses are operator-trusted today; Phase 3's `policy.yaml` envelope must
-constrain them. Remaining in Phase 1 (`roadmap.md`): step 4, mapping the legacy `config.yaml` games block onto the
-bundled modules and calling `LoadDir` from `main`.
+constrain them. Step 4: `config.yaml` has `modules_dir`; `modules.ForConfig` builds bundled + local modules, and the legacy games
+block selects them by id. Until Phase 2 a manifest game still needs its container/compose entry in `config.yaml`.
 
 ## 3. Performance work that rides along
 

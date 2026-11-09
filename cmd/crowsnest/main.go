@@ -119,7 +119,11 @@ func serve() error {
 	}
 
 	docker := &dockerctl.Client{Host: cfg.Server.DockerHost}
-	defs, runners := modules.Bundled().Build(cfg, docker)
+	mods, err := modules.ForConfig(cfg, log.Printf)
+	if err != nil {
+		return fmt.Errorf("load modules: %w", err)
+	}
+	defs, runners := mods.Build(cfg, docker)
 	registry, err := games.NewRegistry(defs)
 	if err != nil {
 		return fmt.Errorf("build game registry: %w", err)

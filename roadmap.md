@@ -22,7 +22,7 @@ Goal: add a game by dropping in a `module.yaml` directory with no core change;
 guard scopes, exec rules, compose fragment, secrets and settings form are all
 derived from it.
 
-- [ ] **Phase 1: manifest and loader.** `module.yaml` v1 and a loader that
+- [x] **Phase 1: manifest and loader (done 2026-11-09).** `module.yaml` v1 and a loader that
   produces `GameDef`; replace the `buildGameDefs` switch
   (done in step 1, now `internal/modules`). Shared log-follow engine (replaces the
   duplicate Valheim/Windrose trackers), `http_json` and `source_rcon` probes.
@@ -41,9 +41,12 @@ derived from it.
     `source_rcon`; all three are usable from `module.yaml` (`players.type`).
     Valheim join/leave markers now verified against a real session
     (2026-11-07 logs, anonymised fixture in `internal/logtrack/testdata`).
-  - [ ] Step 4: map the legacy `config.yaml` games block onto the bundled
-    modules through the same path.
-  *Prerequisite:* record real Valheim logs with a player joining (see C).
+  - [x] Step 4 (2026-11-09): `modules_dir` in `config.yaml`; `main` builds the
+    set with `modules.ForConfig` (bundled + local `<id>/module.yaml`). The
+    legacy games block is unchanged and still selects modules by game id, so
+    bundled games and manifest games share one path. A local module may not
+    shadow a bundled id; unused local modules log a warning. A manifest game
+    still needs a `config.yaml` entry for its container/compose until Phase 2.
 - [ ] **Phase 2: dogfood.** Re-express Valheim, Palworld, then Windrose+ as
   bundled modules; adapter-sidecar contract v0 (Windrose+ first); remove the
   typed per-game fields from `config`. Done when a fourth game (Minecraft or a
