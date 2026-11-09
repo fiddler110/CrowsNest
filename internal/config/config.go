@@ -51,6 +51,20 @@ type Config struct {
 	// Platform is where and how game containers are rendered from modules
 	// ("crowsnest render"). Unused by the running panel.
 	Platform PlatformConfig `yaml:"platform"`
+
+	// Managed turns on enabling games from the dashboard (docs/modules.md).
+	Managed ManagedConfig `yaml:"managed"`
+}
+
+// ManagedConfig configures dashboard-enabled games. Dir set turns the feature
+// on; it needs platform.games_root (and host_games_root when that is a variable).
+type ManagedConfig struct {
+	// Dir is the state directory the panel writes: games.json, secrets.json
+	// and the scopes.json the guard watches. Share it read-only with the guard.
+	Dir string `yaml:"dir"`
+	// PolicyFile is the operator's policy.yaml, mounted read-only. Required
+	// when Dir is set; the guard reads the same file.
+	PolicyFile string `yaml:"policy_file"`
 }
 
 // PlatformConfig holds the host-level values a module's runtime section is
@@ -471,7 +485,15 @@ func (c *Config) validate() error {
 	if c.UsersFile == "" {
 		return fmt.Errorf("users_file is required")
 	}
-	if len(c.Games) == 0 {
+	if c.Managed.Dir != "" {
+		if c.Managed.PolicyFile == "" {
+			return fmt.Errorf("managed.policy_file is required when managed.dir is set (games enabled from the dashboard only run inside an operator policy)")
+		}
+		if c.Platform.GamesRoot == "" {
+			return fmt.Errorf("platform.games_root is required when managed.dir is set")
+		}
+	}
+	if len(c.Games) == 0 && c.Managed.Dir == "" {
 		return fmt.Errorf("at least one game must be defined")
 	}
 	for i, cidr := range c.Server.TrustedProxies {

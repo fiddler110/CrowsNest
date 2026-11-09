@@ -579,3 +579,19 @@ func TestLegacyBlocksFoldIntoOptions(t *testing.T) {
 		t.Errorf("no rcon_addr: rcon_password_env must not be set, got %v", p3)
 	}
 }
+
+func TestValidateManaged(t *testing.T) {
+	c := &Config{UsersFile: "u", Managed: ManagedConfig{Dir: "/d"}}
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "policy_file") {
+		t.Errorf("managed without a policy: %v", err)
+	}
+	c.Managed.PolicyFile = "/p"
+	if err := c.validate(); err == nil || !strings.Contains(err.Error(), "games_root") {
+		t.Errorf("managed without games_root: %v", err)
+	}
+	c.Platform.GamesRoot = "/srv/games"
+	c.applyDefaults()
+	if err := c.validate(); err != nil {
+		t.Errorf("managed with no static games should be valid: %v", err)
+	}
+}

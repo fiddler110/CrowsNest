@@ -46,6 +46,8 @@ type App struct {
 	History *history.Store
 	// Backups runs and lists per-game backups (admin only). Optional.
 	Backups *backup.Manager
+	// Managed backs the Games API (enable games from the dashboard). Optional.
+	Managed ManagedGames
 	// HostPaths are the mounted paths whose free space /api/host reports.
 	HostPaths []string
 	Templates *Templates
@@ -181,6 +183,11 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/health", a.requireSession(http.HandlerFunc(a.handleHealth)))
 	mux.Handle("GET /api/settings", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleGetSettings))))
 	mux.Handle("PUT /api/settings", a.requireAdmin(http.HandlerFunc(a.handlePutSettings)))
+	mux.Handle("GET /api/managed/modules", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedModules))))
+	mux.Handle("GET /api/managed/games", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedList))))
+	mux.Handle("POST /api/managed/preview", a.requireAdmin(http.HandlerFunc(a.handleManagedPreview)))
+	mux.Handle("POST /api/managed/games", a.requireAdmin(http.HandlerFunc(a.handleManagedEnable)))
+	mux.Handle("DELETE /api/managed/games/{id}", a.requireAdmin(http.HandlerFunc(a.handleManagedDisable)))
 	mux.Handle("GET /api/users", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleListUsers))))
 	mux.Handle("POST /api/users", a.requireAdmin(http.HandlerFunc(a.handleCreateUser)))
 	mux.Handle("PUT /api/users/{name}", a.requireAdmin(http.HandlerFunc(a.handleUpdateUser)))

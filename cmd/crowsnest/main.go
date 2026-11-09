@@ -25,6 +25,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/idleshutdown"
+	"github.com/fiddler110/crowsnest/internal/managed"
 	"github.com/fiddler110/crowsnest/internal/modules"
 	"github.com/fiddler110/crowsnest/internal/nightshutdown"
 	"github.com/fiddler110/crowsnest/internal/notify"
@@ -231,6 +232,18 @@ func serve() error {
 		HostPaths:   cfg.Server.HostDiskPaths,
 		Backups:     backups,
 		Templates:   templates,
+	}
+
+	if cfg.Managed.Dir != "" {
+		mgr := &managed.Manager{
+			Dir: cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, Platform: modules.PlatformFrom(cfg.Platform),
+			Modules: mods, Config: cfg, Docker: docker, Wire: docker, Registry: registry,
+		}
+		if err := mgr.Restore(ctx); err != nil {
+			return fmt.Errorf("managed games: %w", err)
+		}
+		app.Managed = mgr
+		log.Printf("managed games: enabled from the dashboard, state in %s, policy %s", cfg.Managed.Dir, cfg.Managed.PolicyFile)
 	}
 
 	var discordNotifier *notify.Discord

@@ -47,6 +47,20 @@ func (s *Set) Manifest(id string) (*Manifest, bool) {
 	return m, ok
 }
 
+// Manifests returns every module that has a manifest, ordered by id.
+func (s *Set) Manifests() []*Manifest {
+	ids := make([]string, 0, len(s.manifests))
+	for id := range s.manifests {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]*Manifest, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, s.manifests[id])
+	}
+	return out
+}
+
 // NewSet returns an empty Set.
 func NewSet() *Set { return &Set{wire: map[string]WireFunc{}, manifests: map[string]*Manifest{}} }
 
@@ -77,25 +91,33 @@ func (s *Set) IDs() []string {
 // ID (a game with no module keeps the baseline: docker-state status, unknown
 // player count). The returned Runners belong to the caller to start.
 func (s *Set) Build(cfg *config.Config, docker *dockerctl.Client) ([]games.GameDef, []Runner) {
-	defs := games.FromConfig(cfg.Games, docker)
+	var defs []games.GameDef
 	var runners []Runner
-	for i := range defs {
-		// cfg.Games[i] lines up 1:1 with defs[i]: FromConfig builds defs by
-		// iterating cfg.Games in order without filtering or reordering.
-		id := defs[i].ID
-		if m := cfg.Games[i].Module; m != "" {
-			id = m
-		}
-		fn, ok := s.wire[id]
-		if !ok {
-			if cfg.Games[i].Module != "" {
-				log.Printf("modules: game %q asks for module %q, which is not installed; keeping the baseline", defs[i].ID, id)
-			}
-			continue
-		}
-		runners = append(runners, fn(&defs[i], Env{Docker: docker, Config: cfg.Games[i]})...)
+	for _, g := range cfg.Games {
+		d, r := s.BuildOne(cfg, g, docker)
+		defs = append(defs, d)
+		runners = append(runners, r...)
 	}
 	return defs, runners
+}
+
+// BuildOne wires a single game: its baseline GameDef plus the module for its
+// id (or its module: key), if any. cfg supplies the rest of the configuration
+// a module may need.
+func (s *Set) BuildOne(cfg *config.Config, g config.GameConfig, docker *dockerctl.Client) (games.GameDef, []Runner) {
+	def := games.FromConfig([]config.GameConfig{g}, docker)[0]
+	id := def.ID
+	if g.Module != "" {
+		id = g.Module
+	}
+	fn, ok := s.wire[id]
+	if !ok {
+		if g.Module != "" {
+			log.Printf("modules: game %q asks for module %q, which is not installed; keeping the baseline", def.ID, id)
+		}
+		return def, nil
+	}
+	return def, fn(&def, Env{Docker: docker, Config: g})
 }
 
 // ForConfig returns the module set for a configuration: the bundled modules

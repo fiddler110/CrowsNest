@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/config"
+	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"gopkg.in/yaml.v3"
 )
 
@@ -106,6 +107,14 @@ type Rendered struct {
 	// EnvVars are the .env variables the service reads, name -> default
 	// ("" for secrets and unset values), in a stable order.
 	EnvVars []EnvVar
+
+	// What the dashboard needs to create the container itself: literal bind
+	// mounts (host:container), memory and stop grace.
+	binds     []string
+	memory    string
+	stopGrace time.Duration
+	ports     []renderPort
+	hostIP    string
 }
 
 type EnvVar struct {
@@ -174,6 +183,7 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 	if err != nil {
 		return nil, err
 	}
+	r.memory, r.stopGrace, r.ports, r.hostIP = rt.Memory, rt.StopGrace, ports, hostIP
 	for _, pt := range ports {
 		svc.Ports = append(svc.Ports, fmt.Sprintf("%s:%d:%d/%s", hostIP, pt.host, pt.container, pt.proto))
 		scope.Ports = append(scope.Ports, GuardPort{HostIP: hostIP, HostPort: strconv.Itoa(pt.host),
@@ -190,6 +200,7 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 			scopeHost = strings.TrimRight(p.HostGamesRoot, "/") + strings.TrimPrefix(host, strings.TrimRight(p.GamesRoot, "/"))
 		}
 		scope.Binds = append(scope.Binds, scopeHost)
+		r.binds = append(r.binds, scopeHost+":"+d.Path)
 	}
 
 	seen := map[string]bool{}
@@ -311,4 +322,75 @@ func ScopesJSON(rs []*Rendered) ([]byte, error) {
 		scopes = append(scopes, r.Scope)
 	}
 	return json.MarshalIndent(scopes, "", "  ")
+}
+
+// Spec is the container the dashboard creates for this game. lookup supplies
+// the value of each compose variable the service reads (the panel's secret
+// store, then its own environment); a missing one falls back to the default
+// written in the service, or empty.
+func (r *Rendered) Spec(lookup func(name string) (string, bool)) (dockerctl.CreateSpec, error) {
+	spec := dockerctl.CreateSpec{
+		Name: r.Service.ContainerName, Image: r.Service.Image, Labels: r.Service.Labels,
+		Network: r.Service.Networks[0], StopTimeout: int(r.stopGrace.Seconds()), Binds: r.binds,
+	}
+	if spec.Name == "" {
+		spec.Name = r.ID
+	}
+	for _, e := range r.Service.Environment {
+		spec.Env = append(spec.Env, expandCompose(e, lookup))
+	}
+	for _, p := range r.ports {
+		spec.Ports = append(spec.Ports, dockerctl.PortBinding{HostIP: r.hostIP, HostPort: p.host, ContainerPort: p.container, Proto: p.proto})
+	}
+	if r.memory != "" {
+		n, err := parseSize(r.memory)
+		if err != nil {
+			return spec, err
+		}
+		spec.MemoryBytes = n
+	}
+	return spec, nil
+}
+
+// expandCompose expands ${NAME}, ${NAME:-default} and $$ the way compose does.
+func expandCompose(s string, lookup func(string) (string, bool)) string {
+	var out strings.Builder
+	for i := 0; i < len(s); i++ {
+		switch {
+		case s[i] == '$' && i+1 < len(s) && s[i+1] == '$':
+			out.WriteByte('$')
+			i++
+		case s[i] == '$' && i+1 < len(s) && s[i+1] == '{':
+			end := strings.IndexByte(s[i:], '}')
+			if end < 0 {
+				out.WriteString(s[i:])
+				return out.String()
+			}
+			name, def, _ := strings.Cut(s[i+2:i+end], ":-")
+			if v, ok := lookup(name); ok && v != "" {
+				out.WriteString(v)
+			} else {
+				out.WriteString(strings.ReplaceAll(def, "$$", "$"))
+			}
+			i += end
+		default:
+			out.WriteByte(s[i])
+		}
+	}
+	return out.String()
+}
+
+func parseSize(s string) (int64, error) {
+	t := strings.ToLower(strings.TrimSpace(s))
+	mult := int64(1)
+	for suffix, m := range map[string]int64{"k": 1 << 10, "m": 1 << 20, "g": 1 << 30} {
+		if strings.HasSuffix(t, suffix) {
+			mult, t = m, strings.TrimSuffix(t, suffix)
+		}
+	}
+	n, err := strconv.ParseInt(t, 10, 64)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("runtime.memory %q must look like 512m or 10g", s)
+	}
+	return n * mult, nil
 }

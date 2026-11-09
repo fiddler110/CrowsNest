@@ -30,6 +30,7 @@ const (
 	KindLeave       = "leave"
 	KindSettings    = "settings"
 	KindUsers       = "users"
+	KindGames       = "games"
 	KindBackup      = "backup"
 	KindConsole     = "console"
 )

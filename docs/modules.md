@@ -149,6 +149,45 @@ max_scopes: 32
   so policy prefixes are written that way.
 - `Policy.Admit` is the same check the dashboard will use to preview "does this fit?" before enabling a game.
 
+## Enabling games from the dashboard (API)
+
+Turn it on in `config.yaml`:
+
+```yaml
+platform: {games_root: /srv/games, host_ip: 10.0.0.2}
+managed:
+  dir: /app/data/managed            # the panel writes here; mount it read-only into the guard
+  policy_file: /etc/crowsnest/policy.yaml   # read-only for the panel as well
+```
+
+and run the guard with `GUARD_SCOPES_FILE=<dir>/scopes.json` (mount the **directory**, files are replaced by rename)
+and `GUARD_POLICY=<policy file>`. A config with no `games:` is valid when `managed.dir` is set.
+
+Admin-only endpoints (the page that uses them is step 4):
+
+| Request | What it does |
+|---|---|
+| `GET /api/managed/modules` | modules that can be enabled, with their options (secret ones flagged) |
+| `GET /api/managed/games` | dashboard-enabled games and their state: `installing`, `ready`, `failed` |
+| `POST /api/managed/preview` | dry run: the rendered compose service, the guard scope, and whether it fits the policy (and why not) |
+| `POST /api/managed/games` | enable: `{id, module, display_name, options, secrets}` |
+| `DELETE /api/managed/games/{id}` | disable a **stopped** game: removes the container, scope and secrets; the data folder is kept |
+
+How enabling works: validate against the module (unknown options, secrets sent as plain options, missing required
+values and control characters are refused) → render → check against the policy (refused if outside it) → write the
+secrets and state → write `scopes.json` → pull the image and create the container **through the guard** (retrying a
+403 for up to 30s while the guard picks up the new scope) → the game appears on the dashboard. This is idempotent,
+so a game that did not finish installing is finished on the next start.
+
+- The panel creates containers itself over the Docker API: no compose CLI is involved. Games from `config.yaml`
+  keep working as before and win any id clash.
+- Secrets are kept in `secrets.json` (mode 0600) in the panel's state directory and are never in `games.json`,
+  `scopes.json`, a preview or a list. A module option such as `rcon_password_env` next to a secret `rcon_password`
+  is pointed at the stored value automatically.
+- The panel cannot widen what it may do: the guard re-checks every scope against the policy, so a panel that wrote an
+  out-of-policy scope would simply not have it loaded.
+- Not yet: editing an enabled game's options (disable and enable again), per-game image updates, and the UI.
+
 ## Where this is heading: enable games from the dashboard
 
 Agreed direction: the dashboard renders and **applies** a game itself, but only inside a read-only policy file the
@@ -158,8 +197,7 @@ for the operator to approve outside the dashboard. Steps, each shippable on its 
 1. Runtime sections and `crowsnest render` (done, above).
 2. `policy.yaml` envelope plus a check that a rendered game fits it; the guard reads managed scopes from a mounted
    file and reloads on change or `SIGHUP` (done, below).
-3. The dashboard writes the game's entry and generated files (admin only), creates `.env` entries for secrets in a
-   panel-only file, and reloads the guard.
+3. The dashboard enables, installs and removes games itself, admin only (done, below).
 4. A Games page: pick a module, fill in its options, see the rendered compose and what falls outside the policy,
    enable.
 5. Remote module sources with signature checks.
