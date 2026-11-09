@@ -1,0 +1,23 @@
+api_version: 1
+id: valheim
+name: Valheim
+# Markers verified 2026-11-07 against a real player session
+# (internal/logtrack/testdata/valheim_session.log).
+status:
+  ready_log: 'Loading: Done\.|Opened Steam server'
+players:
+  type: log_markers
+  join: 'Got handshake from client (\S+)'
+  leave: 'Closing socket (\S+)'
+  world: 'Load world:\s*(.+?)\s*$'
+startup_progress:
+  match: 'Update state \(0x61\) downloading, progress: (\d+(?:\.\d+)?)'
+  from: 10
+  to: 70
+  label: 'Downloading server files ({pct}%)'
+startup:
+  - {match: 'Downloading/updating/validating Valheim server', pct: 5, label: Checking for updates}
+  - {match: 'Zonesystem Awake', pct: 72, label: Starting server}
+  - {match: 'Load world:', pct: 80, label: Loading world}
+  - {match: 'Loading: Generating locations', pct: 88, label: Generating world}
+  - {match: 'Loading: Done\.|Opened Steam server', pct: 100, label: Server ready}

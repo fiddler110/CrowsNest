@@ -6,7 +6,6 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/games/palworld"
-	"github.com/fiddler110/crowsnest/internal/games/valheim"
 	"github.com/fiddler110/crowsnest/internal/games/windrose"
 )
 
@@ -17,7 +16,7 @@ func Bundled() *Set {
 	s := NewSet()
 	s.Register("windrose", wireWindrose)
 	s.Register("palworld", wirePalworld)
-	s.Register("valheim", wireValheim)
+	registerEmbedded(s) // valheim
 	return s
 }
 
@@ -73,18 +72,4 @@ func wirePalworld(def *games.GameDef, env Env) []Runner {
 	// Bringing it back up seconds after a stop segfaulted it once.
 	def.RestartCooldown = 30 * time.Second
 	return nil
-}
-
-func wireValheim(def *games.GameDef, env Env) []Runner {
-	// No first-party API: player count comes from tailing the container's own
-	// log output for join/leave markers — docs/implementation-plan.md phase
-	// 10. The same tail also reports readiness (starting vs. online) and
-	// drives the progress bar; both verified against a real container
-	// (2026-09-30), joins/leaves not yet with a real player.
-	tracker := valheim.NewTracker(env.Docker, def.ContainerName)
-	def.Players = tracker
-	def.Info = tracker
-	def.Status = tracker
-	def.Startup = valheim.Startup
-	return []Runner{tracker}
 }

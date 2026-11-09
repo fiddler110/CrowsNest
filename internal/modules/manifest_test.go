@@ -115,3 +115,32 @@ func TestProbeWire(t *testing.T) {
 		}
 	}
 }
+
+func TestValheimStartup_RealLogLines(t *testing.T) {
+	var def games.GameDef
+	Bundled().wire["valheim"](&def, Env{})
+	pct := func(line string) int {
+		if p, _, ok := def.Startup.Parse(line); ok {
+			return p
+		}
+		for _, m := range def.Startup.Milestones {
+			if m.Pattern.MatchString(line) {
+				return m.Pct
+			}
+		}
+		return -1
+	}
+	for line, want := range map[string]int{
+		"supervisord: valheim-updater INFO - Downloading/updating/validating Valheim server from Steam":            5,
+		"supervisord: valheim-updater  Update state (0x61) downloading, progress: 50.00 (1093324632 / 2186649264)": 40,
+		"supervisord: valheim-server 09/30/2026 09:46:41: Zonesystem Awake 5366":                                   72,
+		"supervisord: valheim-server 09/30/2026 09:46:44: Load world: TestWorld (TestWorld)":                       80,
+		"supervisord: valheim-server 09/30/2026 09:46:49: Loading: Generating locations":                           88,
+		"supervisord: valheim-server 09/30/2026 09:47:12: Loading: Done. Total seconds sinze ZNet start: 27.97":    100,
+		"supervisord: valheim-server The referenced script on this Behaviour is missing!":                          -1,
+	} {
+		if got := pct(line); got != want {
+			t.Errorf("pct(%q) = %d, want %d", line, got, want)
+		}
+	}
+}

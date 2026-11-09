@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -63,6 +65,19 @@ type Manifest struct {
 	} `yaml:"players"`
 
 	Startup []StartupStep `yaml:"startup"`
+
+	// StartupProgress reads a percentage out of a log line (e.g. SteamCMD's
+	// "Update state (0x61) downloading, progress: 42.5") and maps 0-100 onto
+	// From..To of the startup bar. Label may contain {pct}.
+	StartupProgress *StartupProgress `yaml:"startup_progress"`
+}
+
+// StartupProgress is a percentage parsed from the log and scaled onto a range.
+type StartupProgress struct {
+	Match string `yaml:"match"` // regexp, group 1 = number
+	From  int    `yaml:"from"`
+	To    int    `yaml:"to"`
+	Label string `yaml:"label"`
 }
 
 // StartupStep maps a log pattern to a startup progress percentage.
@@ -145,6 +160,15 @@ func (m *Manifest) validate() error {
 			return fmt.Errorf("module %q: players.pattern invalid: %v", m.ID, err)
 		}
 	}
+	if sp := m.StartupProgress; sp != nil {
+		c, err := regexp.Compile(sp.Match)
+		if err != nil || sp.Match == "" || c.NumSubexp() < 1 {
+			return fmt.Errorf("module %q: startup_progress.match must be a regexp with a capture group", m.ID)
+		}
+		if sp.From < 0 || sp.To > 100 || sp.From >= sp.To {
+			return fmt.Errorf("module %q: startup_progress needs 0 <= from < to <= 100", m.ID)
+		}
+	}
 	for i, s := range m.Startup {
 		if _, err := regexp.Compile(s.Match); err != nil || s.Match == "" {
 			return fmt.Errorf("module %q: startup[%d].match invalid: %v", m.ID, i, err)
@@ -191,8 +215,22 @@ func (m *Manifest) Wire() WireFunc {
 		if m.Runtime.RestartCooldown > 0 {
 			def.RestartCooldown = m.Runtime.RestartCooldown
 		}
-		if len(m.Startup) > 0 {
+		if len(m.Startup) > 0 || m.StartupProgress != nil {
 			sm := &games.StartupMatcher{}
+			if sp := m.StartupProgress; sp != nil {
+				re := regexp.MustCompile(sp.Match)
+				sm.Parse = func(line string) (int, string, bool) {
+					g := re.FindStringSubmatch(line)
+					if g == nil {
+						return 0, "", false
+					}
+					v, err := strconv.ParseFloat(g[1], 64)
+					if err != nil {
+						return 0, "", false
+					}
+					return sp.From + int(v*float64(sp.To-sp.From)/100), strings.ReplaceAll(sp.Label, "{pct}", fmt.Sprintf("%.0f", v)), true
+				}
+			}
 			for _, s := range m.Startup {
 				sm.Milestones = append(sm.Milestones, games.Milestone{
 					Pattern: regexp.MustCompile(s.Match), Pct: s.Pct, Label: s.Label,
