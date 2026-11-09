@@ -712,7 +712,7 @@ func (m *Manager) Restore(ctx context.Context) error {
 // the game. The commands come from the installed modules, never from the saved
 // state, so what the panel writes there can choose a game but not a command.
 func ExecRules(dir string, mods *modules.Set) ([]execguard.Rule, error) {
-	b, err := os.ReadFile(filepath.Join(dir, "games.json"))
+	b, err := os.ReadFile(filepath.Join(dir, "games.json")) // #nosec G304 -- dir is the operator-set managed.dir; the file name is fixed
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
