@@ -1,8 +1,136 @@
-# CrowsNest — Roadmap / Hit List
+# CrowsNest — Roadmap
 
-Findings from a full-repo review (2026-09-12), covering the whole app —
-auth, web, dockerctl, per-game integrations, and deploy story. Items are
-grouped by priority, not phase; check them off as they land.
+Single source of truth for what is done and what is left. The design detail
+behind the modular-games rework lives in
+[`docs/modularization-plan.md`](docs/modularization-plan.md); everything that
+is *work to do* is tracked here. Check items off as they land and move them
+into **Done** with a date.
+
+Origin: a full-repo review (2026-09-12), the modular-games design review and
+the accounts/settings review (2026-11-08/09).
+
+## Active roadmap
+
+Three tracks that share one path: **A. Modular games** (the phased rework),
+**B. Accounts and settings** (largely rides on the modules), and **C. Verify
+and harden** (open checks against real servers). Phase numbers match
+`docs/modularization-plan.md`. Phase 0 is done (see Done).
+
+### A. Modular games
+
+Goal: add a game by dropping in a `module.yaml` directory with no core change;
+guard scopes, exec rules, compose fragment, secrets and settings form are all
+derived from it.
+
+- [x] **Phase 1: manifest and loader (done 2026-11-09).** `module.yaml` v1 and a loader that
+  produces `GameDef`; replace the `buildGameDefs` switch
+  (done in step 1, now `internal/modules`). Shared log-follow engine (replaces the
+  duplicate Valheim/Windrose trackers), `http_json` and `source_rcon` probes.
+  Legacy `config.yaml` games block still works, mapped to built-in modules.
+  Done when the golden tests are unchanged and `cmd/crowsnest` names no game.
+  - [x] Step 1 (2026-11-09): `internal/modules` registry; Palworld, Valheim
+    and Windrose wiring moved into `modules.Bundled()`; `cmd/crowsnest` names
+    no game; goldens unchanged.
+  - [x] Step 2 (2026-11-09): `module.yaml` v1 schema + strict loader
+    (`modules.Parse`, `Set.LoadDir`): identity, restart cooldown, startup
+    milestones; unknown keys and unsupported probe types are refused. Not yet
+    called from `main` (needs a modules-dir setting; do with step 4).
+  - [x] Step 3 (2026-11-09): shared log-follow engine `internal/logtrack`
+    replaces the duplicate Valheim/Windrose trackers (goldens differ only in
+    the recorded type name); `internal/probes` adds `http_json` and
+    `source_rcon`; all three are usable from `module.yaml` (`players.type`).
+    Valheim join/leave markers now verified against a real session
+    (2026-11-07 logs, anonymised fixture in `internal/logtrack/testdata`).
+  - [x] Step 4 (2026-11-09): `modules_dir` in `config.yaml`; `main` builds the
+    set with `modules.ForConfig` (bundled + local `<id>/module.yaml`). The
+    legacy games block is unchanged and still selects modules by game id, so
+    bundled games and manifest games share one path. A local module may not
+    shadow a bundled id; unused local modules log a warning. A manifest game
+    still needs a `config.yaml` entry for its container/compose until Phase 2.
+- [ ] **Phase 2: dogfood.** Re-express Valheim, Palworld, then Windrose+ as
+  bundled modules; adapter-sidecar contract v0 (Windrose+ first); remove the
+  typed per-game fields from `config`. Done when a fourth game (Minecraft or a
+  Source game) is added with a manifest only, in under 30 minutes.
+- [ ] **Phase 3: derived security.** Generate guard scopes, execguard rules and
+  compose fragments from manifests; per-module secrets (the panel stops
+  reading every game's `.env` values); guard reads a scopes file and reloads;
+  `policy.yaml` envelope, privilege approval (`crowsnest module apply`) and a
+  lock file; Go fuzz targets for the guard's path/body parsing; pin game
+  images by digest or version range. Needs its own security review.
+- [ ] **Phase 4: state hub.** One poller per game on an adaptive cadence, one
+  SSE stream to browsers, memory-budget admission instead of
+  `max_active_games` as a RAM proxy.
+- [ ] **Phase 5: modules in the UI.** Install, enable, configure and remove
+  modules and profiles from the dashboard (inside the policy envelope);
+  signed remote sources. Done when a profile is created and started with no
+  file edits.
+- [ ] **Phase 6 (optional):** drop the docker CLI and compose from the image
+  (create containers through the Engine API behind the guard); also removes
+  the compose-from-source Dockerfile stage and its x/net CVE churn.
+
+### B. Accounts and settings
+
+Today: Google sign-in with an allowlist, admin/player roles looked up per
+request, user create/update/delete (`/api/users`), per-user session
+revocation, and global runtime settings (idle, night, max games, auto-update,
+raw console) in `settings.json`. Expansion, tied to the phase it depends on:
+
+- [ ] **First-run setup in the UI** (no `admin:admin`: CrowsNest is internet
+  facing). Independent of the module work; can ship any time. Includes
+  retiring the unused password hashes in `users.env`.
+- [ ] **Per-game settings** (idle timeout, restart cooldown, max players,
+  night opt-out per game, instead of global only). Comes from manifest
+  `params` and `runtime`: Phase 1-2, form in Phase 5.
+- [ ] **Per-user, per-game permissions** (a friend can start Palworld but not
+  see Windrose). Needs stable game/profile ids: Phase 2, UI in Phase 5.
+- [ ] **Profile page**: display name, "my sessions", sign out of all
+  devices. Needs a **server-side session store** (today revocation is one
+  `ValidAfter` timestamp per user) to offer "revoke this device".
+- [ ] **Admin audit view**: filterable UI over the existing activity log
+  (`/api/activity`, 180-day retention).
+- [ ] **Per-user Discord notices** (opt in per game).
+- [ ] **Scheduled starts/stops** (deferred from the 2026-11-07 review) and
+  **Discord slash commands** (deferred). Land after the Phase 4 state hub.
+- [ ] **Whitelist, ban and kick actions**, declared per module and run via
+  RCON or the adapter (Phase 2+).
+- [ ] **Backup retention, restore button and offsite copy** (restic/rclone).
+  Backups and the admin panel exist; restore and retention do not.
+- [ ] **"Update available" and one-click rollback** to the last-known-good
+  image (needs the digest pinning from Phase 3).
+- [ ] **Crash-loop detection** with a Discord/ntfy alert; **Prometheus
+  `/metrics`**.
+- [ ] **Mod and config file editing**, files declared in the manifest.
+
+### C. Verify and harden (against real servers)
+
+- [ ] **Real player joins** for Valheim (`Got handshake from client` /
+  `Closing socket` markers are unverified) and Palworld; record the logs as
+  fixtures for the Phase 1 loader.
+- [ ] **A real Start→Switch between two games** from the browser UI.
+- [ ] **Windrose invite-code join** from the LAN and from outside, on the
+  macvlan setup (the server itself runs and Windrose+ answers).
+- [ ] **Idle/night auto-stop and Discord notifications** against real
+  servers (still untested); check firewall for `:5001`/game ports.
+- [ ] **Palworld `backup` command, the exec path through the guard and the
+  console replies** against real containers (flagged untested 2026-11-07).
+- [ ] **Show Valheim/Windrose join codes on the game cards** by reading them
+  from the server logs (follow-up to `docs/connecting.md`).
+
+### Considered, not doing
+
+- Go `plugin` package or in-process plugins: they would run inside the
+  panel's trust boundary. WASM (wazero) stays an option once the adapter
+  contract is stable.
+
+### Resolved from the old "Next up" list (2026-09-30)
+
+- Multi-game behind a scoped Docker API guard: done by the Go guard
+  (2026-11-08, see Done).
+- Migration from the Python version: done; production runs the Go image and
+  the old tree is archived.
+- Verify Windrose in the new stack: running in production with Windrose+
+  player counts verified (2026-11-08); only the invite-code join remains (C).
+
 
 ## Done
 
@@ -293,54 +421,3 @@ grouped by priority, not phase; check them off as they land.
   Added a `gofmt -l .` step ahead of `go vet` that fails the job and lists
   the offending files if any exist.
   Files: `.github/workflows/ci.yml`.
-
-## High priority
-
-(none currently — see Done)
-
-## Medium priority
-
-(none currently — see Done)
-
-## Low priority / hygiene
-
-(none currently — see Done)
-
-## Considered, not doing
-
-(none currently)
-
-## Next up (picked up from the 2026-09-30 session)
-
-- [ ] **Verify Windrose end-to-end in the new stack.** A three-game test
-  stack is built, but the `indifferentbroccoli/windrose-server-docker` image
-  was never pulled there, so Start timed out at the 120s `docker compose up`
-  limit. Pull the image first, then check starting→online, logs, stats, and
-  the Windrose+ player count/info panel (needs the RCON password from
-  `windrose_plus.json`).
-- [ ] **Migration from the Python version.** That stack uses
-  `seccomp:unconfined` and `network_mode: host` for Windrose, a
-  docker-socket-proxy and `127.0.0.1:5000`. The compose example now carries
-  `seccomp:unconfined`; the rest is config.
-- [ ] **Real player joins** for Valheim (join/leave log markers) and
-  Palworld, plus a real Start→Switch between two games from the browser UI.
-- [ ] **Multi-game behind a scoped Docker API guard.** A deployment can put
-  CrowsNest behind a Docker API filter that allows only one container name
-  and denies network create, container delete and rename. Running all three
-  games that way needs the guard to accept a list of scopes (name →
-  images/binds/netmodes/secopts). Windrose also needs `network_mode: host` +
-  `seccomp:unconfined` in its scope, and Valheim a bind under its own dir.
-- [ ] **Drop the compose-from-source Dockerfile stage** once a docker/compose
-  release ships `golang.org/x/net` >= v0.62.0.
-- [ ] Idle/night auto-stop and Discord notifications are still untested
-  against real servers; firewall for `:5001`/game ports not checked.
-- [ ] **Player access without router port forwards**, documented in
-  [`docs/connecting.md`](docs/connecting.md): Palworld over a private overlay
-  network (e.g. Tailscale), Valheim via `-crossplay` join codes, Windrose via
-  its invite code. Follow-up idea: read the Valheim/Windrose codes out of the
-  server logs and show them on the game cards.
-
-## Tracking, not new — already flagged in `docs/implementation-plan.md`
-
-- [ ] Valheim's join/leave log markers (`Got handshake from client` /
-  `Closing socket`) are still unverified with a real player.
