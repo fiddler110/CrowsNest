@@ -1,0 +1,33 @@
+api_version: 1
+id: minecraft
+name: Minecraft
+# Java edition, itzg/minecraft-server (vanilla, Paper, Fabric and Forge print the
+# same vanilla server lines). Everything here is declarative: no Go code.
+# Markers are the standard server log lines; see
+# internal/modules/testdata/minecraft_session.log. Chat lines look like
+# "<Name> text" and never match because the name must follow "INFO]: " directly.
+#
+# Optional raw console: the image enables RCON (Source protocol) by default.
+# Set rcon_addr (host:port, e.g. minecraft:25575) and rcon_password_env to use it.
+
+options:
+  - {key: rcon_addr, label: "RCON host:port (enables the raw console; optional)"}
+  - {key: rcon_password_env, label: "Env var holding the RCON password"}
+
+status:
+  ready_log: 'Done \([0-9.]+s\)! For help, type "help"'
+players:
+  type: log_markers
+  join: 'INFO\]: (\S+) joined the game\s*$'
+  leave: 'INFO\]: (\S+) left the game\s*$'
+  world: 'Preparing level "([^"]+)"'
+
+rcon:
+  addr: ${rcon_addr}
+  password_env: ${rcon_password_env}
+
+startup:
+  - {match: 'Starting minecraft server version', pct: 30, label: Starting server}
+  - {match: 'Preparing level', pct: 60, label: Loading world}
+  - {match: 'Preparing spawn area', pct: 85, label: Preparing spawn area}
+  - {match: 'Done \([0-9.]+s\)! For help', pct: 100, label: Server ready}

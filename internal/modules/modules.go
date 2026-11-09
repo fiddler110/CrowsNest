@@ -10,6 +10,7 @@ package modules
 import (
 	"context"
 	"fmt"
+	"log"
 	"sort"
 
 	"github.com/fiddler110/crowsnest/internal/config"
@@ -74,8 +75,15 @@ func (s *Set) Build(cfg *config.Config, docker *dockerctl.Client) ([]games.GameD
 	for i := range defs {
 		// cfg.Games[i] lines up 1:1 with defs[i]: FromConfig builds defs by
 		// iterating cfg.Games in order without filtering or reordering.
-		fn, ok := s.wire[defs[i].ID]
+		id := defs[i].ID
+		if m := cfg.Games[i].Module; m != "" {
+			id = m
+		}
+		fn, ok := s.wire[id]
 		if !ok {
+			if cfg.Games[i].Module != "" {
+				log.Printf("modules: game %q asks for module %q, which is not installed; keeping the baseline", defs[i].ID, id)
+			}
 			continue
 		}
 		runners = append(runners, fn(&defs[i], Env{Docker: docker, Config: cfg.Games[i]})...)
@@ -102,6 +110,9 @@ func ForConfig(cfg *config.Config, warn func(format string, args ...any)) (*Set,
 	used := map[string]bool{}
 	for _, g := range cfg.Games {
 		used[g.ID] = true
+		if g.Module != "" {
+			used[g.Module] = true
+		}
 	}
 	for _, id := range s.IDs() {
 		if !bundled[id] && !used[id] && warn != nil {

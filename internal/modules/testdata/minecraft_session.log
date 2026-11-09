@@ -1,0 +1,17 @@
+[17:02:11] [main/INFO]: Environment: Environment[sessionHost=https://sessionserver.mojang.com, servicesHost=https://api.minecraftservices.com, name=PROD]
+[17:02:14] [ServerMain/INFO]: Starting minecraft server version 1.21.4
+[17:02:15] [Server thread/INFO]: Loading properties
+[17:02:16] [Server thread/INFO]: Preparing level "world"
+[17:02:19] [Server thread/INFO]: Preparing spawn area: 0%
+[17:02:20] [Server thread/INFO]: Preparing spawn area: 97%
+[17:02:20] [Server thread/INFO]: Done (5.912s)! For help, type "help"
+[17:10:03] [User Authenticator #1/INFO]: UUID of player Alex is 00000000-0000-0000-0000-000000000001
+[17:10:04] [Server thread/INFO]: Alex[/10.0.0.50:51234] logged in with entity id 41 at (12.5, 64.0, -3.5)
+[17:10:04] [Server thread/INFO]: Alex joined the game
+[17:11:30] [Server thread/INFO]: <Alex> bob joined the game
+[17:12:00] [User Authenticator #2/INFO]: UUID of player Steve is 00000000-0000-0000-0000-000000000002
+[17:12:01] [Server thread/INFO]: Steve joined the game
+[17:20:45] [Server thread/INFO]: Alex lost connection: Disconnected
+[17:20:45] [Server thread/INFO]: Alex left the game
+[17:25:00] [Server thread/INFO]: Steve lost connection: Timed out
+[17:25:00] [Server thread/INFO]: Steve left the game

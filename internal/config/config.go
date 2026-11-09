@@ -264,6 +264,12 @@ type GameConfig struct {
 	// same as every other game, so long as night_shutdown.enabled is true.
 	NightShutdown *bool `yaml:"night_shutdown,omitempty"`
 
+	// Module names the module that drives this game when it is not the game's
+	// own id. One module can serve a family of games: several Source-engine
+	// games set "module: source" and differ only in their options. Empty
+	// means the module whose id equals this game's id (if any).
+	Module string `yaml:"module,omitempty"`
+
 	// Options are this game's module settings; the module's manifest
 	// declares which keys it understands (modules/<id>/module.yaml
 	// "options"). Values for env-var options name the variable, never the

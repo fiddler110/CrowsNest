@@ -1,0 +1,24 @@
+== tf2 ==
+hostname: Friends TF2
+version : 8873616/24 8873616 secure
+udp/ip  : 172.18.0.5:27015  (public ip: 203.0.113.9)
+map     : cp_badlands at: 0 x, 0 y, 0 z
+players : 2 humans, 1 bots (24 max)
+# userid name                uniqueid            connected ping loss state
+#      2 "Alex"               [U:1:11111111]      01:23       45    0 active
+#      3 "Sam Smith"          [U:1:22222222]      00:42       60    0 active
+#      4 "Scout Bot"          BOT                                   active
+== l4d2 ==
+hostname: Friends L4D2
+players : 1 humans, 0 bots (4 max)
+# userid name uniqueid connected ping loss state rate adr
+# 2 1 "Alex" STEAM_1:0:111 01:23 45 0 active 30000 10.0.0.5:27005
+== cs2 ==
+---------------------------------
+hostname: Friends CS2
+players : 1 humans, 1 bots (0 max) (not hibernating) (unreserved)
+---------players--------
+  id     time ping loss      state   rate adr name
+65280    01:23   20    0     active 786432 10.0.0.5:27005 'Alex'
+    1      BOT    0    0     active      0 'Bot Mike'
+#end

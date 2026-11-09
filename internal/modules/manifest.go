@@ -330,16 +330,20 @@ func (m *Manifest) Wire() WireFunc {
 				if len(m.PreStop) > 0 {
 					def.PreStop = api
 				}
-				if addr := opts.sub(m.RCON.Addr); addr != "" {
-					def.RawConsole = &probes.RawRCON{Addr: addr, Password: os.Getenv(opts.sub(m.RCON.PasswordEnv))}
-				}
 			}
+		}
+		if addr := opts.sub(m.RCON.Addr); addr != "" {
+			def.RawConsole = &probes.RawRCON{Addr: addr, Password: os.Getenv(opts.sub(m.RCON.PasswordEnv))}
 		}
 		switch m.Players.Type {
 		case "source_rcon":
-			def.Players = &probes.SourceRCON{
-				Addr: opts.sub(m.Players.Addr), Password: os.Getenv(opts.sub(m.Players.PasswordEnv)),
-				Command: m.Players.Command, Pattern: regexp.MustCompile(m.Players.Pattern),
+			if addr := opts.sub(m.Players.Addr); addr == "" {
+				log.Printf("%s: players.addr is empty (option not set in config.yaml); player count stays unknown", m.ID)
+			} else {
+				def.Players = &probes.SourceRCON{
+					Addr: addr, Password: os.Getenv(opts.sub(m.Players.PasswordEnv)),
+					Command: m.Players.Command, Pattern: regexp.MustCompile(m.Players.Pattern),
+				}
 			}
 		}
 		if m.Runtime.RestartCooldown > 0 {
