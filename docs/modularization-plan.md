@@ -4,7 +4,7 @@ Goal: add a game server to CrowsNest by dropping in a module (a directory), with
 and with the Docker guard, exec allowlist, secrets and UI form all derived from that one module.
 
 Status: **Phase 0 done** (golden tests, `buildGameDefs` seam, PR #22). **Phase 1 done** (module registry,
-manifest loader, shared log engine and probes, `modules_dir`). **Phase 2 in progress**: Valheim and Palworld are bundled `module.yaml` files; Windrose+ (adapter) and the typed-config removal remain. Phases 3-6 are not started.
+manifest loader, shared log engine and probes, `modules_dir`). **Phase 2 in progress**: Valheim, Palworld and Windrose are bundled `module.yaml` files and the typed config blocks are folded into `options`; the optional Windrose+ info adapter and the fourth-game test remain. Phases 3-6 are not started.
 Progress and the related accounts/settings and verification work are tracked in [`roadmap.md`](../roadmap.md);
 this file holds the design only.
 This document is the plan referenced from `cmd/crowsnest/gamewiring.go` and `cmd/crowsnest/golden_test.go`.
@@ -142,6 +142,12 @@ block selects them by id. Until Phase 2 a manifest game still needs its containe
   `startup_progress` (a percentage read from the log and scaled onto the startup bar).
 - A game's `config.yaml` entry carries its settings under `options:`. The old `windrose:` / `palworld:` blocks are
   deprecated and folded into `options` at load time (explicit options win), so existing files keep working.
+- Windrose: status, startup and players come from `log_markers` on the game's own log (join = `LogNet: Login request`,
+  leave = `UNetDriver::RemoveClientConnection`, both keyed by `BLPlayerSessionId`; fixture
+  `internal/modules/testdata/windrose_session.log`). Windrose+ is optional and only feeds the info panel through a Go
+  extension (`extensions` in `embed.go`). While the markers are new, `comparingCounter` checks the log count against
+  Windrose+ and logs any disagreement; `players_source: windrose_plus` flips the primary back. A trap worth knowing:
+  `R5TurnProtocol::Disconnect` looks like a leave but fires 9 s into every join.
 - If a required option is unset the API half of a module is left unwired (logged) and the game keeps the baseline;
   restart cooldown and startup milestones still apply.
 

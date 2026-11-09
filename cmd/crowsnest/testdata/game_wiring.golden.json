@@ -70,7 +70,7 @@
     "ComposeProfile": "windrose",
     "ComposeService": "windrose",
     "Status": "*logtrack.Tracker",
-    "Players": "*windrose.Client",
+    "Players": "*modules.comparingCounter",
     "Info": "*windrose.Client",
     "PreStop": "",
     "Console": "",

@@ -7,35 +7,38 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games/windrose"
 )
 
-// Bundled returns the modules that ship in the binary: Palworld and Valheim
-// (embedded module.yaml files) and Windrose (Go, until its adapter lands). Their wiring moved here unchanged from cmd/crowsnest; the golden
-// tests there pin it.
+// Bundled returns the modules that ship in the binary: Palworld, Valheim and
+// Windrose, each an embedded module.yaml (bundled/<id>/). The golden tests in
+// cmd/crowsnest pin their wiring.
 func Bundled() *Set {
 	s := NewSet()
-	s.Register("windrose", wireWindrose)
-	registerEmbedded(s) // valheim, palworld
+	registerEmbedded(s)
 	return s
 }
 
-func wireWindrose(def *games.GameDef, env Env) []Runner {
-	// Real status/startup detection (a log-following tracker, no docker exec)
-	// plus, when configured, the Windrose+ HTTP/RCON integration for player
-	// count and the rich info panel — docs/implementation-plan.md phases 7
-	// and 10.
-	tracker := windrose.NewTracker(env.Docker, def.ContainerName)
-	def.Status = tracker
-	def.Startup = windrose.Startup
-	// Options (legacy windrose: block is folded into them by config):
-	// http_api_url, rcon_password_env.
-	if url := env.Config.Options["http_api_url"]; url != "" {
-		client := &windrose.Client{
-			BaseURL:       url,
-			Password:      os.Getenv(env.Config.Options["rcon_password_env"]),
-			Docker:        env.Docker,
-			ContainerName: def.ContainerName,
-		}
-		def.Players = client
-		def.Info = client
+func init() { extensions["windrose"] = extendWindrose }
+
+// extendWindrose adds the optional Windrose+ integration to the manifest
+// wiring: its dashboard API feeds the rich info panel. Player count comes
+// from the game log (players_source: log, the default); with windrose_plus
+// the mod is the source and the log count is only compared against it.
+func extendWindrose(def *games.GameDef, env Env) []Runner {
+	url := env.Config.Options["http_api_url"]
+	if url == "" {
+		return nil
 	}
-	return []Runner{tracker}
+	client := &windrose.Client{
+		BaseURL:       url,
+		Password:      os.Getenv(env.Config.Options["rcon_password_env"]),
+		Docker:        env.Docker,
+		ContainerName: def.ContainerName,
+	}
+	def.Info = client
+	logCount := def.Players
+	if env.Config.Options["players_source"] == "windrose_plus" {
+		def.Players = &comparingCounter{name: "windrose", primary: client, other: logCount}
+	} else {
+		def.Players = &comparingCounter{name: "windrose", primary: logCount, other: client}
+	}
+	return nil
 }

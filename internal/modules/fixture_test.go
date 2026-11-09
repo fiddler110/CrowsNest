@@ -65,10 +65,12 @@ func TestValheimRealReadyLines(t *testing.T) {
 }
 
 // valheimTracker wires the embedded valheim module and returns its log tracker.
-func valheimTracker(t *testing.T) *logtrack.Tracker {
+func valheimTracker(t *testing.T) *logtrack.Tracker { return trackerFor(t, "valheim") }
+
+func trackerFor(t *testing.T, id string) *logtrack.Tracker {
 	t.Helper()
 	var def games.GameDef
-	runners := Bundled().wire["valheim"](&def, Env{})
+	runners := Bundled().wire[id](&def, Env{})
 	if len(runners) != 1 {
 		t.Fatalf("runners = %d, want 1", len(runners))
 	}
