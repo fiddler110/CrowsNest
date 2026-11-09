@@ -1,8 +1,6 @@
 package modules
 
 import (
-	"os"
-
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/games/windrose"
 )
@@ -30,7 +28,7 @@ func extendWindrose(def *games.GameDef, env Env) []Runner {
 	}
 	client := &windrose.Client{
 		BaseURL:       url,
-		Password:      os.Getenv(env.Config.Options["rcon_password_env"]),
+		Password:      env.Secret(env.Config.Options["rcon_password_env"]),
 		Docker:        env.Docker,
 		ContainerName: def.ContainerName,
 	}

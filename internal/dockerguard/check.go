@@ -162,7 +162,7 @@ func notFound(msg string) (int, any) { return 404, map[string]string{"message": 
 
 func (g *Guard) allImages() map[string]bool {
 	out := map[string]bool{}
-	for _, s := range g.scopes {
+	for _, s := range g.cur().scopes {
 		for r := range s.Images {
 			out[r] = true
 		}
@@ -172,7 +172,7 @@ func (g *Guard) allImages() map[string]bool {
 
 func (g *Guard) allNetworks() map[string]bool {
 	out := map[string]bool{}
-	for _, s := range g.scopes {
+	for _, s := range g.cur().scopes {
 		for n := range s.Networks {
 			out[n] = true
 		}
@@ -210,7 +210,7 @@ func (g *Guard) containerInScope(c any) bool {
 	names, _ := m["Names"].([]any)
 	for _, n := range names {
 		s, ok := n.(string)
-		if ok && strings.HasPrefix(s, "/") && g.scopeByName[s[1:]] != nil {
+		if ok && strings.HasPrefix(s, "/") && g.cur().byName[s[1:]] != nil {
 			return true
 		}
 	}
@@ -237,7 +237,7 @@ func (g *Guard) networkView(net any) map[string]any {
 		kept := map[string]any{}
 		for id, c := range cs {
 			if cm, ok := c.(map[string]any); ok {
-				if n, _ := cm["Name"].(string); g.scopeByName[n] != nil {
+				if n, _ := cm["Name"].(string); g.cur().byName[n] != nil {
 					kept[id] = c
 				}
 			}
@@ -257,7 +257,7 @@ func (g *Guard) volumeInScope(vol any) bool {
 }
 
 func (g *Guard) anyVolumeOK(name string) bool {
-	for _, s := range g.scopes {
+	for _, s := range g.cur().scopes {
 		if s.volumeOK(name) {
 			return true
 		}
@@ -311,7 +311,7 @@ func (g *Guard) scopeOf(ref string) *Scope {
 	if !ok {
 		return nil
 	}
-	return g.scopeByName[strings.TrimLeft(name, "/")]
+	return g.cur().byName[strings.TrimLeft(name, "/")]
 }
 
 var tmpNameRe = regexp.MustCompile(`^([0-9a-f]{12})_(.+)$`)
@@ -331,7 +331,7 @@ func (g *Guard) tmpScopeOf(ref string) *Scope {
 	if m == nil {
 		return nil
 	}
-	return g.scopeByName[m[2]]
+	return g.cur().byName[m[2]]
 }
 
 // recreateCopy is true for the container compose created under its temporary
@@ -343,7 +343,7 @@ func (g *Guard) recreateCopy(ref string) bool {
 	}
 	name, _ := info["Name"].(string)
 	m := tmpNameRe.FindStringSubmatch(strings.TrimLeft(name, "/"))
-	if m == nil || g.scopeByName[m[2]] == nil {
+	if m == nil || g.cur().byName[m[2]] == nil {
 		return false
 	}
 	old := g.inspect(m[2])
@@ -396,8 +396,8 @@ func (g *Guard) checkCreate(q query, body any) error {
 	if err != nil {
 		return err
 	}
-	scope := g.scopeByName[name]
-	if m := tmpNameRe.FindStringSubmatch(name); scope == nil && m != nil && g.scopeByName[m[2]] != nil {
+	scope := g.cur().byName[name]
+	if m := tmpNameRe.FindStringSubmatch(name); scope == nil && m != nil && g.cur().byName[m[2]] != nil {
 		// compose's recreate: the replacement is made as <old id12>_<scope> and renamed once the old one is gone.
 		// Only while the current container of that name really has that id (and is that container, not an id prefix).
 		old := g.inspect(m[2])
@@ -405,7 +405,7 @@ func (g *Guard) checkCreate(q query, body any) error {
 			id, _ := old["Id"].(string)
 			oldName, _ := old["Name"].(string)
 			if strings.HasPrefix(id, m[1]) && strings.TrimLeft(oldName, "/") == m[2] {
-				scope = g.scopeByName[m[2]]
+				scope = g.cur().byName[m[2]]
 			}
 		}
 	}
@@ -463,8 +463,8 @@ func (g *Guard) checkCreate(q query, body any) error {
 }
 
 func (g *Guard) scopeNames() []string {
-	names := make([]string, 0, len(g.scopes))
-	for _, s := range g.scopes {
+	names := make([]string, 0, len(g.cur().scopes))
+	for _, s := range g.cur().scopes {
 		names = append(names, s.Name)
 	}
 	sort.Strings(names)

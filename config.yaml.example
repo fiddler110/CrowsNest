@@ -124,3 +124,12 @@ games:
     #   exec: ["backup"]
     #   list_dir: /palworld/backups
     #   before_stop: true      # also back up every time CrowsNest stops it on purpose
+
+# Enable and configure games from the dashboard, inside an operator policy
+# (see docs/modules.md and policy.yaml.example). Needs platform.games_root.
+# platform:
+#   games_root: /srv/games
+#   host_ip: 10.0.0.2
+# managed:
+#   dir: /app/data/managed
+#   policy_file: /etc/crowsnest/policy.yaml

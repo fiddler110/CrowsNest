@@ -59,6 +59,7 @@ type Guard struct {
 	// Logf, if set, receives one line per denied request.
 	Logf func(format string, args ...any)
 
+	rmu   sync.RWMutex
 	rules []Rule
 	proxy *httputil.ReverseProxy
 	now   func() time.Time
@@ -199,7 +200,16 @@ func checkCreate(body []byte) ([]string, error) {
 	return cmd, nil
 }
 
+// SetRules replaces the allowlist; requests already past the check are unaffected.
+func (g *Guard) SetRules(rules []Rule) {
+	g.rmu.Lock()
+	g.rules = rules
+	g.rmu.Unlock()
+}
+
 func (g *Guard) allowed(container string, cmd []string) bool {
+	g.rmu.RLock()
+	defer g.rmu.RUnlock()
 	for _, r := range g.rules {
 		if r.Container == container && slices.Equal(r.Cmd, cmd) {
 			return true

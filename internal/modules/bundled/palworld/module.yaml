@@ -9,8 +9,42 @@ name: Palworld
 runtime:
   # Bringing it back up seconds after a stop segfaulted it once.
   restart_cooldown: 30s
+  image: thijsvanloef/palworld-server-docker
+  stop_grace: 60s           # the image saves through the REST API on SIGTERM, then waits up to 30s
+  memory: 10g               # the README asks for 16GB+; cap it so a leak kills Palworld, not the host
+  data_dir: Palworld
+  ports:
+    - {port: 8211, proto: udp}   # the REST API (8212) is deliberately not published
+  data:
+    - {path: /palworld}
+  env:
+    - PUID=1000
+    - PGID=1000
+    - PORT=8211
+    - PLAYERS=${max_players}
+    - SERVER_NAME=${server_name}
+    - SERVER_PASSWORD=${server_password}
+    - ADMIN_PASSWORD=${admin_password}
+    - COMMUNITY=false
+    - MULTITHREADING=true
+    - REST_API_ENABLED=true
+    - REST_API_PORT=8212
+    - RCON_ENABLED=false      # deprecated upstream in favour of the REST API
+    - UPDATE_ON_BOOT=true
+    - BACKUP_ENABLED=true
+    - DELETE_OLD_BACKUPS=true
+    - OLD_BACKUP_DAYS=14
+
+backup:
+  exec: ["backup"]                 # the image saves through the REST API and writes a dated tar.gz
+  list_dir: /palworld/backups
+  before_stop: true
 
 options:
+  - {key: max_players, label: Max players, default: "8"}
+  - {key: server_name, label: Server name, default: CrowsNest Palworld}
+  - {key: server_password, label: Join password, secret: true}
+  - {key: admin_password, label: Admin / REST password, secret: true}
   - {key: rest_api_url, label: REST API base URL, required: true}
   - {key: rest_api_user, label: REST API user, default: admin}
   - {key: rest_api_password_env, label: Env var holding the admin password, required: true}

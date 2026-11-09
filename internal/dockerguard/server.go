@@ -56,6 +56,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -75,9 +76,8 @@ type Guard struct {
 	// MaxConns bounds the clients served at once (default 64).
 	MaxConns int
 
-	socket      string
-	scopes      []*Scope
-	scopeByName map[string]*Scope
+	socket string
+	active atomic.Pointer[scopeSet]
 
 	streamIdle      time.Duration // a stream with no traffic for this long is closed
 	requestDeadline time.Duration // from a request's first byte to the end of its body
@@ -93,14 +93,32 @@ type Guard struct {
 func New(socket string, scopes []*Scope) *Guard {
 	g := &Guard{
 		MaxResponse: 32 << 20, MaxConns: 64,
-		socket: socket, scopes: scopes, scopeByName: map[string]*Scope{},
+		socket:     socket,
 		streamIdle: 300 * time.Second, requestDeadline: 20 * time.Second, idleTimeout: 120 * time.Second,
 		execSet: map[string]bool{}, lastHeaders: map[string]string{},
 	}
-	for _, s := range scopes {
-		g.scopeByName[s.Name] = s
-	}
+	g.SetScopes(scopes)
 	return g
+}
+
+// scopeSet is an immutable snapshot of the scopes in force.
+type scopeSet struct {
+	scopes []*Scope
+	byName map[string]*Scope
+}
+
+func (g *Guard) cur() *scopeSet { return g.active.Load() }
+
+// SetScopes atomically replaces the scopes in force. Requests already being
+// checked finish against the snapshot they started with.
+func (g *Guard) SetScopes(scopes []*Scope) {
+	set := &scopeSet{scopes: scopes, byName: map[string]*Scope{}}
+	for _, s := range scopes {
+		if s != nil {
+			set.byName[s.Name] = s
+		}
+	}
+	g.active.Store(set)
 }
 
 func (g *Guard) logf(format string, args ...any) {

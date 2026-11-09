@@ -555,3 +555,5 @@ func (c *Client) Stats(ctx context.Context, name string) (Stats, error) {
 		MemPercent: fmt.Sprintf("%.2f", memPct),
 	}, nil
 }
+
+func asAPI(err error, target **apiError) bool { return errors.As(err, target) }

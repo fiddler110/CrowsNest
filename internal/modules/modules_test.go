@@ -64,7 +64,7 @@ func TestRegisterRejectsDuplicateAndEmpty(t *testing.T) {
 }
 
 func TestBundledIDs(t *testing.T) {
-	want := []string{"palworld", "valheim", "windrose"}
+	want := []string{"dontstarve", "minecraft", "palworld", "source", "valheim", "windrose"}
 	if got := Bundled().IDs(); !reflect.DeepEqual(got, want) {
 		t.Errorf("Bundled IDs = %v, want %v", got, want)
 	}
@@ -72,11 +72,11 @@ func TestBundledIDs(t *testing.T) {
 
 func TestForConfig_LocalModuleDrivesConfiguredGame(t *testing.T) {
 	dir := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(dir, "minecraft"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(dir, "terraria"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	y := "api_version: 1\nid: minecraft\nname: Minecraft\nruntime: {restart_cooldown: 20s}\nstartup:\n  - {match: Done, pct: 100, label: Ready}\n"
-	if err := os.WriteFile(filepath.Join(dir, "minecraft", "module.yaml"), []byte(y), 0o644); err != nil {
+	y := "api_version: 1\nid: terraria\nname: Terraria\nruntime: {restart_cooldown: 20s}\nstartup:\n  - {match: Done, pct: 100, label: Ready}\n"
+	if err := os.WriteFile(filepath.Join(dir, "terraria", "module.yaml"), []byte(y), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.MkdirAll(filepath.Join(dir, "orphan"), 0o755); err != nil {
@@ -85,7 +85,7 @@ func TestForConfig_LocalModuleDrivesConfiguredGame(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "orphan", "module.yaml"), []byte("api_version: 1\nid: orphan\nname: Orphan\n"), 0o644)
 
 	cfg := &config.Config{ModulesDir: dir, Games: []config.GameConfig{
-		{ID: "minecraft", DisplayName: "Minecraft", ContainerName: "minecraft"},
+		{ID: "terraria", DisplayName: "Terraria", ContainerName: "terraria"},
 		{ID: "valheim", DisplayName: "Valheim", ContainerName: "valheim"},
 	}}
 	var warned []string
@@ -98,7 +98,7 @@ func TestForConfig_LocalModuleDrivesConfiguredGame(t *testing.T) {
 	}
 	defs, _ := set.Build(cfg, &dockerctl.Client{})
 	if defs[0].RestartCooldown != 20*time.Second || defs[0].Startup == nil {
-		t.Fatalf("minecraft not wired from module.yaml: %+v", defs[0])
+		t.Fatalf("terraria not wired from module.yaml: %+v", defs[0])
 	}
 	if defs[1].Players == nil { // legacy bundled path still wires valheim
 		t.Fatal("valheim lost its bundled wiring")
@@ -114,7 +114,7 @@ func TestForConfig_LocalModuleDrivesConfiguredGame(t *testing.T) {
 
 func TestForConfig_NoDirIsBundledOnly(t *testing.T) {
 	set, err := ForConfig(&config.Config{}, nil)
-	if err != nil || len(set.IDs()) != 3 {
+	if err != nil || len(set.IDs()) != 6 {
 		t.Fatalf("%v %v", set.IDs(), err)
 	}
 }

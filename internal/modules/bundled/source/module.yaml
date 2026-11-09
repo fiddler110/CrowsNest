@@ -1,0 +1,48 @@
+api_version: 1
+id: source
+name: Source engine
+# One module for the whole Source family. A game picks it with "module: source"
+# in config.yaml, so TF2, CS2, CSS, L4D2, DoD:S, HL2DM and the GoldSrc/Source 1
+# servers (CS 1.6 included, where RCON `status` has the same shape) each get
+# their own card, container and id but share this wiring. See
+# docs/modules.md for a config.yaml example per game.
+#
+# Players come from RCON `status`: no log markers, so no dependence on
+# per-game log text. Needs RCON enabled in the server (rcon_password set) and
+# reachable from the panel (same docker network). Bots never count (their
+# uniqueid is BOT, not STEAM_ or [U:).
+#
+# Player-line formats matched (group 1 = Source 1, 2 = Source 1 with an
+# index column such as Left 4 Dead, 3 = CS2):
+#   # 2 "Alex" STEAM_1:0:123 ...        TF2, CSS, DoD:S, HL2DM, CS 1.6
+#   # 2 "Alex" [U:1:123] ...            newer Source 1 builds
+#   # 2 1 "Alex" STEAM_1:0:123 ...      Left 4 Dead 1/2
+#   65280 00:12 20 0 active 786432 10.0.0.5:27005 'Alex'     CS2
+# Verified only against documented/typical output, not captured sessions
+# (internal/modules/testdata/source_status.txt); report a mismatch.
+
+options:
+  - {key: rcon_addr, label: "RCON host:port (e.g. tf2:27015)", required: true}
+  - {key: rcon_password_env, label: "Env var holding the RCON password", required: true}
+
+players:
+  type: source_rcon
+  addr: ${rcon_addr}
+  password_env: ${rcon_password_env}
+  command: status
+  pattern: '^#\s+\d+\s+(?:\d+\s+)?"(.+?)"\s+(?:STEAM_|\[U:)|^\s*\d+\s+\d+:\d+\s+\d+\s+\d+\s+\S+\s+\d+\s+\S+\s+''(.+)''\s*$'
+
+rcon:
+  addr: ${rcon_addr}
+  password_env: ${rcon_password_env}
+
+startup_progress:
+  match: 'Update state \(0x61\) downloading, progress: (\d+(?:\.\d+)?)'
+  from: 5
+  to: 70
+  label: 'Downloading server files ({pct}%)'
+startup:
+  - {match: 'Update state \(0x\d+\) (?:verifying|validating)', pct: 72, label: Verifying files}
+  - {match: "Success! App '\\d+' fully installed", pct: 75, label: Files ready}
+  - {match: 'Network socket (?:\(.*\) )?opened|Opening socket|Network: IP', pct: 85, label: Starting server}
+  - {match: 'Connection to Steam servers successful|Server is hibernating|VAC secure mode', pct: 100, label: Server ready}

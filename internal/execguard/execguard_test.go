@@ -135,3 +135,18 @@ func TestOtherRoutesPassThrough(t *testing.T) {
 		t.Fatalf("GET on create route: %d", got)
 	}
 }
+
+func TestSetRulesSwapsTheAllowlist(t *testing.T) {
+	g, _, gs := setup(t)
+	body := `{"Cmd":["backup"]}`
+	if got := do(t, "POST", gs.URL+"/containers/mc/exec", body); got != 403 {
+		t.Fatalf("before: %d, want 403", got)
+	}
+	g.SetRules([]Rule{{Container: "mc", Cmd: []string{"backup"}}})
+	if got := do(t, "POST", gs.URL+"/containers/mc/exec", body); got != 201 {
+		t.Errorf("after adding the rule: %d, want 201", got)
+	}
+	if got := do(t, "POST", gs.URL+"/containers/pal/exec", `{"Cmd":["/bin/sh","-c","backup"]}`); got != 403 {
+		t.Errorf("a replaced rule still allowed: %d", got)
+	}
+}

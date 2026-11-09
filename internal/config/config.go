@@ -47,6 +47,41 @@ type Config struct {
 	// with the same id. Empty means only the bundled modules.
 	ModulesDir string       `yaml:"modules_dir"`
 	Games      []GameConfig `yaml:"games"`
+
+	// Platform is where and how game containers are rendered from modules
+	// ("crowsnest render"). Unused by the running panel.
+	Platform PlatformConfig `yaml:"platform"`
+
+	// Managed turns on enabling games from the dashboard (docs/modules.md).
+	Managed ManagedConfig `yaml:"managed"`
+}
+
+// ManagedConfig configures dashboard-enabled games. Dir set turns the feature
+// on; it needs platform.games_root (and host_games_root when that is a variable).
+type ManagedConfig struct {
+	// Dir is the state directory the panel writes: games.json, secrets.json
+	// and the scopes.json the guard watches. Share it read-only with the guard.
+	Dir string `yaml:"dir"`
+	// PolicyFile is the operator's policy.yaml, mounted read-only. Required
+	// when Dir is set; the guard reads the same file.
+	PolicyFile string `yaml:"policy_file"`
+}
+
+// PlatformConfig holds the host-level values a module's runtime section is
+// rendered against.
+type PlatformConfig struct {
+	// GamesRoot is the host directory holding every game's data. It may be a
+	// compose variable such as ${USERDIR}: it is written as-is.
+	GamesRoot string `yaml:"games_root"`
+	// HostGamesRoot is the literal host path of GamesRoot, used for the
+	// guard's scopes (the guard matches exact paths and cannot expand compose
+	// variables). Needed only when GamesRoot is a variable.
+	HostGamesRoot string `yaml:"host_games_root"`
+	// HostIP is the host address game ports are published on (default 0.0.0.0).
+	HostIP string `yaml:"host_ip"`
+	// GamesNetwork is the existing docker network games join (default
+	// crowsnest-games-net).
+	GamesNetwork string `yaml:"games_network"`
 }
 
 // ServerConfig holds top-level HTTP server settings.
@@ -264,6 +299,12 @@ type GameConfig struct {
 	// same as every other game, so long as night_shutdown.enabled is true.
 	NightShutdown *bool `yaml:"night_shutdown,omitempty"`
 
+	// Module names the module that drives this game when it is not the game's
+	// own id. One module can serve a family of games: several Source-engine
+	// games set "module: source" and differ only in their options. Empty
+	// means the module whose id equals this game's id (if any).
+	Module string `yaml:"module,omitempty"`
+
 	// Options are this game's module settings; the module's manifest
 	// declares which keys it understands (modules/<id>/module.yaml
 	// "options"). Values for env-var options name the variable, never the
@@ -444,7 +485,15 @@ func (c *Config) validate() error {
 	if c.UsersFile == "" {
 		return fmt.Errorf("users_file is required")
 	}
-	if len(c.Games) == 0 {
+	if c.Managed.Dir != "" {
+		if c.Managed.PolicyFile == "" {
+			return fmt.Errorf("managed.policy_file is required when managed.dir is set (games enabled from the dashboard only run inside an operator policy)")
+		}
+		if c.Platform.GamesRoot == "" {
+			return fmt.Errorf("platform.games_root is required when managed.dir is set")
+		}
+	}
+	if len(c.Games) == 0 && c.Managed.Dir == "" {
 		return fmt.Errorf("at least one game must be defined")
 	}
 	for i, cidr := range c.Server.TrustedProxies {

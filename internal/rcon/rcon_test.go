@@ -70,3 +70,45 @@ func TestExecUnreachable(t *testing.T) {
 		t.Fatal("want error")
 	}
 }
+
+// Minecraft's RCON server reads one buffer per loop and hangs up if it holds
+// more than one packet. This server does the same, so a client that sends the
+// command and the marker back to back is cut off.
+func TestExecSurvivesAOnePacketPerReadServer(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	go func() {
+		c, err := ln.Accept()
+		if err != nil {
+			return
+		}
+		defer c.Close()
+		buf := make([]byte, 4096)
+		for {
+			n, err := c.Read(buf)
+			if err != nil {
+				return
+			}
+			if n < 4 || int(buf[0])|int(buf[1])<<8 != n-4 {
+				return // more than one packet in this read: hang up
+			}
+			id := int32(buf[4]) | int32(buf[5])<<8
+			typ := int32(buf[8])
+			switch typ {
+			case typeAuth:
+				write(c, id, typeExec, "")
+			case typeExec:
+				write(c, id, typeResponse, "There are 0 of a max of 10 players online: ")
+			default:
+				write(c, id, typeResponse, "Unknown request 0")
+			}
+		}
+	}()
+	got, err := Exec(context.Background(), ln.Addr().String(), "pw", "list", 2*time.Second)
+	if err != nil || got != "There are 0 of a max of 10 players online:" {
+		t.Fatalf("got %q, %v", got, err)
+	}
+}

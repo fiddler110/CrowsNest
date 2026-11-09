@@ -1,0 +1,168 @@
+package dockerctl
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
+	"strings"
+	"time"
+)
+
+// PortBinding publishes one container port on the host.
+type PortBinding struct {
+	HostIP        string
+	HostPort      int
+	ContainerPort int
+	Proto         string // tcp or udp
+}
+
+// CreateSpec is everything the dashboard asks the engine to create for a
+// game: deliberately only the fields the guard's policy envelope can admit.
+// There is no way to ask for privileges, host networking, capabilities or
+// fixed addresses.
+type CreateSpec struct {
+	Name        string
+	Image       string // repository:tag
+	Env         []string
+	Labels      map[string]string
+	Network     string
+	StopTimeout int   // seconds the engine waits before killing the game
+	MemoryBytes int64 // 0 = unlimited
+	Ports       []PortBinding
+	Binds       []string // host:container
+}
+
+func (s CreateSpec) body() ([]byte, error) {
+	exposed := map[string]struct{}{}
+	bindings := map[string][]map[string]string{}
+	for _, p := range s.Ports {
+		key := fmt.Sprintf("%d/%s", p.ContainerPort, p.Proto)
+		exposed[key] = struct{}{}
+		bindings[key] = append(bindings[key], map[string]string{"HostIp": p.HostIP, "HostPort": fmt.Sprint(p.HostPort)})
+	}
+	host := map[string]any{
+		"Binds":         s.Binds,
+		"PortBindings":  bindings,
+		"NetworkMode":   s.Network,
+		"RestartPolicy": map[string]any{"Name": "unless-stopped"},
+	}
+	if s.MemoryBytes > 0 {
+		host["Memory"] = s.MemoryBytes
+	}
+	body := map[string]any{
+		"Image": s.Image, "Env": s.Env, "Labels": s.Labels, "ExposedPorts": exposed,
+		"HostConfig":       host,
+		"NetworkingConfig": map[string]any{"EndpointsConfig": map[string]any{s.Network: map[string]any{}}},
+	}
+	if s.StopTimeout > 0 {
+		body["StopTimeout"] = s.StopTimeout
+	}
+	return json.Marshal(body)
+}
+
+// send issues a request and returns the response for 2xx; otherwise an *apiError.
+func (c *Client) send(ctx context.Context, method, path string, q url.Values, body []byte) (*http.Response, error) {
+	if c.useCLI() {
+		return nil, fmt.Errorf("dockerctl: %s needs the Engine API, but this client is configured for the docker CLI (TLS or an explicit binary)", path)
+	}
+	base, _, _ := c.target()
+	u := base + path
+	if len(q) > 0 {
+		u += "?" + q.Encode()
+	}
+	var rd io.Reader
+	if body != nil {
+		rd = bytes.NewReader(body)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, u, rd)
+	if err != nil {
+		return nil, err
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	resp, err := c.client().Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("dockerctl: %s %s: %w", method, path, err)
+	}
+	if resp.StatusCode/100 != 2 {
+		defer resp.Body.Close()
+		data, _ := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+		msg := strings.TrimSpace(string(data))
+		var m struct {
+			Message string `json:"message"`
+		}
+		if json.Unmarshal(data, &m) == nil && m.Message != "" {
+			msg = m.Message
+		}
+		return nil, &apiError{Status: resp.StatusCode, Message: msg, What: method + " " + path}
+	}
+	return resp, nil
+}
+
+// IsDenied reports whether err is the guard (or engine) refusing a request
+// with 403, which for a freshly enabled game usually means the guard has not
+// reloaded its scopes yet.
+func IsDenied(err error) bool {
+	var ae *apiError
+	return asAPI(err, &ae) && ae.Status == http.StatusForbidden
+}
+
+// Create creates (does not start) the container.
+func (c *Client) Create(ctx context.Context, s CreateSpec) error {
+	b, err := s.body()
+	if err != nil {
+		return err
+	}
+	ctx, cancel := c.opCtx(ctx, 2*time.Minute)
+	defer cancel()
+	resp, err := c.send(ctx, http.MethodPost, "/containers/create", url.Values{"name": {s.Name}}, b)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// Remove deletes a stopped container; force is never used. Its data folder is
+// left alone.
+func (c *Client) Remove(ctx context.Context, name string) error {
+	ctx, cancel := c.opCtx(ctx, time.Minute)
+	defer cancel()
+	resp, err := c.send(ctx, http.MethodDelete, "/containers/"+url.PathEscape(name), nil, nil)
+	if err != nil {
+		return err
+	}
+	return resp.Body.Close()
+}
+
+// Pull pulls repository:tag and waits for it. The engine reports pull
+// failures inside a 200 stream, so the stream is read for an error line.
+func (c *Client) Pull(ctx context.Context, image string) error {
+	repo, tag := image, "latest"
+	if i := strings.LastIndex(image, ":"); i > strings.LastIndex(image, "/") {
+		repo, tag = image[:i], image[i+1:]
+	}
+	ctx, cancel := c.opCtx(ctx, 30*time.Minute)
+	defer cancel()
+	resp, err := c.send(ctx, http.MethodPost, "/images/create", url.Values{"fromImage": {repo}, "tag": {tag}}, nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	sc := bufio.NewScanner(resp.Body)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	for sc.Scan() {
+		var line struct {
+			Error string `json:"error"`
+		}
+		if json.Unmarshal(sc.Bytes(), &line) == nil && line.Error != "" {
+			return fmt.Errorf("dockerctl: pull %s: %s", image, line.Error)
+		}
+	}
+	return sc.Err()
+}

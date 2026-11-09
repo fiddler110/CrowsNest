@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/logtrack"
 	"github.com/fiddler110/crowsnest/internal/probes"
@@ -31,9 +32,14 @@ type Manifest struct {
 	ID         string `yaml:"id"`
 	Name       string `yaml:"name"`
 
-	Runtime struct {
-		RestartCooldown time.Duration `yaml:"restart_cooldown"`
-	} `yaml:"runtime"`
+	Runtime Runtime `yaml:"runtime"`
+
+	// Backup is the command (run with docker exec) that backs this game up and
+	// the folder its backups land in. Used for games enabled from the dashboard,
+	// whose config has no backup block: execguard allows exactly this command in
+	// that game's container and nothing else. Games in config.yaml keep their own
+	// backup block.
+	Backup *config.BackupConfig `yaml:"backup"`
 
 	// Status.ReadyLog is the log line that marks the server open; with
 	// players.type log_markers it drives starting/online from the log.
@@ -115,6 +121,9 @@ type Option struct {
 	Label    string `yaml:"label"`
 	Default  string `yaml:"default"`
 	Required bool   `yaml:"required"`
+	// Secret marks a value that must never be written into a rendered file:
+	// it is referenced as a variable in .env instead.
+	Secret bool `yaml:"secret"`
 }
 
 // StartupStep maps a log pattern to a startup progress percentage.
@@ -214,6 +223,14 @@ func (m *Manifest) validate() error {
 	if m.Name == "" {
 		return fmt.Errorf("module %q: name is required", m.ID)
 	}
+	if m.Backup != nil {
+		if len(m.Backup.Exec) == 0 || m.Backup.Exec[0] == "" {
+			return fmt.Errorf("module %q: backup.exec must be a command", m.ID)
+		}
+		if m.Backup.ListDir != "" && !strings.HasPrefix(m.Backup.ListDir, "/") {
+			return fmt.Errorf("module %q: backup.list_dir must be an absolute path", m.ID)
+		}
+	}
 	if m.Runtime.RestartCooldown < 0 {
 		return fmt.Errorf("module %q: restart_cooldown must not be negative", m.ID)
 	}
@@ -311,7 +328,7 @@ func (m *Manifest) Wire() WireFunc {
 				api := &probes.HTTPJSON{
 					Docker: env.Docker, Name: m.ID,
 					BaseURL: strings.TrimRight(opts.sub(m.API.BaseURL), "/"),
-					User:    opts.sub(m.API.User), Pass: os.Getenv(opts.sub(m.API.PasswordEnv)),
+					User:    opts.sub(m.API.User), Pass: env.Secret(opts.sub(m.API.PasswordEnv)),
 					StatusPath: m.API.StatusPath, PlayersPath: m.Players.Path,
 					CountPath: m.Players.CountPath, NamesPath: m.Players.NamesPath, NameField: m.Players.NameField,
 					InfoSources: m.Info.Sources, InfoFields: m.Info.Fields,
@@ -330,16 +347,20 @@ func (m *Manifest) Wire() WireFunc {
 				if len(m.PreStop) > 0 {
 					def.PreStop = api
 				}
-				if addr := opts.sub(m.RCON.Addr); addr != "" {
-					def.RawConsole = &probes.RawRCON{Addr: addr, Password: os.Getenv(opts.sub(m.RCON.PasswordEnv))}
-				}
 			}
+		}
+		if addr := opts.sub(m.RCON.Addr); addr != "" {
+			def.RawConsole = &probes.RawRCON{Addr: addr, Password: env.Secret(opts.sub(m.RCON.PasswordEnv))}
 		}
 		switch m.Players.Type {
 		case "source_rcon":
-			def.Players = &probes.SourceRCON{
-				Addr: opts.sub(m.Players.Addr), Password: os.Getenv(opts.sub(m.Players.PasswordEnv)),
-				Command: m.Players.Command, Pattern: regexp.MustCompile(m.Players.Pattern),
+			if addr := opts.sub(m.Players.Addr); addr == "" {
+				log.Printf("%s: players.addr is empty (option not set in config.yaml); player count stays unknown", m.ID)
+			} else {
+				def.Players = &probes.SourceRCON{
+					Addr: addr, Password: env.Secret(opts.sub(m.Players.PasswordEnv)),
+					Command: m.Players.Command, Pattern: regexp.MustCompile(m.Players.Pattern),
+				}
 			}
 		}
 		if m.Runtime.RestartCooldown > 0 {
@@ -409,6 +430,7 @@ func (s *Set) LoadDir(dir string) error {
 	}
 	for _, m := range ms {
 		s.Register(m.ID, m.Wire())
+		s.manifests[m.ID] = m
 	}
 	return nil
 }

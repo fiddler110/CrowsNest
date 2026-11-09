@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"syscall"
+	"time"
 
 	"github.com/fiddler110/crowsnest/internal/dockerguard"
 )
@@ -23,10 +24,12 @@ func runGuard(args []string) error {
 	socket := fs.String("socket", envOr("GUARD_SOCKET", "/var/run/docker.sock"), "Docker socket (or $GUARD_SOCKET)")
 	_ = fs.Parse(args)
 
-	scopes, err := dockerguard.LoadScopes(os.Getenv("GUARD_SCOPES"))
+	src := dockerguard.Sources{Base: os.Getenv("GUARD_SCOPES"), ManagedFile: os.Getenv("GUARD_SCOPES_FILE"), PolicyFile: os.Getenv("GUARD_POLICY")}
+	res, err := src.Load()
 	if err != nil {
 		return fmt.Errorf("crowsnest guard: refusing to start, bad scope configuration: %w", err)
 	}
+	scopes := res.Scopes
 	g := dockerguard.New(*socket, scopes)
 	g.Logf = func(format string, args ...any) { fmt.Fprintf(os.Stderr, format+"\n", args...) }
 	if v := os.Getenv("GUARD_MAX_RESPONSE"); v != "" {
@@ -43,6 +46,9 @@ func runGuard(args []string) error {
 		}
 		g.MaxConns = n
 	}
+	for _, e := range res.Rejected {
+		fmt.Fprintf(os.Stderr, "crowsnest guard: not loading %v\n", e) // #nosec G705 G706 -- operator configuration
+	}
 	for _, s := range scopes {
 		fmt.Printf("crowsnest guard scope %s: images=%v binds=%v volumes=%v networks=%v ipv4=%v ports=%v exec=%v secopts=%v cap_add=%v\n",
 			s.Name, sortedKeys(s.Images), s.Binds, s.Volumes, sortedKeys(s.Networks), s.IPv4, s.Ports, s.Exec, sortedKeys(s.SecOpts), sortedKeys(s.CapAdd)) // #nosec G705 G706 -- operator configuration, not request data
@@ -55,6 +61,21 @@ func runGuard(args []string) error {
 	fmt.Printf("crowsnest guard on %s, %d scope(s), socket %s\n", l.Addr(), len(scopes), *socket) // #nosec G705 G706 -- operator-supplied command-line flags
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if src.ManagedFile != "" {
+		kick := make(chan struct{}, 1)
+		hup := make(chan os.Signal, 1)
+		signal.Notify(hup, syscall.SIGHUP)
+		go func() {
+			for range hup {
+				select {
+				case kick <- struct{}{}:
+				default:
+				}
+			}
+		}()
+		go g.Watch(ctx, src, 2*time.Second, kick, res)
+		fmt.Printf("crowsnest guard watching %s inside policy %s (SIGHUP reloads at once)\n", src.ManagedFile, src.PolicyFile) // #nosec G705 G706 -- operator-supplied environment
+	}
 	return g.ServeContext(ctx, l)
 }
 

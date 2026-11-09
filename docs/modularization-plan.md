@@ -4,7 +4,7 @@ Goal: add a game server to CrowsNest by dropping in a module (a directory), with
 and with the Docker guard, exec allowlist, secrets and UI form all derived from that one module.
 
 Status: **Phase 0 done** (golden tests, `buildGameDefs` seam, PR #22). **Phase 1 done** (module registry,
-manifest loader, shared log engine and probes, `modules_dir`). **Phase 2 in progress**: Valheim, Palworld and Windrose are bundled `module.yaml` files and the typed config blocks are folded into `options`; the optional Windrose+ info adapter and the fourth-game test remain. Phases 3-6 are not started.
+manifest loader, shared log engine and probes, `modules_dir`). **Phase 2 done**: Valheim, Palworld and Windrose are bundled `module.yaml` files, the typed config blocks are folded into `options`, Windrose+ is a Go extension, and Minecraft is the fourth-game test (a manifest and a fixture, no Go; `internal/modules/bundled/minecraft`), followed by a shared `source` module (the `module:` key lets many games use one manifest) and Don't Starve Together; see [`modules.md`](modules.md). `runtime:` sections plus `crowsnest render` generate the compose file and `GUARD_SCOPES` from a module (first slice of Phase 3). The Tier 2 adapter-sidecar contract is deferred until a module needs it. Phases 3-6 are not started.
 Progress and the related accounts/settings and verification work are tracked in [`roadmap.md`](../roadmap.md);
 this file holds the design only.
 This document is the plan referenced from `cmd/crowsnest/gamewiring.go` and `cmd/crowsnest/golden_test.go`.

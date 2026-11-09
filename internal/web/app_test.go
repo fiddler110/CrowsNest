@@ -21,6 +21,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/exclusivity"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/managed"
 	"github.com/fiddler110/crowsnest/internal/settings"
 )
 
@@ -1126,5 +1127,49 @@ func TestConsole_ActionsRawToggleAndAudit(t *testing.T) {
 	}
 	if len(details) < 4 || !strings.Contains(strings.Join(details, "|"), "raw: Info") {
 		t.Errorf("console audit trail = %v", details)
+	}
+}
+
+type fakeManaged struct{ enabled []managed.Request }
+
+func (f *fakeManaged) Catalogue() []managed.ModuleInfo {
+	return []managed.ModuleInfo{{ID: "minecraft"}}
+}
+func (f *fakeManaged) List() []managed.Info { return nil }
+func (f *fakeManaged) Preview(managed.Request) (*managed.Plan, error) {
+	return &managed.Plan{Fits: true}, nil
+}
+func (f *fakeManaged) Enable(r managed.Request) error { f.enabled = append(f.enabled, r); return nil }
+func (f *fakeManaged) Disable(string) error           { return nil }
+func (f *fakeManaged) Update(managed.Request) error   { return nil }
+func (f *fakeManaged) Refresh(string) error           { return nil }
+
+func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
+	do := func(method, path string, body []byte) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(method, path, body))
+		return rec.Code
+	}
+	if c := do("GET", "/api/managed/modules", nil); c != http.StatusNotFound {
+		t.Errorf("unconfigured: %d, want 404", c)
+	}
+	fm := &fakeManaged{}
+	h.App.Managed = fm
+	if c := do("GET", "/api/managed/modules", nil); c != http.StatusOK {
+		t.Errorf("modules: %d", c)
+	}
+	if c := do("POST", "/api/managed/games", []byte(`{"id":"minecraft","module":"minecraft","secrets":{"rcon_password":"x"}}`)); c != http.StatusAccepted || len(fm.enabled) != 1 {
+		t.Errorf("enable: %d %+v", c, fm.enabled)
+	}
+	if c := do("POST", "/api/managed/games", []byte(`{"id":"x","privileged":true}`)); c != http.StatusBadRequest {
+		t.Errorf("unknown field: %d, want 400", c)
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	for _, p := range [][2]string{{"GET", "/api/managed/modules"}, {"GET", "/api/managed/games"}, {"POST", "/api/managed/preview"}, {"POST", "/api/managed/games"}, {"DELETE", "/api/managed/games/minecraft"}, {"PUT", "/api/managed/games/minecraft"}, {"POST", "/api/managed/games/minecraft/refresh"}} {
+		if c := do(p[0], p[1], []byte(`{}`)); c != http.StatusForbidden {
+			t.Errorf("player %s %s = %d, want 403", p[0], p[1], c)
+		}
 	}
 }

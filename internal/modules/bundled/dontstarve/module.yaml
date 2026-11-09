@@ -1,0 +1,32 @@
+api_version: 1
+id: dontstarve
+name: Don't Starve Together
+# Dedicated server images (jamesits/dst-server, mathielo/dst-dedicated-server)
+# print the master shard's server log to the container log. Join/leave come
+# from the announcements the game writes for every player. If you also run a
+# caves shard, point this game at the master shard's container only: the
+# announcements appear in the master log.
+#
+# Markers are the documented "[Join Announcement]" / "[Leave Announcement]"
+# lines; not yet verified against a captured session
+# (internal/modules/testdata/dontstarve_session.log was written from the known
+# format). The ready line is the most likely to differ between images: change
+# status.ready_log in a local copy (modules_dir) if the card never turns green.
+#
+# The server needs a cluster token from Klei (cluster_token.txt) to start.
+
+status:
+  ready_log: 'Sim paused|Server registered via geo DNS|Registering server'
+players:
+  type: log_markers
+  join: '\]: \[Join Announcement\] (.+?)\s*$'
+  leave: '\]: \[Leave Announcement\] (.+?)\s*$'
+startup_progress:
+  match: 'Update state \(0x61\) downloading, progress: (\d+(?:\.\d+)?)'
+  from: 5
+  to: 60
+  label: 'Downloading server files ({pct}%)'
+startup:
+  - {match: "Success! App '343050' fully installed", pct: 62, label: Files ready}
+  - {match: 'Starting (?:master|Master)|Starting server|DoLoadingScreen|Loading world', pct: 75, label: Starting shard}
+  - {match: 'Sim paused|Server registered via geo DNS|Registering server', pct: 100, label: Server ready}

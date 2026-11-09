@@ -254,8 +254,8 @@ func lookup(doc any, path string) (any, bool) {
 }
 
 // SourceRCON counts players by running a command over Source RCON and
-// matching its reply. Every match of Pattern is one player; group 1, if the
-// pattern has one, is the player's name.
+// matching its reply. Every match of Pattern is one player; the first non-empty
+// capture group, if the pattern has any, is the player's name.
 type SourceRCON struct {
 	Addr, Password string
 	Command        string
@@ -280,11 +280,16 @@ func (p *SourceRCON) PlayerCount(ctx context.Context) (int, []string, bool) {
 		if m == nil {
 			continue
 		}
-		if len(m) > 1 {
-			names = append(names, m[1])
-		} else {
-			names = append(names, "")
+		// The name is the first non-empty capture group, so one pattern can
+		// alternate between several line formats (one group per format).
+		name := ""
+		for _, g := range m[1:] {
+			if g != "" {
+				name = g
+				break
+			}
 		}
+		names = append(names, name)
 	}
 	return len(names), names, true
 }

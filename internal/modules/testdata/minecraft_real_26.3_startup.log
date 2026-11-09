@@ -1,0 +1,60 @@
+[19:51:43] [ServerMain/INFO]: Environment: Environment[discoveryUrl=https://discovery.minecraftservices.com/minecraft/client, name=PROD]
+[19:51:43] [Worker-Main-4/INFO]: No existing world data, creating new world
+[19:51:44] [Worker-Main-2/INFO]: Loaded 1866 advancements
+[19:51:44] [Server thread/INFO]: Starting minecraft server version 26.3
+[19:51:44] [Server thread/INFO]: Loading properties
+[19:51:44] [Server thread/INFO]: Default game type: SURVIVAL
+[19:51:44] [Server thread/INFO]: Generating keypair
+[19:51:44] [Server thread/INFO]: Starting Minecraft server on *:25565
+[19:51:44] [Server thread/INFO]: Preparing level "world"
+[19:51:44] [Server thread/INFO]: Selecting global world spawn...
+[19:51:45] [Server thread/INFO]: Loading 0 persistent chunks...
+[19:51:45] [Server thread/INFO]: Preparing spawn area: 100%
+[19:51:45] [Server thread/INFO]: Time elapsed: 1577 ms
+[19:51:45] [Server thread/INFO]: Done (1.713s)! For help, type "help"
+[19:51:45] [Server thread/INFO]: Starting remote control listener
+[19:51:45] [Server thread/INFO]: Thread RCON Listener started
+[19:51:45] [Server thread/INFO]: RCON running on 0.0.0.0:25575
+[19:51:45] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:overworld
+[19:51:46] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:the_end
+[19:51:46] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:the_nether
+[19:52:46] [Server thread/INFO]: Server empty for 60 seconds, pausing
+[19:56:49] [RCON Listener #1/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 started
+[19:56:49] [Server thread/INFO]: System chat: [Rcon: Automatic saving is now disabled]
+[19:56:49] [RCON Client /0:0:0:0:0:0:0:1 #2/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 shutting down
+[19:56:49] [RCON Listener #1/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 started
+[19:56:49] [Server thread/INFO]: System chat: [Rcon: Saved the game]
+[19:56:49] [RCON Client /0:0:0:0:0:0:0:1 #3/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 shutting down
+[19:56:49] [RCON Listener #1/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 started
+[19:56:49] [Server thread/INFO]: System chat: [Rcon: Automatic saving is now enabled]
+[19:56:49] [RCON Client /0:0:0:0:0:0:0:1 #4/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 shutting down
+[19:57:06] [RCON Listener #1/INFO]: Thread RCON Client /192.168.32.2 started
+[19:57:06] [RCON Client /192.168.32.2 #5/INFO]: Thread RCON Client /192.168.32.2 shutting down
+[19:57:06] [RCON Listener #1/INFO]: Thread RCON Client /192.168.32.2 started
+[19:57:06] [Server thread/INFO]: [Not Secure] [Rcon] hello from the dashboard
+[19:57:06] [RCON Client /192.168.32.2 #6/INFO]: Thread RCON Client /192.168.32.2 shutting down
+[19:57:06] [RCON Listener #1/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 started
+[19:57:06] [Server thread/INFO]: System chat: [Rcon: Automatic saving is now disabled]
+[19:57:06] [RCON Client /0:0:0:0:0:0:0:1 #7/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 shutting down
+[19:57:06] [RCON Listener #1/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 started
+[19:57:06] [Server thread/INFO]: System chat: [Rcon: Saved the game]
+[19:57:06] [RCON Client /0:0:0:0:0:0:0:1 #8/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 shutting down
+[19:57:06] [RCON Listener #1/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 started
+[19:57:06] [Server thread/INFO]: System chat: [Rcon: Automatic saving is now enabled]
+[19:57:06] [RCON Client /0:0:0:0:0:0:0:1 #9/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 shutting down
+[19:57:06] [RCON Listener #1/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 started
+[19:57:06] [Server thread/INFO]: System chat: [Rcon: Stopping the server]
+[19:57:06] [RCON Client /0:0:0:0:0:0:0:1 #10/INFO]: Thread RCON Client /0:0:0:0:0:0:0:1 shutting down
+[19:57:06] [Server thread/INFO]: Stopping server
+[19:57:06] [Server thread/INFO]: Saving players
+[19:57:06] [Server thread/INFO]: Saving worlds
+[19:57:06] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:overworld
+[19:57:06] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:the_end
+[19:57:06] [Server thread/INFO]: Saving chunks for level 'ServerLevel[world]'/minecraft:the_nether
+[19:57:06] [Server thread/INFO]: Thread RCON Listener stopped
+[19:57:39] [ServerMain/INFO]: Environment: Environment[discoveryUrl=https://discovery.minecraftservices.com/minecraft/client, name=PROD]
+[19:57:40] [Worker-Main-1/INFO]: Loaded 1866 advancements
+[19:57:40] [Server thread/INFO]: Starting minecraft server version 26.3
+[19:57:40] [Server thread/INFO]: Loading properties
+[19:57:40] [Server thread/INFO]: Default game type: SURVIVAL
+[19:57:40] [Server thread/INFO]: Generating keypair

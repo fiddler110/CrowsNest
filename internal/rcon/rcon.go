@@ -27,6 +27,9 @@ const (
 )
 
 // ErrAuth means the server rejected the password.
+// markerGap is the pause between the command and the end-of-reply marker.
+const markerGap = 25 * time.Millisecond
+
 var ErrAuth = errors.New("rcon: authentication failed")
 
 // Exec connects to addr (host:port), authenticates, runs command and returns
@@ -68,6 +71,10 @@ func Exec(ctx context.Context, addr, password, command string, timeout time.Dura
 	if err := write(conn, 2, typeExec, command); err != nil {
 		return "", err
 	}
+	// Minecraft's RCON server reads one buffer per loop and drops the connection
+	// if it holds two packets, so the marker must not share a read with the
+	// command. A short gap lets an idle server consume the command first.
+	time.Sleep(markerGap)
 	if err := write(conn, 3, typeResponse, ""); err != nil {
 		return "", err
 	}

@@ -12,8 +12,8 @@ import (
 
 const good = `
 api_version: 1
-id: minecraft
-name: Minecraft
+id: terraria
+name: Terraria
 runtime: {restart_cooldown: 20s}
 startup:
   - {match: 'Preparing spawn', pct: 60, label: Spawn}
@@ -24,7 +24,7 @@ func TestParseAndWire(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	def := &games.GameDef{ID: "minecraft"}
+	def := &games.GameDef{ID: "terraria"}
 	m.Wire()(def, Env{})
 	if def.RestartCooldown != 20*time.Second {
 		t.Fatalf("cooldown %v", def.RestartCooldown)
@@ -60,18 +60,18 @@ func TestLoadDir(t *testing.T) {
 		os.MkdirAll(filepath.Join(dir, d), 0o755)
 		os.WriteFile(filepath.Join(dir, d, "module.yaml"), []byte(y), 0o644)
 	}
-	write("minecraft", good)
+	write("terraria", good)
 	s := Bundled()
 	if err := s.LoadDir(dir); err != nil {
 		t.Fatal(err)
 	}
-	if got := strings.Join(s.IDs(), ","); got != "minecraft,palworld,valheim,windrose" {
+	if got := strings.Join(s.IDs(), ","); got != "dontstarve,minecraft,palworld,source,terraria,valheim,windrose" {
 		t.Fatalf("ids %s", got)
 	}
 	if err := NewSet().LoadDir(filepath.Join(dir, "nope")); err != nil {
 		t.Fatalf("missing dir: %v", err)
 	}
-	write("valheim", strings.ReplaceAll(good, "minecraft", "valheim"))
+	write("valheim", strings.ReplaceAll(good, "terraria", "valheim"))
 	if err := s.LoadDir(dir); err == nil {
 		t.Fatal("expected duplicate error")
 	}

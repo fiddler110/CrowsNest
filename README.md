@@ -9,6 +9,8 @@ This is a ground-up Go rewrite of the original Python/Flask CrowsNest
 (single-game, Windrose-only), generalized to control multiple games from one
 dashboard. See the [implementation plan](docs/implementation-plan.md) for
 the full design rationale and phase-by-phase history.
+Supported games and how to configure them (including the shared Source-engine module for TF2, CS2, L4D2 and
+others) are listed in [docs/modules.md](docs/modules.md).
 
 ## Status
 
