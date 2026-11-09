@@ -314,13 +314,19 @@ func (m *Manager) Enable(r Request) error {
 		m.entries = m.entries[:len(m.entries)-1]
 		return err
 	}
-	go m.install(e, g)
+	go m.install(e, g, installMode{})
 	return nil
 }
 
 // install is idempotent: it can be re-run for a half-installed game.
-func (m *Manager) install(e *entry, g config.GameConfig) {
-	err := m.doInstall(e, g)
+// installMode says how to (re)install: recreate removes any existing container
+// first (its data folder is a bind mount, so nothing is lost); pull makes a
+// failed pull fatal (otherwise an unreachable registry is tolerated when the
+// image is already local).
+type installMode struct{ recreate, pull bool }
+
+func (m *Manager) install(e *entry, g config.GameConfig, mode installMode) {
+	err := m.doInstall(e, g, mode)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err != nil {
@@ -334,7 +340,7 @@ func (m *Manager) install(e *entry, g config.GameConfig) {
 	}
 }
 
-func (m *Manager) doInstall(e *entry, g config.GameConfig) error {
+func (m *Manager) doInstall(e *entry, g config.GameConfig, mode installMode) error {
 	m.mu.Lock()
 	rd := e.rendered
 	spec, err := rd.Spec(m.lookup(e))
@@ -353,10 +359,20 @@ func (m *Manager) doInstall(e *entry, g config.GameConfig) error {
 	if err != nil {
 		return err
 	}
+	if exists && mode.recreate {
+		if err := m.Docker.Remove(ctx, spec.Name); err != nil {
+			return fmt.Errorf("remove the old container: %w", err)
+		}
+		exists = false
+	}
 	if !exists {
 		// The guard reloads on its own schedule; until it has our scope it answers 403.
 		if err := m.retryDenied(ctx, func() error { return m.Docker.Pull(ctx, spec.Image) }); err != nil {
-			return fmt.Errorf("pull %s: %w", spec.Image, err)
+			if mode.recreate && !mode.pull && !dockerctl.IsDenied(err) {
+				log.Printf("managed: pull %s failed, using the local image: %v", spec.Image, err)
+			} else {
+				return fmt.Errorf("pull %s: %w", spec.Image, err)
+			}
 		}
 		if err := m.retryDenied(ctx, func() error { return m.Docker.Create(ctx, spec) }); err != nil {
 			return fmt.Errorf("create container: %w", err)
@@ -407,10 +423,14 @@ func (m *Manager) secretsFor(e *entry) map[string]string {
 func (m *Manager) register(e *entry, g config.GameConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for name, v := range m.secretsFor(e) {
-		_ = os.Setenv(name, v) // modules read passwords from the environment by name
+	secrets := m.secretsFor(e)
+	lookup := func(name string) string {
+		if v, ok := secrets[name]; ok {
+			return v
+		}
+		return os.Getenv(name)
 	}
-	def, runners := m.Modules.BuildOne(m.Config, g, m.Wire)
+	def, runners := m.Modules.BuildOne(m.Config, g, m.Wire, lookup)
 	if err := m.Registry.Add(def); err != nil {
 		if _, have := m.Registry.Get(g.ID); !have {
 			return err
@@ -426,6 +446,71 @@ func (m *Manager) register(e *entry, g config.GameConfig) error {
 	for _, r := range runners {
 		go r.Run(rctx)
 	}
+	return nil
+}
+
+// Update changes an enabled game's settings and recreates its container with
+// them. The module cannot change. Secrets left out keep their stored value.
+// The game must be stopped; its data folder is untouched.
+func (m *Manager) Update(r Request) error { return m.reinstall(r, false) }
+
+// Refresh pulls the game's image again and recreates its container with the
+// same settings.
+func (m *Manager) Refresh(id string) error { return m.reinstall(Request{ID: id}, true) }
+
+func (m *Manager) reinstall(r Request, refresh bool) error {
+	ctx := m.ctx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if running, err := m.Docker.Running(ctx, r.ID); err != nil {
+		return err
+	} else if running {
+		return errors.New("stop the game before changing it")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	e := m.find(r.ID)
+	if e == nil {
+		return fmt.Errorf("game %q is not a dashboard-enabled game", r.ID)
+	}
+	if e.State == StateInstalling {
+		return errors.New("the game is still installing")
+	}
+	next := e.Request
+	if !refresh {
+		if r.Module != "" && r.Module != e.Module {
+			return errors.New("a game's module cannot change: disable it and enable it again")
+		}
+		next.DisplayName, next.ConnectAddress, next.Options = r.DisplayName, r.ConnectAddress, r.Options
+		next.Secrets = map[string]string{}
+		for k, v := range e.Secrets {
+			next.Secrets[k] = v
+		}
+		for k, v := range r.Secrets {
+			if v != "" {
+				next.Secrets[k] = v
+			}
+		}
+	}
+	g, mf, err := m.validate(next, true)
+	if err != nil {
+		return err
+	}
+	rd, err := m.renderAndFit(g, mf)
+	if err != nil {
+		return fmt.Errorf("outside the operator's policy (add it to policy.yaml to allow it): %w", err)
+	}
+	if e.stop != nil {
+		e.stop()
+		e.stop = nil
+	}
+	m.Registry.Remove(e.ID)
+	e.Request, e.rendered, e.State, e.Error = next, rd, StateInstalling, ""
+	if err := m.save(); err != nil {
+		return err
+	}
+	go m.install(e, g, installMode{recreate: true, pull: refresh})
 	return nil
 }
 
@@ -615,7 +700,7 @@ func (m *Manager) Restore(ctx context.Context) error {
 			}
 			continue
 		}
-		go m.install(t.e, t.g)
+		go m.install(t.e, t.g, installMode{})
 	}
 	return nil
 }

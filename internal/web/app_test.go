@@ -1141,6 +1141,8 @@ func (f *fakeManaged) Preview(managed.Request) (*managed.Plan, error) {
 }
 func (f *fakeManaged) Enable(r managed.Request) error { f.enabled = append(f.enabled, r); return nil }
 func (f *fakeManaged) Disable(string) error           { return nil }
+func (f *fakeManaged) Update(managed.Request) error   { return nil }
+func (f *fakeManaged) Refresh(string) error           { return nil }
 
 func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\nexit 0\n")
@@ -1165,7 +1167,7 @@ func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 		t.Errorf("unknown field: %d, want 400", c)
 	}
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
-	for _, p := range [][2]string{{"GET", "/api/managed/modules"}, {"GET", "/api/managed/games"}, {"POST", "/api/managed/preview"}, {"POST", "/api/managed/games"}, {"DELETE", "/api/managed/games/minecraft"}} {
+	for _, p := range [][2]string{{"GET", "/api/managed/modules"}, {"GET", "/api/managed/games"}, {"POST", "/api/managed/preview"}, {"POST", "/api/managed/games"}, {"DELETE", "/api/managed/games/minecraft"}, {"PUT", "/api/managed/games/minecraft"}, {"POST", "/api/managed/games/minecraft/refresh"}} {
 		if c := do(p[0], p[1], []byte(`{}`)); c != http.StatusForbidden {
 			t.Errorf("player %s %s = %d, want 403", p[0], p[1], c)
 		}

@@ -17,6 +17,8 @@ type ManagedGames interface {
 	List() []managed.Info
 	Preview(managed.Request) (*managed.Plan, error)
 	Enable(managed.Request) error
+	Update(managed.Request) error
+	Refresh(id string) error
 	Disable(id string) error
 }
 
@@ -109,4 +111,38 @@ func (a *App) record(r *http.Request, game, detail string) {
 	if a.History != nil {
 		a.History.Record(history.KindGames, game, actor(r), detail)
 	}
+}
+
+func (a *App) handleManagedUpdate(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	req, ok := readManagedRequest(w, r)
+	if !ok {
+		return
+	}
+	if req.ID != "" && req.ID != r.PathValue("id") {
+		http.Error(w, "id in the body does not match the URL", http.StatusBadRequest)
+		return
+	}
+	req.ID = r.PathValue("id")
+	if err := a.Managed.Update(req); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	a.record(r, req.ID, "changed settings")
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": req.ID, "state": managed.StateInstalling})
+}
+
+func (a *App) handleManagedRefresh(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := a.Managed.Refresh(id); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	a.record(r, id, "updating image")
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": managed.StateInstalling})
 }

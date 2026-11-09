@@ -171,6 +171,8 @@ Admin-only endpoints (the page that uses them is step 4):
 | `GET /api/managed/games` | dashboard-enabled games and their state: `installing`, `ready`, `failed` |
 | `POST /api/managed/preview` | dry run: the rendered compose service, the guard scope, and whether it fits the policy (and why not) |
 | `POST /api/managed/games` | enable: `{id, module, display_name, options, secrets}` |
+| `PUT /api/managed/games/{id}` | change a **stopped** game's settings (`display_name`, `connect_address`, `options`, `secrets`); the container is recreated, the module cannot change, secrets left out keep their stored value |
+| `POST /api/managed/games/{id}/refresh` | pull the image again and recreate the container with the same settings |
 | `DELETE /api/managed/games/{id}` | disable a **stopped** game: removes the container, scope and secrets; the data folder is kept |
 
 How enabling works: validate against the module (unknown options, secrets sent as plain options, missing required
@@ -183,10 +185,13 @@ so a game that did not finish installing is finished on the next start.
   keep working as before and win any id clash.
 - Secrets are kept in `secrets.json` (mode 0600) in the panel's state directory and are never in `games.json`,
   `scopes.json`, a preview or a list. A module option such as `rcon_password_env` next to a secret `rcon_password`
-  is pointed at the stored value automatically.
+  is pointed at the stored value automatically. Modules receive them through a lookup, not the process environment.
 - The panel cannot widen what it may do: the guard re-checks every scope against the policy, so a panel that wrote an
   out-of-policy scope would simply not have it loaded.
-- Not yet: editing an enabled game's options (disable and enable again), per-game image updates, and the UI.
+- Updates and edits recreate the container (the data folder is a bind mount, so nothing is lost). An unreachable
+  registry is tolerated on an edit if the image is already local, but not on a refresh. Pull-on-start for managed
+  games is not wired: use refresh.
+- Not yet: the Games page (step 4).
 
 ## Where this is heading: enable games from the dashboard
 

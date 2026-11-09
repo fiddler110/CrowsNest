@@ -11,6 +11,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"os"
 	"sort"
 
 	"github.com/fiddler110/crowsnest/internal/config"
@@ -29,6 +30,18 @@ type Runner interface {
 type Env struct {
 	Docker *dockerctl.Client
 	Config config.GameConfig
+	// Lookup resolves a secret by variable name (a password env var). Nil means
+	// the process environment; dashboard-enabled games supply their own store
+	// so a secret never has to be put into the environment.
+	Lookup func(name string) string
+}
+
+// Secret returns the value of the named variable, "" when unset.
+func (e Env) Secret(name string) string {
+	if e.Lookup != nil {
+		return e.Lookup(name)
+	}
+	return os.Getenv(name)
 }
 
 // WireFunc attaches the module's strategies to def (already holding the
@@ -94,7 +107,7 @@ func (s *Set) Build(cfg *config.Config, docker *dockerctl.Client) ([]games.GameD
 	var defs []games.GameDef
 	var runners []Runner
 	for _, g := range cfg.Games {
-		d, r := s.BuildOne(cfg, g, docker)
+		d, r := s.BuildOne(cfg, g, docker, nil)
 		defs = append(defs, d)
 		runners = append(runners, r...)
 	}
@@ -104,7 +117,7 @@ func (s *Set) Build(cfg *config.Config, docker *dockerctl.Client) ([]games.GameD
 // BuildOne wires a single game: its baseline GameDef plus the module for its
 // id (or its module: key), if any. cfg supplies the rest of the configuration
 // a module may need.
-func (s *Set) BuildOne(cfg *config.Config, g config.GameConfig, docker *dockerctl.Client) (games.GameDef, []Runner) {
+func (s *Set) BuildOne(cfg *config.Config, g config.GameConfig, docker *dockerctl.Client, lookup func(string) string) (games.GameDef, []Runner) {
 	def := games.FromConfig([]config.GameConfig{g}, docker)[0]
 	id := def.ID
 	if g.Module != "" {
@@ -117,7 +130,7 @@ func (s *Set) BuildOne(cfg *config.Config, g config.GameConfig, docker *dockerct
 		}
 		return def, nil
 	}
-	return def, fn(&def, Env{Docker: docker, Config: g})
+	return def, fn(&def, Env{Docker: docker, Config: g, Lookup: lookup})
 }
 
 // ForConfig returns the module set for a configuration: the bundled modules

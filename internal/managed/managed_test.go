@@ -297,3 +297,56 @@ func TestCreateThroughRealGuard(t *testing.T) {
 		t.Errorf("engine saw %v, want only the pull and the one good create", hits)
 	}
 }
+
+func TestUpdateAndRefresh(t *testing.T) {
+	m, fd := newManager(t)
+	req := Request{ID: "minecraft", Module: "minecraft",
+		Options: map[string]string{"eula": "TRUE", "motd": "one"}, Secrets: map[string]string{"rcon_password": "hunter2"}}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	if v, ok := os.LookupEnv("MINECRAFT_RCON_PASSWORD"); ok && v == "hunter2" {
+		t.Error("the secret was put into the process environment")
+	}
+
+	// settings change: container recreated with the new value, the stored secret kept
+	fd.running["minecraft"] = true
+	if err := m.Update(Request{ID: "minecraft", Options: map[string]string{"eula": "TRUE", "motd": "two"}}); err == nil {
+		t.Error("a running game was changed")
+	}
+	fd.running["minecraft"] = false
+	if err := m.Update(Request{ID: "minecraft", Module: "valheim"}); err == nil {
+		t.Error("the module was changed")
+	}
+	if err := m.Update(Request{ID: "minecraft", Options: map[string]string{"eula": "TRUE", "motd": "two", "ports": "22:25565/tcp"}}); err == nil {
+		t.Error("an update outside the policy was accepted")
+	}
+	if err := m.Update(Request{ID: "minecraft", Options: map[string]string{"eula": "TRUE", "motd": "two"}}); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	fd.mu.Lock()
+	last := fd.created[len(fd.created)-1]
+	n := len(fd.created)
+	fd.mu.Unlock()
+	env := strings.Join(last.Env, "|")
+	if n != 2 || !strings.Contains(env, "MOTD=two") || !strings.Contains(env, "RCON_PASSWORD=hunter2") {
+		t.Errorf("update: %d creates, env %s", n, env)
+	}
+	if _, ok := m.Registry.Get("minecraft"); !ok {
+		t.Error("game missing from the dashboard after an update")
+	}
+
+	// refresh: pulls again and recreates, same settings
+	pulls := len(fd.pulled)
+	if err := m.Refresh("minecraft"); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	fd.mu.Lock()
+	defer fd.mu.Unlock()
+	if len(fd.pulled) != pulls+1 || len(fd.created) != 3 || !strings.Contains(strings.Join(fd.created[2].Env, "|"), "MOTD=two") {
+		t.Errorf("refresh: pulls %d->%d, creates %d", pulls, len(fd.pulled), len(fd.created))
+	}
+}

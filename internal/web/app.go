@@ -187,6 +187,8 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/managed/games", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedList))))
 	mux.Handle("POST /api/managed/preview", a.requireAdmin(http.HandlerFunc(a.handleManagedPreview)))
 	mux.Handle("POST /api/managed/games", a.requireAdmin(http.HandlerFunc(a.handleManagedEnable)))
+	mux.Handle("PUT /api/managed/games/{id}", a.requireAdmin(http.HandlerFunc(a.handleManagedUpdate)))
+	mux.Handle("POST /api/managed/games/{id}/refresh", a.requireAdmin(http.HandlerFunc(a.handleManagedRefresh)))
 	mux.Handle("DELETE /api/managed/games/{id}", a.requireAdmin(http.HandlerFunc(a.handleManagedDisable)))
 	mux.Handle("GET /api/users", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleListUsers))))
 	mux.Handle("POST /api/users", a.requireAdmin(http.HandlerFunc(a.handleCreateUser)))

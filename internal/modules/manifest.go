@@ -312,7 +312,7 @@ func (m *Manifest) Wire() WireFunc {
 				api := &probes.HTTPJSON{
 					Docker: env.Docker, Name: m.ID,
 					BaseURL: strings.TrimRight(opts.sub(m.API.BaseURL), "/"),
-					User:    opts.sub(m.API.User), Pass: os.Getenv(opts.sub(m.API.PasswordEnv)),
+					User:    opts.sub(m.API.User), Pass: env.Secret(opts.sub(m.API.PasswordEnv)),
 					StatusPath: m.API.StatusPath, PlayersPath: m.Players.Path,
 					CountPath: m.Players.CountPath, NamesPath: m.Players.NamesPath, NameField: m.Players.NameField,
 					InfoSources: m.Info.Sources, InfoFields: m.Info.Fields,
@@ -334,7 +334,7 @@ func (m *Manifest) Wire() WireFunc {
 			}
 		}
 		if addr := opts.sub(m.RCON.Addr); addr != "" {
-			def.RawConsole = &probes.RawRCON{Addr: addr, Password: os.Getenv(opts.sub(m.RCON.PasswordEnv))}
+			def.RawConsole = &probes.RawRCON{Addr: addr, Password: env.Secret(opts.sub(m.RCON.PasswordEnv))}
 		}
 		switch m.Players.Type {
 		case "source_rcon":
@@ -342,7 +342,7 @@ func (m *Manifest) Wire() WireFunc {
 				log.Printf("%s: players.addr is empty (option not set in config.yaml); player count stays unknown", m.ID)
 			} else {
 				def.Players = &probes.SourceRCON{
-					Addr: addr, Password: os.Getenv(opts.sub(m.Players.PasswordEnv)),
+					Addr: addr, Password: env.Secret(opts.sub(m.Players.PasswordEnv)),
 					Command: m.Players.Command, Pattern: regexp.MustCompile(m.Players.Pattern),
 				}
 			}
