@@ -144,8 +144,9 @@ block selects them by id. Until Phase 2 a manifest game still needs its containe
   deprecated and folded into `options` at load time (explicit options win), so existing files keep working.
 - Windrose: status, startup and players come from `log_markers` on the game's own log (join = `LogNet: Login request`,
   leave = `UNetDriver::RemoveClientConnection`, both keyed by `BLPlayerSessionId`; fixture
-  `internal/modules/testdata/windrose_session.log`). Windrose+ is optional and only feeds the info panel through a Go
-  extension (`extensions` in `embed.go`). While the markers are new, `comparingCounter` checks the log count against
+  `internal/modules/testdata/windrose_session.log`). Windrose+ is optional: through a Go extension (`extensions` in `embed.go`) it adds the info panel, player
+  names (only while its count agrees with the log, so names never flap and cause phantom join/leave notices), the admin
+  console (players, status, ban list, kick, ban, unban) and the raw console. While the markers are new, `comparingCounter` checks the log count against
   Windrose+ and logs any disagreement; `players_source: windrose_plus` flips the primary back. A trap worth knowing:
   `R5TurnProtocol::Disconnect` looks like a leave but fires 9 s into every join.
 - If a required option is unset the API half of a module is left unwired (logged) and the game keeps the baseline;

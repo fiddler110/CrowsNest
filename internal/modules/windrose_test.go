@@ -83,6 +83,12 @@ func TestWindroseExtension(t *testing.T) {
 	if _, ok := def.Players.(*comparingCounter); !ok {
 		t.Fatalf("players = %T, want the comparing counter", def.Players)
 	}
+	if def.Console == nil || def.RawConsole == nil {
+		t.Error("Windrose+ must provide the admin console and the raw console")
+	}
+	if _, ok := def.Status.(interface{ Ready() bool }); !ok {
+		t.Errorf("status = %T, must stay the log tracker", def.Status)
+	}
 }
 
 func TestComparingCounterReturnsPrimary(t *testing.T) {
@@ -98,4 +104,58 @@ func TestComparingCounterReturnsPrimary(t *testing.T) {
 	if n, _, ok := c.PlayerCount(context.Background()); !ok || n != 1 {
 		t.Errorf("no other source: %d %v", n, ok)
 	}
+}
+
+// ids in, names out: the names must not flap between ids and real names, or the
+// join/leave notices (which diff names between polls) would announce phantoms.
+func TestComparingCounterNamesAreStable(t *testing.T) {
+	log := &scriptedCounter{}
+	mod := &scriptedCounter{}
+	c := &comparingCounter{name: "t", primary: log, other: mod, namesFromOther: true}
+	poll := func() (int, []string) {
+		n, names, _ := c.PlayerCount(context.Background())
+		return n, names
+	}
+
+	log.set(1, "id-a")
+	mod.set(1, "Ann")
+	if n, names := poll(); n != 1 || len(names) != 1 || names[0] != "Ann" {
+		t.Fatalf("agreed: %d %v, want 1 [Ann]", n, names)
+	}
+	// Windrose+ drops out: same player, so the agreed name is kept.
+	mod.down()
+	if n, names := poll(); n != 1 || len(names) != 1 || names[0] != "Ann" {
+		t.Fatalf("mod down, unchanged players: %d %v, want 1 [Ann]", n, names)
+	}
+	// A second player joins while the mod lags: count only, never a raw id.
+	log.set(2, "id-a", "id-b")
+	mod.set(1, "Ann")
+	if n, names := poll(); n != 2 || names != nil {
+		t.Fatalf("mod lagging: %d %v, want 2 and no names", n, names)
+	}
+	// The mod catches up.
+	mod.set(2, "Ann", "Bob")
+	if n, names := poll(); n != 2 || len(names) != 2 {
+		t.Fatalf("caught up: %d %v", n, names)
+	}
+	// Everyone leaves, then someone new joins with the mod down: no stale names.
+	log.set(0)
+	mod.down()
+	poll()
+	log.set(1, "id-c")
+	if n, names := poll(); n != 1 || names != nil {
+		t.Fatalf("new player, mod down: %d %v, want 1 and no names", n, names)
+	}
+}
+
+type scriptedCounter struct {
+	n     int
+	names []string
+	ok    bool
+}
+
+func (s *scriptedCounter) set(n int, names ...string) { s.n, s.names, s.ok = n, names, true }
+func (s *scriptedCounter) down()                      { s.n, s.names, s.ok = 0, nil, false }
+func (s *scriptedCounter) PlayerCount(context.Context) (int, []string, bool) {
+	return s.n, s.names, s.ok
 }

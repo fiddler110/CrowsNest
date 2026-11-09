@@ -19,9 +19,10 @@ func Bundled() *Set {
 func init() { extensions["windrose"] = extendWindrose }
 
 // extendWindrose adds the optional Windrose+ integration to the manifest
-// wiring: its dashboard API feeds the rich info panel. Player count comes
-// from the game log (players_source: log, the default); with windrose_plus
-// the mod is the source and the log count is only compared against it.
+// wiring: its dashboard API feeds the rich info panel, player names and the
+// admin console (kick, ban, ...). The player count comes from the game log
+// (players_source: log, the default) and is cross-checked against the mod;
+// with windrose_plus the mod is the source and the log is the cross-check.
 func extendWindrose(def *games.GameDef, env Env) []Runner {
 	url := env.Config.Options["http_api_url"]
 	if url == "" {
@@ -34,11 +35,13 @@ func extendWindrose(def *games.GameDef, env Env) []Runner {
 		ContainerName: def.ContainerName,
 	}
 	def.Info = client
+	def.Console = client
+	def.RawConsole = client
 	logCount := def.Players
 	if env.Config.Options["players_source"] == "windrose_plus" {
 		def.Players = &comparingCounter{name: "windrose", primary: client, other: logCount}
 	} else {
-		def.Players = &comparingCounter{name: "windrose", primary: logCount, other: client}
+		def.Players = &comparingCounter{name: "windrose", primary: logCount, other: client, namesFromOther: true}
 	}
 	return nil
 }
