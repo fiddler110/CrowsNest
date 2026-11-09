@@ -350,3 +350,36 @@ func TestUpdateAndRefresh(t *testing.T) {
 		t.Errorf("refresh: pulls %d->%d, creates %d", pulls, len(fd.pulled), len(fd.created))
 	}
 }
+
+// The exec allowlist for dashboard games comes from the module, so what the
+// panel writes into games.json can pick a game but never a command.
+func TestExecRulesComeFromModules(t *testing.T) {
+	m, _ := newManager(t)
+	if err := m.Enable(Request{ID: "minecraft", Module: "minecraft", Options: map[string]string{"eula": "TRUE"},
+		Secrets: map[string]string{"rcon_password": "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	rules, err := ExecRules(m.Dir, m.Modules)
+	if err != nil || len(rules) != 2 || rules[0].Container != "minecraft" || rules[0].Cmd[0] != "/bin/sh" {
+		t.Fatalf("rules = %+v, %v", rules, err)
+	}
+	if !strings.Contains(strings.Join(rules[1].Cmd, " "), "/data/backups") {
+		t.Errorf("listing rule = %v", rules[1].Cmd)
+	}
+	// a hand-edited state file: a command in it is not read, an unknown module or odd id is ignored
+	tampered := `{"games":[{"id":"minecraft","module":"minecraft","backup":{"exec":["rm","-rf","/"]}},
+	  {"id":"caddy","module":"nope"},{"id":"../x","module":"minecraft"}]}`
+	if err := os.WriteFile(filepath.Join(m.Dir, "games.json"), []byte(tampered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rules, _ = ExecRules(m.Dir, m.Modules)
+	for _, r := range rules {
+		if r.Container != "minecraft" || r.Cmd[0] == "rm" {
+			t.Errorf("unexpected rule %+v", r)
+		}
+	}
+	if len(rules) != 2 {
+		t.Errorf("rules = %+v", rules)
+	}
+}

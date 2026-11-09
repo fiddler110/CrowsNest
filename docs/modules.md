@@ -71,6 +71,9 @@ Bots are never counted. Without `rcon_addr` the game still starts and stops, but
 
 ## Writing a new module
 
+A module may also carry a `backup:` block (`exec`, `list_dir`, `before_stop`, same meaning as the config.yaml block).
+It applies to games enabled from the dashboard only; games in `config.yaml` keep their own.
+
 Copy `internal/modules/bundled/minecraft/module.yaml` (log-based) or `source` (RCON-based) into
 `<modules_dir>/<id>/module.yaml`, change the regexes, and add the game to `config.yaml`. Unknown keys are an
 error, so a typo cannot silently disable a setting. Add a fixture of real log lines and test it the way
@@ -207,6 +210,10 @@ dockerproxy-crowsnest:                    # the guard
   volumes:
     - ${USERDIR}/crowsnest/config/managed:/etc/crowsnest/managed:ro   # the panel's managed dir, read-only here
     - ./policy:/etc/crowsnest/policy:ro                                # a directory holding policy.yaml
+crowsnest-execguard:
+  volumes:
+    - ./config.yaml:/app/config.yaml:ro                                 # already there
+    - ${USERDIR}/crowsnest/config/managed:/app/data/managed:ro          # same path as managed.dir in config.yaml
 crowsnest:                                # the panel
   volumes:
     - ${USERDIR}/crowsnest/config:/app/data                            # already there: managed/ lives inside it
@@ -225,8 +232,13 @@ managed: {dir: /app/data/managed, policy_file: /etc/crowsnest/policy/policy.yaml
 - `mkdir -p ${USERDIR}/crowsnest/config/managed` and make it writable by the panel's uid (1000).
 - `policy.yaml` is parsed at every reload, so tightening it takes effect within seconds and drops any managed scope
   that no longer fits. The panel reads the same file for its preview.
-- Everything the panel does goes through execguard, so a managed game that needs `docker exec` (backups, module
-  actions that exec) needs its command in execguard's allowlist, which is read from `config.yaml` at start.
+- **exec and backups.** Everything the panel does goes through execguard, whose allowlist for `config.yaml` games is
+  read at start. For dashboard-enabled games it is built from each module's `backup:` block (command, `list_dir`,
+  `before_stop`) and **reloaded every 2 seconds** from the managed dir, so enabling a game adds its backup command
+  and disabling removes it, with no restart. The command always comes from the installed module, never from the
+  saved state, so a panel that rewrote `games.json` could pick a game but not a command. Execguard therefore needs
+  `config.yaml` (for `managed.dir`) and the managed dir mounted read-only. `valheim`, `palworld` and `minecraft`
+  ship a backup; a module without one has none.
 
 ## Where this is heading: enable games from the dashboard
 

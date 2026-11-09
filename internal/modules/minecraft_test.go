@@ -49,3 +49,21 @@ func TestMinecraftNotReadyBeforeDone(t *testing.T) {
 		t.Fatal("ready before the Done line")
 	}
 }
+
+// testdata/minecraft_real_26.3_startup.log is a real itzg/minecraft-server
+// startup (server version 26.3), captured 2026-11-09 from a sandbox run. It has
+// no players: join/leave lines are still only covered by the representative file.
+func TestMinecraftRealStartup(t *testing.T) {
+	b, err := os.ReadFile("testdata/minecraft_real_26.3_startup.log")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tr := trackerFor(t, "minecraft")
+	tr.Replay(strings.NewReader(string(b)))
+	if !tr.Ready() {
+		t.Error("the real Done line did not latch ready")
+	}
+	if n, _, _ := tr.PlayerCount(context.Background()); n != 0 {
+		t.Errorf("players = %d on an empty server", n)
+	}
+}

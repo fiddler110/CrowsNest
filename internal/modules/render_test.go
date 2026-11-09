@@ -202,3 +202,21 @@ exec: true
 		t.Error("an image outside the policy was admitted")
 	}
 }
+
+// The dashboard path backs Valheim and Palworld up with the same commands
+// config.yaml runs in production.
+func TestBundledBackupsMatchProduction(t *testing.T) {
+	want := map[string][]string{
+		"palworld": {"backup"},
+		"valheim":  {"/bin/sh", "-c", "mkdir -p /config/backups && tar czf /config/backups/manual-$(date +%Y%m%d-%H%M%S).tar.gz -C /config worlds_local"},
+	}
+	for id, cmd := range want {
+		m, _ := Bundled().Manifest(id)
+		if m.Backup == nil || strings.Join(m.Backup.Exec, "\x00") != strings.Join(cmd, "\x00") {
+			t.Errorf("%s backup = %+v, want %v", id, m.Backup, cmd)
+		}
+	}
+	if m, _ := Bundled().Manifest("minecraft"); m.Backup == nil || m.Backup.ListDir != "/data/backups" {
+		t.Errorf("minecraft backup = %+v", m.Backup)
+	}
+}

@@ -14,6 +14,8 @@ import (
 	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/execguard"
+	"github.com/fiddler110/crowsnest/internal/managed"
+	"github.com/fiddler110/crowsnest/internal/modules"
 )
 
 // execRules lists every command CrowsNest itself ever runs with `docker
@@ -48,6 +50,18 @@ func runExecGuard(args []string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 	rules := execRules(cfg)
+	var mods *modules.Set
+	if cfg.Managed.Dir != "" {
+		// Dashboard-enabled games: their module's backup command, reloaded as games come and go.
+		if mods, err = modules.ForConfig(cfg, log.Printf); err != nil {
+			return fmt.Errorf("load modules: %w", err)
+		}
+		more, err := managed.ExecRules(cfg.Managed.Dir, mods)
+		if err != nil {
+			return err
+		}
+		rules = append(rules, more...)
+	}
 	g, err := execguard.New(*upstream, rules)
 	if err != nil {
 		return err
@@ -58,6 +72,10 @@ func runExecGuard(args []string) error {
 	srv := &http.Server{Addr: *listen, Handler: g, ReadHeaderTimeout: 10 * time.Second}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	if mods != nil {
+		static := execRules(cfg)
+		go watchManagedRules(ctx, g, static, cfg.Managed.Dir, mods)
+	}
 	go func() {
 		<-ctx.Done()
 		sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -68,4 +86,32 @@ func runExecGuard(args []string) error {
 		return err
 	}
 	return nil
+}
+
+// watchManagedRules re-reads the managed games every few seconds and swaps the
+// allowlist when it changes. A read that fails keeps the rules in force.
+func watchManagedRules(ctx context.Context, g *execguard.Guard, static []execguard.Rule, dir string, mods *modules.Set) {
+	t := time.NewTicker(2 * time.Second)
+	defer t.Stop()
+	last := len(static)
+	var lastKey string
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-t.C:
+		}
+		more, err := managed.ExecRules(dir, mods)
+		if err != nil {
+			log.Printf("execguard: keeping the current allowlist: %v", err)
+			continue
+		}
+		key := fmt.Sprint(more)
+		if key == lastKey {
+			continue
+		}
+		lastKey = key
+		g.SetRules(append(append([]execguard.Rule{}, static...), more...))
+		log.Printf("execguard: %d allowlisted command(s) (%d from dashboard-enabled games)", last+len(more), len(more))
+	}
 }

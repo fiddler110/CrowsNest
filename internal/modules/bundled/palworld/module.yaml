@@ -35,6 +35,11 @@ runtime:
     - DELETE_OLD_BACKUPS=true
     - OLD_BACKUP_DAYS=14
 
+backup:
+  exec: ["backup"]                 # the image saves through the REST API and writes a dated tar.gz
+  list_dir: /palworld/backups
+  before_stop: true
+
 options:
   - {key: max_players, label: Max players, default: "8"}
   - {key: server_name, label: Server name, default: CrowsNest Palworld}

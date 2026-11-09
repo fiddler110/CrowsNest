@@ -14,6 +14,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
+	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/logtrack"
 	"github.com/fiddler110/crowsnest/internal/probes"
@@ -32,6 +33,13 @@ type Manifest struct {
 	Name       string `yaml:"name"`
 
 	Runtime Runtime `yaml:"runtime"`
+
+	// Backup is the command (run with docker exec) that backs this game up and
+	// the folder its backups land in. Used for games enabled from the dashboard,
+	// whose config has no backup block: execguard allows exactly this command in
+	// that game's container and nothing else. Games in config.yaml keep their own
+	// backup block.
+	Backup *config.BackupConfig `yaml:"backup"`
 
 	// Status.ReadyLog is the log line that marks the server open; with
 	// players.type log_markers it drives starting/online from the log.
@@ -214,6 +222,14 @@ func (m *Manifest) validate() error {
 	}
 	if m.Name == "" {
 		return fmt.Errorf("module %q: name is required", m.ID)
+	}
+	if m.Backup != nil {
+		if len(m.Backup.Exec) == 0 || m.Backup.Exec[0] == "" {
+			return fmt.Errorf("module %q: backup.exec must be a command", m.ID)
+		}
+		if m.Backup.ListDir != "" && !strings.HasPrefix(m.Backup.ListDir, "/") {
+			return fmt.Errorf("module %q: backup.list_dir must be an absolute path", m.ID)
+		}
 	}
 	if m.Runtime.RestartCooldown < 0 {
 		return fmt.Errorf("module %q: restart_cooldown must not be negative", m.ID)

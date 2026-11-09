@@ -27,9 +27,11 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/dockerguard"
+	"github.com/fiddler110/crowsnest/internal/execguard"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/modules"
 	"gopkg.in/yaml.v3"
@@ -214,7 +216,7 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	}
 	g = config.GameConfig{
 		ID: r.ID, ContainerName: r.ID, DisplayName: r.DisplayName, Module: r.Module,
-		ConnectAddress: r.ConnectAddress, Options: opts,
+		ConnectAddress: r.ConnectAddress, Options: opts, Backup: mf.Backup,
 	}
 	if g.DisplayName == "" {
 		g.DisplayName = mf.Name
@@ -703,4 +705,34 @@ func (m *Manager) Restore(ctx context.Context) error {
 		go m.install(t.e, t.g, installMode{})
 	}
 	return nil
+}
+
+// ExecRules is the exec allowlist for the dashboard-enabled games in dir: for
+// each, its module's backup command (and listing) in the container named after
+// the game. The commands come from the installed modules, never from the saved
+// state, so what the panel writes there can choose a game but not a command.
+func ExecRules(dir string, mods *modules.Set) ([]execguard.Rule, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "games.json"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var st stateFile
+	if err := json.Unmarshal(b, &st); err != nil {
+		return nil, fmt.Errorf("games.json: %w", err)
+	}
+	var rules []execguard.Rule
+	for _, g := range st.Games {
+		mf, ok := mods.Manifest(g.Module)
+		if !ok || mf.Backup == nil || !idRe.MatchString(g.ID) {
+			continue
+		}
+		rules = append(rules, execguard.Rule{Container: g.ID, Cmd: mf.Backup.Exec})
+		if mf.Backup.ListDir != "" {
+			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.ListArgs(mf.Backup.ListDir)})
+		}
+	}
+	return rules, nil
 }
