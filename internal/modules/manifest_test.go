@@ -36,14 +36,16 @@ func TestParseAndWire(t *testing.T) {
 
 func TestParseRejects(t *testing.T) {
 	cases := map[string]string{
-		"version":  "api_version: 2\nid: a\nname: A\n",
-		"id":       "api_version: 1\nid: Bad_ID\nname: A\n",
-		"name":     "api_version: 1\nid: a\n",
-		"typo":     "api_version: 1\nid: a\nname: A\nrunetime: {}\n",
-		"regex":    "api_version: 1\nid: a\nname: A\nstartup: [{match: '(', pct: 1}]\n",
-		"pct":      "api_version: 1\nid: a\nname: A\nstartup: [{match: x, pct: 101}]\n",
-		"players":  "api_version: 1\nid: a\nname: A\nplayers: {type: log_markers}\n",
-		"negative": "api_version: 1\nid: a\nname: A\nruntime: {restart_cooldown: -1s}\n",
+		"version":       "api_version: 2\nid: a\nname: A\n",
+		"id":            "api_version: 1\nid: Bad_ID\nname: A\n",
+		"name":          "api_version: 1\nid: a\n",
+		"typo":          "api_version: 1\nid: a\nname: A\nrunetime: {}\n",
+		"regex":         "api_version: 1\nid: a\nname: A\nstartup: [{match: '(', pct: 1}]\n",
+		"pct":           "api_version: 1\nid: a\nname: A\nstartup: [{match: x, pct: 101}]\n",
+		"players":       "api_version: 1\nid: a\nname: A\nplayers: {type: http_json}\n",
+		"lm-incomplete": "api_version: 1\nid: a\nname: A\nplayers: {type: log_markers}\n",
+		"lm-nogroup":    "api_version: 1\nid: a\nname: A\nstatus: {ready_log: ok}\nplayers: {type: log_markers, join: x, leave: 'y(.)'}\n",
+		"negative":      "api_version: 1\nid: a\nname: A\nruntime: {restart_cooldown: -1s}\n",
 	}
 	for name, y := range cases {
 		if _, err := Parse(strings.NewReader(y)); err == nil {
@@ -76,5 +78,23 @@ func TestLoadDir(t *testing.T) {
 	write("mismatch", good)
 	if err := NewSet().LoadDir(dir); err == nil {
 		t.Fatal("expected dir/id mismatch error")
+	}
+}
+
+func TestLogMarkersWire(t *testing.T) {
+	m, err := Parse(strings.NewReader(`
+api_version: 1
+id: valheim2
+name: Valheim 2
+status: {ready_log: 'Loading: Done\.'}
+players: {type: log_markers, join: 'Got handshake from client (\S+)', leave: 'Closing socket (\S+)'}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := &games.GameDef{ID: "valheim2", ContainerName: "valheim2"}
+	runners := m.Wire()(def, Env{})
+	if len(runners) != 1 || def.Status == nil || def.Players == nil || def.Info == nil {
+		t.Fatalf("runners=%d def=%+v", len(runners), def)
 	}
 }

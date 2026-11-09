@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/logtrack"
 )
 
 // APIVersion is the module.yaml schema major version this build understands.
@@ -30,8 +31,17 @@ type Manifest struct {
 		RestartCooldown time.Duration `yaml:"restart_cooldown"`
 	} `yaml:"runtime"`
 
+	// Status.ReadyLog is the log line that marks the server open; with
+	// players.type log_markers it drives starting/online from the log.
+	Status struct {
+		ReadyLog string `yaml:"ready_log"`
+	} `yaml:"status"`
+
 	Players struct {
-		Type string `yaml:"type"`
+		Type  string `yaml:"type"`
+		Join  string `yaml:"join"`  // regexp, group 1 = player id
+		Leave string `yaml:"leave"` // regexp, group 1 = player id
+		World string `yaml:"world"` // regexp, group 1 = world name (optional)
 	} `yaml:"players"`
 
 	Startup []StartupStep `yaml:"startup"`
@@ -48,7 +58,7 @@ var idRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 // supportedPlayers lists the probe types an engine exists for. Declared types
 // beyond these are refused until their engine lands.
-var supportedPlayers = map[string]bool{"": true, "none": true}
+var supportedPlayers = map[string]bool{"": true, "none": true, "log_markers": true}
 
 // Parse decodes and validates one module.yaml. Unknown keys are an error so a
 // typo in a manifest cannot silently disable a setting.
@@ -81,6 +91,21 @@ func (m *Manifest) validate() error {
 	if !supportedPlayers[m.Players.Type] {
 		return fmt.Errorf("module %q: players.type %q is not supported yet", m.ID, m.Players.Type)
 	}
+	if m.Players.Type == "log_markers" {
+		if m.Status.ReadyLog == "" || m.Players.Join == "" || m.Players.Leave == "" {
+			return fmt.Errorf("module %q: log_markers needs status.ready_log, players.join and players.leave", m.ID)
+		}
+		for name, re := range map[string]string{"status.ready_log": m.Status.ReadyLog, "players.join": m.Players.Join, "players.leave": m.Players.Leave, "players.world": m.Players.World} {
+			if re == "" {
+				continue
+			}
+			if c, err := regexp.Compile(re); err != nil {
+				return fmt.Errorf("module %q: %s invalid: %v", m.ID, name, err)
+			} else if name != "status.ready_log" && c.NumSubexp() < 1 {
+				return fmt.Errorf("module %q: %s needs a capture group", m.ID, name)
+			}
+		}
+	}
 	for i, s := range m.Startup {
 		if _, err := regexp.Compile(s.Match); err != nil || s.Match == "" {
 			return fmt.Errorf("module %q: startup[%d].match invalid: %v", m.ID, i, err)
@@ -94,7 +119,22 @@ func (m *Manifest) validate() error {
 
 // Wire returns the WireFunc that applies the manifest to a baseline GameDef.
 func (m *Manifest) Wire() WireFunc {
-	return func(def *games.GameDef, _ Env) []Runner {
+	return func(def *games.GameDef, env Env) []Runner {
+		var runners []Runner
+		if m.Players.Type == "log_markers" {
+			spec := logtrack.Spec{
+				Name:  m.ID,
+				Ready: regexp.MustCompile(m.Status.ReadyLog),
+				Join:  regexp.MustCompile(m.Players.Join),
+				Leave: regexp.MustCompile(m.Players.Leave),
+			}
+			if m.Players.World != "" {
+				spec.World = regexp.MustCompile(m.Players.World)
+			}
+			tr := logtrack.New(env.Docker, def.ContainerName, spec)
+			def.Status, def.Players, def.Info = tr, tr, tr
+			runners = append(runners, tr)
+		}
 		if m.Runtime.RestartCooldown > 0 {
 			def.RestartCooldown = m.Runtime.RestartCooldown
 		}
@@ -107,7 +147,7 @@ func (m *Manifest) Wire() WireFunc {
 			}
 			def.Startup = sm
 		}
-		return nil
+		return runners
 	}
 }
 

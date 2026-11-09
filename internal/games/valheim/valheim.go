@@ -18,18 +18,13 @@
 package valheim
 
 import (
-	"bufio"
-	"context"
 	"fmt"
-	"io"
-	"log"
 	"regexp"
 	"strconv"
-	"sync"
-	"time"
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/logtrack"
 )
 
 var (
@@ -76,207 +71,14 @@ func parseDownload(line string) (int, string, bool) {
 	return 10 + int(pct*0.6), fmt.Sprintf("Downloading server files (%.0f%%)", pct), true
 }
 
-// reattachDelay is how long Run waits before retrying after the container
-// is stopped or the log stream ends unexpectedly.
-const reattachDelay = 5 * time.Second
-
-// Tracker maintains a live count of connected players by tailing
-// `docker logs -f` for one Valheim container. It implements
-// games.PlayerCounter. Build one with NewTracker and launch Run once as its
-// own goroutine; PlayerCount is safe to call concurrently.
-type Tracker struct {
-	docker        *dockerctl.Client
-	containerName string
-
-	mu        sync.Mutex
-	connected map[string]struct{}
-	attached  bool
-	ready     bool // saw readyRe in the current run's log
-	world     string
-}
-
-// Info implements games.InfoProvider from what the log tail knows: the
-// server has no query API enabled by default. available=false until the tail
-// is attached to a running container.
-func (t *Tracker) Info(ctx context.Context) (map[string]any, bool) {
-	out := map[string]any{"available": false}
-	t.mu.Lock()
-	attached, ready, world, players := t.attached, t.ready, t.world, len(t.connected)
-	t.mu.Unlock()
-	if !attached {
-		return out, true
-	}
-	out["available"] = true
-	if ready {
-		out["state"] = "online"
-	} else {
-		out["state"] = "starting"
-	}
-	if started, err := t.docker.StartedAt(ctx, t.containerName); err == nil {
-		out["uptime"] = uptimeString(time.Since(started))
-	}
-	if world != "" {
-		out["world"] = world
-	}
-	out["players_connected"] = players
-	return out, true
-}
-
-func uptimeString(d time.Duration) string {
-	if d < 0 {
-		d = 0
-	}
-	days, hours, mins := int(d.Hours())/24, int(d.Hours())%24, int(d.Minutes())%60
-	switch {
-	case days > 0:
-		return fmt.Sprintf("%dd %dh %dm", days, hours, mins)
-	case hours > 0:
-		return fmt.Sprintf("%dh %dm", hours, mins)
-	}
-	return fmt.Sprintf("%dm", mins)
-}
-
-// Check implements games.StatusChecker: offline when the container isn't
-// running; starting until the log tail has seen the world finish loading;
-// online after that.
-func (t *Tracker) Check(ctx context.Context, containerName string) (games.Status, error) {
-	running, err := t.docker.Running(ctx, containerName)
-	if err != nil {
-		return games.StatusUnknown, err
-	}
-	if !running {
-		return games.StatusOffline, nil
-	}
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if t.ready {
-		return games.StatusOnline, nil
-	}
-	return games.StatusStarting, nil
-}
-
-// NewTracker builds a Tracker for the named container. Its PlayerCount
-// reports ok=false until Run has attached to a live log stream.
-func NewTracker(docker *dockerctl.Client, containerName string) *Tracker {
-	return &Tracker{
-		docker:        docker,
-		containerName: containerName,
-		connected:     make(map[string]struct{}),
-	}
-}
-
-// PlayerCount implements games.PlayerCounter. ok=false whenever no log
-// stream is currently attached (container not running, or not yet
-// (re)connected) — never assumed to mean zero players.
-func (t *Tracker) PlayerCount(ctx context.Context) (count int, names []string, ok bool) {
-	t.mu.Lock()
-	defer t.mu.Unlock()
-	if !t.attached {
-		return 0, nil, false
-	}
-	names = make([]string, 0, len(t.connected))
-	for id := range t.connected {
-		names = append(names, id)
-	}
-	return len(names), names, true
-}
-
-// Run attaches to the container's log stream and keeps re-attaching
-// (resetting all tracked state on every reattach, since a fresh attach
-// can't know who was connected before it started watching) until ctx is
-// cancelled. Intended to be launched once as its own goroutine.
-func (t *Tracker) Run(ctx context.Context) {
-	for {
-		if ctx.Err() != nil {
-			return
-		}
-		running, err := t.docker.Running(ctx, t.containerName)
-		if err != nil || !running {
-			t.reset()
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(reattachDelay):
-			}
-			continue
-		}
-		t.tailOnce(ctx)
-		t.reset()
-	}
-}
-
-func (t *Tracker) reset() {
-	t.mu.Lock()
-	t.connected = make(map[string]struct{})
-	t.attached = false
-	t.ready = false
-	t.world = ""
-	t.mu.Unlock()
-}
-
-// tailOnce streams the container's full log history plus live output,
-// replaying every join/leave marker to reconstruct who's currently
-// connected, until the stream ends (container stopped, or an error).
-func (t *Tracker) tailOnce(ctx context.Context) {
-	// Only this run's output: a restarted container keeps its earlier runs'
-	// logs, whose "ready" line and joins must not leak into this one.
-	since := ""
-	if started, err := t.docker.StartedAt(ctx, t.containerName); err == nil {
-		since = started.UTC().Format(time.RFC3339Nano)
-	}
-	rc, err := t.docker.Logs(ctx, t.containerName, since, "")
-	if err != nil {
-		log.Printf("valheim: attach to %s logs: %v", t.containerName, err)
-		select {
-		case <-ctx.Done():
-		case <-time.After(reattachDelay):
-		}
-		return
-	}
-	defer rc.Close()
-
-	t.mu.Lock()
-	t.attached = true
-	t.mu.Unlock()
-
-	t.scan(rc)
-}
-
-// scan reads lines from r and updates connected-player state. Split out
-// from tailOnce so tests can drive it directly without a real docker
-// process.
-func (t *Tracker) scan(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	// Player-count precision is best-effort here; skipping an
-	// unexpectedly long line only means one join/leave event is missed,
-	// not that the whole stream aborts.
-	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-	for scanner.Scan() {
-		t.handleLine(scanner.Text())
-	}
-}
-
-func (t *Tracker) handleLine(line string) {
-	if m := worldRe.FindStringSubmatch(line); m != nil {
-		t.mu.Lock()
-		t.world = m[1]
-		t.mu.Unlock()
-	}
-	if readyRe.MatchString(line) {
-		t.mu.Lock()
-		t.ready = true
-		t.mu.Unlock()
-		return
-	}
-	if m := connectRe.FindStringSubmatch(line); m != nil {
-		t.mu.Lock()
-		t.connected[m[1]] = struct{}{}
-		t.mu.Unlock()
-		return
-	}
-	if m := disconnectRe.FindStringSubmatch(line); m != nil {
-		t.mu.Lock()
-		delete(t.connected, m[1])
-		t.mu.Unlock()
-	}
+// NewTracker builds the log-following tracker for the named container; the
+// caller starts its Run once as a goroutine.
+func NewTracker(docker *dockerctl.Client, containerName string) *logtrack.Tracker {
+	return logtrack.New(docker, containerName, logtrack.Spec{
+		Name:  "valheim",
+		Ready: readyRe,
+		Join:  connectRe,
+		Leave: disconnectRe,
+		World: worldRe,
+	})
 }

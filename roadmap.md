@@ -35,8 +35,11 @@ derived from it.
     (`modules.Parse`, `Set.LoadDir`): identity, restart cooldown, startup
     milestones; unknown keys and unsupported probe types are refused. Not yet
     called from `main` (needs a modules-dir setting; do with step 4).
-  - [ ] Step 3: shared log-follow engine (`log_markers`) replacing the two
-    trackers; `http_json` and `source_rcon` probes.
+  - [~] Step 3, part 1 (2026-11-09): shared log-follow engine
+    `internal/logtrack` replaces the duplicate Valheim/Windrose trackers
+    (goldens differ only in the recorded type name); `players.type:
+    log_markers` works in `module.yaml`. Still open: `http_json` and
+    `source_rcon` probes, and real Valheim join logs as fixtures.
   - [ ] Step 4: map the legacy `config.yaml` games block onto the bundled
     modules through the same path.
   *Prerequisite:* record real Valheim logs with a player joining (see C).
