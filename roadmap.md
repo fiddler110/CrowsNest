@@ -28,6 +28,15 @@ derived from it.
   duplicate Valheim/Windrose trackers), `http_json` and `source_rcon` probes.
   Legacy `config.yaml` games block still works, mapped to built-in modules.
   Done when the golden tests are unchanged and `cmd/crowsnest` names no game.
+  - [x] Step 1 (2026-11-09): `internal/modules` registry; Palworld, Valheim
+    and Windrose wiring moved into `modules.Bundled()`; `cmd/crowsnest` names
+    no game; goldens unchanged.
+  - [ ] Step 2: `module.yaml` v1 schema + loader (manifest registers a
+    `WireFunc` built from declarative probes).
+  - [ ] Step 3: shared log-follow engine (`log_markers`) replacing the two
+    trackers; `http_json` and `source_rcon` probes.
+  - [ ] Step 4: map the legacy `config.yaml` games block onto the bundled
+    modules through the same path.
   *Prerequisite:* record real Valheim logs with a player joining (see C).
 - [ ] **Phase 2: dogfood.** Re-express Valheim, Palworld, then Windrose+ as
   bundled modules; adapter-sidecar contract v0 (Windrose+ first); remove the
