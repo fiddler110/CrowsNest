@@ -87,6 +87,7 @@ and environment. `crowsnest render` turns the games in `config.yaml` into the co
 platform:
   games_root: ${USERDIR}        # where each game's data folder lives; written as-is
   host_ip: 10.0.0.2             # address game ports are published on (default 0.0.0.0)
+  host_games_root: /srv/games   # games_root as a literal path, for the guard (only if games_root is a variable)
   games_network: crowsnest-games-net
 games:
   - id: minecraft
@@ -113,6 +114,41 @@ crowsnest render --config config.yaml --compose games.compose.yaml --scopes scop
 Runtime sections today: `valheim`, `palworld`, `minecraft`, and `source` (image required per game).
 `dontstarve` has none yet, because I haven't verified an image's ports and data layout.
 
+## The policy envelope and managed scopes (guard)
+
+The guard has two scope sources:
+
+- `GUARD_SCOPES`: the operator's own JSON, trusted, read at start. Unchanged.
+- `GUARD_SCOPES_FILE`: a **managed** scopes file the dashboard may rewrite. Needs `GUARD_POLICY`, a `policy.yaml`
+  mounted read-only into the guard and not writable by the panel. Every managed scope must fit the policy or it is
+  **not loaded** (the others still are); the guard enforces this itself, so a compromised panel that writes a bad
+  scope gains nothing.
+
+The guard reloads when either file changes (checked every 2s) or on `SIGHUP`. A reload that fails to parse keeps the
+scopes in force exactly as they were; a tighter policy drops managed scopes that no longer fit. Either variable alone
+is enough to start (`GUARD_SCOPES_FILE` with no `GUARD_SCOPES` is fine); with a managed file but no policy it refuses.
+
+```yaml
+# policy.yaml: every list is required, so no limit is ever implied
+games_root: /srv/games                 # managed binds must be exact paths inside this folder
+names: [valheim, minecraft, "gs-*"]    # container names the panel may manage (trailing * = prefix)
+images: [lloesche/valheim-server, "docker.io/itzg/*"]   # "*" alone = any image; prefixes are fully qualified
+networks: [crowsnest-games-net]
+ports: ["27000-28999/udp", "25565/tcp"]  # host ports and protocol
+host_ips: [10.0.0.2]                   # optional: limits the address ports are published on
+exec: false                            # may managed scopes use docker exec (save-on-stop hooks need it)
+labels: []                             # extra labels they may require (the watchtower opt-out is always fine)
+max_scopes: 32
+```
+
+- `names` matters: the guard lets a scope manage the container of the same name, so without it a scope called
+  `caddy` would let the panel stop your reverse proxy.
+- A managed scope can never carry volumes, security options, capabilities, aliases or fixed addresses, host
+  networking, or exec unless the policy allows it. Windrose-style needs stay in the operator's own `GUARD_SCOPES`.
+- Official Docker Hub images are fully qualified in a scope (`itzg/minecraft-server` is `docker.io/itzg/minecraft-server`),
+  so policy prefixes are written that way.
+- `Policy.Admit` is the same check the dashboard will use to preview "does this fit?" before enabling a game.
+
 ## Where this is heading: enable games from the dashboard
 
 Agreed direction: the dashboard renders and **applies** a game itself, but only inside a read-only policy file the
@@ -120,8 +156,8 @@ operator owns (games folder, port range, allowed networks, no privileges). Anyth
 for the operator to approve outside the dashboard. Steps, each shippable on its own:
 
 1. Runtime sections and `crowsnest render` (done, above).
-2. `policy.yaml` envelope plus a check that a rendered game fits it; the guard reads its scopes from a mounted
-   file and reloads on signal instead of an environment variable.
+2. `policy.yaml` envelope plus a check that a rendered game fits it; the guard reads managed scopes from a mounted
+   file and reloads on change or `SIGHUP` (done, below).
 3. The dashboard writes the game's entry and generated files (admin only), creates `.env` entries for secrets in a
    panel-only file, and reloads the guard.
 4. A Games page: pick a module, fill in its options, see the rendered compose and what falls outside the policy,

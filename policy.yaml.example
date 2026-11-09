@@ -1,0 +1,11 @@
+# Operator-owned envelope for what the dashboard may add. Mount read-only into
+# the guard (GUARD_POLICY=/etc/crowsnest/policy.yaml) next to GUARD_SCOPES_FILE.
+# See docs/modules.md. Every list is required: no limit is ever implied.
+games_root: /srv/games
+names: [valheim, palworld, minecraft, "gs-*"]
+images: [lloesche/valheim-server, thijsvanloef/palworld-server-docker, "docker.io/itzg/*"]
+networks: [crowsnest-games-net]
+ports: ["25000-28999/udp", "25565/tcp"]
+host_ips: [10.0.0.2]
+exec: false
+max_scopes: 32

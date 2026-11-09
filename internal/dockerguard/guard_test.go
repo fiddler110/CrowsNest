@@ -1040,7 +1040,7 @@ func TestDeepJSONIsRefused(t *testing.T) {
 }
 
 func TestACheckThatFailsUnexpectedlyRefuses(t *testing.T) {
-	h := newHarness(t, scopesJSON, func(g *Guard) { g.scopes = []*Scope{nil} }) // a nil scope: the pull check dereferences it
+	h := newHarness(t, scopesJSON, func(g *Guard) { g.SetScopes([]*Scope{nil}) }) // a nil scope: the pull check dereferences it
 	r := h.request("POST", "/v1.52/images/create?fromImage=thijsvanloef%2Fpalworld-server-docker&tag=latest", nil)
 	if r.code != 400 {
 		t.Fatalf("%s", r)

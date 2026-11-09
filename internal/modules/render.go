@@ -53,13 +53,16 @@ type DataMount struct {
 // Platform is the host-level input to Render.
 type Platform struct {
 	GamesRoot string // e.g. ${USERDIR} or /srv/games
-	HostIP    string // published-port address; "" = 0.0.0.0
-	Network   string // existing docker network; "" = crowsnest-games-net
+	// HostGamesRoot is GamesRoot as a literal path, for the guard's scopes;
+	// "" means GamesRoot is already literal.
+	HostGamesRoot string
+	HostIP        string // published-port address; "" = 0.0.0.0
+	Network       string // existing docker network; "" = crowsnest-games-net
 }
 
 // PlatformFrom reads the platform section of config.yaml.
 func PlatformFrom(c config.PlatformConfig) Platform {
-	return Platform{GamesRoot: c.GamesRoot, HostIP: c.HostIP, Network: c.GamesNetwork}
+	return Platform{GamesRoot: c.GamesRoot, HostGamesRoot: c.HostGamesRoot, HostIP: c.HostIP, Network: c.GamesNetwork}
 }
 
 // Service is one rendered compose service (field order is output order).
@@ -182,7 +185,11 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 			host += "/" + strings.Trim(d.Sub, "/")
 		}
 		svc.Volumes = append(svc.Volumes, host+":"+d.Path)
-		scope.Binds = append(scope.Binds, host)
+		scopeHost := host
+		if p.HostGamesRoot != "" {
+			scopeHost = strings.TrimRight(p.HostGamesRoot, "/") + strings.TrimPrefix(host, strings.TrimRight(p.GamesRoot, "/"))
+		}
+		scope.Binds = append(scope.Binds, scopeHost)
 	}
 
 	seen := map[string]bool{}

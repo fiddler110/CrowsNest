@@ -59,6 +59,10 @@ type PlatformConfig struct {
 	// GamesRoot is the host directory holding every game's data. It may be a
 	// compose variable such as ${USERDIR}: it is written as-is.
 	GamesRoot string `yaml:"games_root"`
+	// HostGamesRoot is the literal host path of GamesRoot, used for the
+	// guard's scopes (the guard matches exact paths and cannot expand compose
+	// variables). Needed only when GamesRoot is a variable.
+	HostGamesRoot string `yaml:"host_games_root"`
 	// HostIP is the host address game ports are published on (default 0.0.0.0).
 	HostIP string `yaml:"host_ip"`
 	// GamesNetwork is the existing docker network games join (default

@@ -159,3 +159,46 @@ func TestRenderRejects(t *testing.T) {
 		t.Errorf("per-instance image/ports: %v %+v", err, r)
 	}
 }
+
+// Everything render produces for the games the lab runs fits an operator
+// policy, with the games root given as a variable for compose and as a literal
+// path for the guard. Pushing a port or bind outside the policy does not.
+func TestRenderedScopesFitPolicy(t *testing.T) {
+	plat := Platform{GamesRoot: "${USERDIR}", HostGamesRoot: "/srv/games", HostIP: "10.0.0.2"}
+	pol, err := dockerguard.ParsePolicy([]byte(`
+games_root: /srv/games
+names: [valheim, palworld, minecraft]
+images: [lloesche/valheim-server, thijsvanloef/palworld-server-docker, docker.io/itzg/*]
+networks: [crowsnest-games-net]
+ports: ["2000-30000/udp", "25565/tcp"]
+host_ips: [10.0.0.2]
+exec: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	admit := func(g config.GameConfig) error {
+		m, _ := Bundled().Manifest(g.ID)
+		r, err := m.Render(g, plat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		js, _ := ScopesJSON([]*Rendered{r})
+		scopes, err := dockerguard.LoadScopes(string(js))
+		if err != nil {
+			t.Fatalf("guard rejected %s: %v\n%s", g.ID, err, js)
+		}
+		return pol.Admit(scopes[0])
+	}
+	for _, id := range []string{"valheim", "palworld", "minecraft"} {
+		if err := admit(config.GameConfig{ID: id, ContainerName: id}); err != nil {
+			t.Errorf("%s: %v", id, err)
+		}
+	}
+	if err := admit(config.GameConfig{ID: "valheim", ContainerName: "valheim", Options: map[string]string{"ports": "22:2456/udp"}}); err == nil {
+		t.Error("a port outside the policy was admitted")
+	}
+	if err := admit(config.GameConfig{ID: "valheim", ContainerName: "valheim", Options: map[string]string{"image": "evil/miner"}}); err == nil {
+		t.Error("an image outside the policy was admitted")
+	}
+}
