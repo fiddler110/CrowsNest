@@ -220,7 +220,7 @@ func (s *Set) LoadDir(dir string) error {
 		if !e.IsDir() {
 			continue
 		}
-		b, err := os.ReadFile(filepath.Join(dir, e.Name(), "module.yaml"))
+		b, err := os.ReadFile(filepath.Join(dir, e.Name(), "module.yaml")) // #nosec G304 -- dir is the operator-set modules_dir and e.Name() comes from listing it
 		if os.IsNotExist(err) {
 			continue
 		}
