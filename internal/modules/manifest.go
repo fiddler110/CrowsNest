@@ -31,9 +31,7 @@ type Manifest struct {
 	ID         string `yaml:"id"`
 	Name       string `yaml:"name"`
 
-	Runtime struct {
-		RestartCooldown time.Duration `yaml:"restart_cooldown"`
-	} `yaml:"runtime"`
+	Runtime Runtime `yaml:"runtime"`
 
 	// Status.ReadyLog is the log line that marks the server open; with
 	// players.type log_markers it drives starting/online from the log.
@@ -115,6 +113,9 @@ type Option struct {
 	Label    string `yaml:"label"`
 	Default  string `yaml:"default"`
 	Required bool   `yaml:"required"`
+	// Secret marks a value that must never be written into a rendered file:
+	// it is referenced as a variable in .env instead.
+	Secret bool `yaml:"secret"`
 }
 
 // StartupStep maps a log pattern to a startup progress percentage.
@@ -413,6 +414,7 @@ func (s *Set) LoadDir(dir string) error {
 	}
 	for _, m := range ms {
 		s.Register(m.ID, m.Wire())
+		s.manifests[m.ID] = m
 	}
 	return nil
 }

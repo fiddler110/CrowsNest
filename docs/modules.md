@@ -75,3 +75,55 @@ Copy `internal/modules/bundled/minecraft/module.yaml` (log-based) or `source` (R
 `<modules_dir>/<id>/module.yaml`, change the regexes, and add the game to `config.yaml`. Unknown keys are an
 error, so a typo cannot silently disable a setting. Add a fixture of real log lines and test it the way
 `internal/modules/minecraft_test.go` does.
+
+## Rendering containers from a module (`crowsnest render`)
+
+A module's `runtime:` section describes its container: image, published ports, data folders, stop grace, memory
+and environment. `crowsnest render` turns the games in `config.yaml` into the compose file **and** the guard's
+`GUARD_SCOPES` from that one description, so the two can no longer disagree (the usual cause of a guard DENY).
+
+```yaml
+# config.yaml
+platform:
+  games_root: ${USERDIR}        # where each game's data folder lives; written as-is
+  host_ip: 10.0.0.2             # address game ports are published on (default 0.0.0.0)
+  games_network: crowsnest-games-net
+games:
+  - id: minecraft
+    container_name: minecraft
+    ...
+    options: {eula: "TRUE", motd: "Friday night", max_players: "6"}
+```
+
+```
+crowsnest render --config config.yaml --compose games.compose.yaml --scopes scopes.json --env env.example
+```
+
+- Game settings come from `options:`. A setting you leave out becomes a compose variable such as
+  `${MINECRAFT_MOTD:-A CrowsNest Minecraft server}`, so an existing `.env` keeps working.
+  **Secret options are never written into a file**: they always render as `${MINECRAFT_RCON_PASSWORD:-}`.
+- Reserved options for any game: `image`, `tag` (default `latest`), `ports` (`27015/udp,27016:27015/tcp`),
+  `data_dir` (a plain folder name under `games_root`). A shared module such as `source` has no image of its own,
+  so every game using it sets `image` (and `ports`).
+- A module can only ask for what the guard allows by default: its own image, bind folders under `games_root`, the
+  games network, published ports, no privileges. Windrose needs a macvlan address and `seccomp=unconfined`, so it
+  has no `runtime:` and keeps its hand-written service and scope.
+- Rendered Valheim and Palworld services are checked in tests against the hand-written production ones.
+
+Runtime sections today: `valheim`, `palworld`, `minecraft`, and `source` (image required per game).
+`dontstarve` has none yet, because I haven't verified an image's ports and data layout.
+
+## Where this is heading: enable games from the dashboard
+
+Agreed direction: the dashboard renders and **applies** a game itself, but only inside a read-only policy file the
+operator owns (games folder, port range, allowed networks, no privileges). Anything outside that envelope is staged
+for the operator to approve outside the dashboard. Steps, each shippable on its own:
+
+1. Runtime sections and `crowsnest render` (done, above).
+2. `policy.yaml` envelope plus a check that a rendered game fits it; the guard reads its scopes from a mounted
+   file and reloads on signal instead of an environment variable.
+3. The dashboard writes the game's entry and generated files (admin only), creates `.env` entries for secrets in a
+   panel-only file, and reloads the guard.
+4. A Games page: pick a module, fill in its options, see the rendered compose and what falls outside the policy,
+   enable.
+5. Remote module sources with signature checks.

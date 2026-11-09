@@ -3,6 +3,30 @@ id: valheim
 name: Valheim
 # Markers verified 2026-11-07 against a real player session
 # (internal/logtrack/testdata/valheim_session.log).
+runtime:
+  image: lloesche/valheim-server
+  stop_grace: 2m            # saves the world on SIGTERM
+  data_dir: Valheim
+  ports:
+    - {port: 2456, proto: udp}
+    - {port: 2457, proto: udp}
+  data:
+    - {sub: config, path: /config}
+    - {sub: data, path: /opt/valheim}
+  env:
+    - SERVER_NAME=${server_name}
+    - WORLD_NAME=${world_name}
+    - SERVER_PASS=${server_pass}      # the image needs 5+ characters
+    - SERVER_PUBLIC=${server_public}
+    - BACKUPS_MAX_AGE=${backups_max_age}
+
+options:
+  - {key: server_name, label: Server name, default: My Valheim Server}
+  - {key: world_name, label: World name, default: Midgard}
+  - {key: server_pass, label: Join password (5+ characters), secret: true}
+  - {key: server_public, label: List in the server browser, default: "false"}
+  - {key: backups_max_age, label: Days of automatic world backups to keep, default: "3"}
+
 status:
   ready_log: 'Loading: Done\.|Opened Steam server'
 players:

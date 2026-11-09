@@ -43,5 +43,6 @@ func registerEmbedded(s *Set) {
 			}
 		}
 		s.Register(m.ID, wire)
+		s.manifests[m.ID] = m
 	}
 }

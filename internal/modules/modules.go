@@ -37,11 +37,18 @@ type WireFunc func(def *games.GameDef, env Env) []Runner
 
 // Set is a collection of modules keyed by game ID.
 type Set struct {
-	wire map[string]WireFunc
+	wire      map[string]WireFunc
+	manifests map[string]*Manifest
+}
+
+// Manifest returns the parsed module.yaml for id, if the module came from one.
+func (s *Set) Manifest(id string) (*Manifest, bool) {
+	m, ok := s.manifests[id]
+	return m, ok
 }
 
 // NewSet returns an empty Set.
-func NewSet() *Set { return &Set{wire: map[string]WireFunc{}} }
+func NewSet() *Set { return &Set{wire: map[string]WireFunc{}, manifests: map[string]*Manifest{}} }
 
 // Register adds a module for id. It panics on an empty or duplicate id, since
 // that is a programming error in the bundled set, not a runtime condition.

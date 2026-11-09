@@ -53,6 +53,11 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+	case "render":
+		if err := runRender(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
 	case "healthcheck":
 		os.Exit(healthcheck())
 	case "set-password":
