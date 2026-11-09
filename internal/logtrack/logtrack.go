@@ -191,6 +191,22 @@ func (t *Tracker) tailOnce(ctx context.Context) {
 	t.scan(rc)
 }
 
+// Ready reports whether the ready marker has been seen in the current run.
+func (t *Tracker) Ready() bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.ready
+}
+
+// Replay feeds a recorded log through the tracker as if it were attached to a
+// live stream. For tests and fixtures.
+func (t *Tracker) Replay(r io.Reader) {
+	t.mu.Lock()
+	t.attached = true
+	t.mu.Unlock()
+	t.scan(r)
+}
+
 // scan reads lines from r and updates state. Split out so tests can drive it
 // without a docker process.
 func (t *Tracker) scan(r io.Reader) {

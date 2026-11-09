@@ -98,3 +98,20 @@ players: {type: log_markers, join: 'Got handshake from client (\S+)', leave: 'Cl
 		t.Fatalf("runners=%d def=%+v", len(runners), def)
 	}
 }
+
+func TestProbeWire(t *testing.T) {
+	for _, y := range []string{
+		"api_version: 1\nid: a\nname: A\nplayers: {type: http_json, url: 'http://x:1/p', count_path: players, name_field: name}\n",
+		"api_version: 1\nid: a\nname: A\nplayers: {type: source_rcon, addr: 'x:27015', command: status, pattern: '^# \\d+ \"(.+?)\"'}\n",
+	} {
+		m, err := Parse(strings.NewReader(y))
+		if err != nil {
+			t.Fatal(err)
+		}
+		def := &games.GameDef{ID: "a"}
+		m.Wire()(def, Env{})
+		if def.Players == nil {
+			t.Errorf("no players wired for %s", m.Players.Type)
+		}
+	}
+}

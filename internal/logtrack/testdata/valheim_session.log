@@ -1,0 +1,59 @@
+Nov  7 19:46:37 supervisord: valheim-server 11/07/2026 19:46:37: Got status changed msg k_ESteamNetworkingConnectionState_Connecting
+Nov  7 19:46:37 supervisord: valheim-server 11/07/2026 19:46:37: New connection
+Nov  7 19:46:37 supervisord: valheim-server 11/07/2026 19:46:37: Accepting connection k_EResultOK
+Nov  7 19:46:37 supervisord: valheim-server 11/07/2026 19:46:37: Connecting to Steamworks.SteamNetworkingIdentity
+Nov  7 19:46:37 supervisord: valheim-server 11/07/2026 19:46:37: Got status changed msg k_ESteamNetworkingConnectionState_Connected
+Nov  7 19:46:37 supervisord: valheim-server 11/07/2026 19:46:37: Connected
+Nov  7 19:46:37 supervisord: valheim-server 11/07/2026 19:46:37: Got connection SteamID 76561190000000001
+Nov  7 19:46:37 supervisord: valheim-server 11/07/2026 19:46:37: Got handshake from client 76561190000000001
+Nov  7 19:46:43 supervisord: valheim-server 11/07/2026 19:46:43: Network version check, their:41, mine:41
+Nov  7 19:46:43 supervisord: valheim-server 11/07/2026 19:46:43: Checking for any blocked players in the historical player list...
+Nov  7 19:46:43 supervisord: valheim-server 11/07/2026 19:46:43: Server: New peer connected,sending global keys
+Nov  7 19:46:43 supervisord: valheim-server 11/07/2026 19:46:43: Checking for any blocked players in the historical player list...
+Nov  7 19:46:59 supervisord: valheim-server 11/07/2026 19:46:59: Checking for any blocked players in the historical player list...
+Nov  7 19:48:31 supervisord: valheim-server 11/07/2026 19:48:31:  Connections 1 ZDOS:1024847  sent:0 recv:432
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: RPC_Disconnect
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Destroying abandoned non persistent zdo -1660492636:246 owner -1660492636
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Destroying abandoned non persistent zdo -1660492636:243 owner -1660492636
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Destroying abandoned non persistent zdo -1660492636:244 owner -1660492636
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Destroying abandoned non persistent zdo -1660492636:242 owner -1660492636
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Destroying abandoned non persistent zdo -1660492636:241 owner -1660492636
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Destroying abandoned non persistent zdo -1660492636:245 owner -1660492636
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Disposing socket
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Closing socket 76561190000000001
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12:   send queue size:0
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Disposing socket
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Got status changed msg k_ESteamNetworkingConnectionState_ClosedByPeer
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Socket closed by peer Steamworks.SteamNetConnectionStatusChangedCallback_t
+Nov  7 19:53:12 supervisord: valheim-server 11/07/2026 19:53:12: Got status changed msg k_ESteamNetworkingConnectionState_None
+Nov  7 19:56:47 supervisord: valheim-server 11/07/2026 19:56:47: Got status changed msg k_ESteamNetworkingConnectionState_Connecting
+Nov  7 19:56:47 supervisord: valheim-server 11/07/2026 19:56:47: New connection
+Nov  7 19:56:47 supervisord: valheim-server 11/07/2026 19:56:47: Accepting connection k_EResultOK
+Nov  7 19:56:47 supervisord: valheim-server 11/07/2026 19:56:47: Connecting to Steamworks.SteamNetworkingIdentity
+Nov  7 19:56:47 supervisord: valheim-server 11/07/2026 19:56:47: Got status changed msg k_ESteamNetworkingConnectionState_Connected
+Nov  7 19:56:47 supervisord: valheim-server 11/07/2026 19:56:47: Connected
+Nov  7 19:56:47 supervisord: valheim-server 11/07/2026 19:56:47: Got connection SteamID 76561190000000001
+Nov  7 19:56:47 supervisord: valheim-server 11/07/2026 19:56:47: Got handshake from client 76561190000000001
+Nov  7 19:56:50 supervisord: valheim-server 11/07/2026 19:56:50: Network version check, their:41, mine:41
+Nov  7 19:56:50 supervisord: valheim-server 11/07/2026 19:56:50: Checking for any blocked players in the historical player list...
+Nov  7 19:56:50 supervisord: valheim-server 11/07/2026 19:56:50: Server: New peer connected,sending global keys
+Nov  7 19:56:50 supervisord: valheim-server 11/07/2026 19:56:50: Checking for any blocked players in the historical player list...
+Nov  7 19:57:06 supervisord: valheim-server 11/07/2026 19:57:06: Checking for any blocked players in the historical player list...
+Nov  7 19:57:07 supervisord: valheim-server 11/07/2026 19:57:07: Got character ZDOID from Player1 : -940294233:1
+Nov  7 19:58:31 supervisord: valheim-server 11/07/2026 19:58:31:  Connections 1 ZDOS:1024845  sent:0 recv:432
+Nov  7 20:00:40 supervisord: valheim-server 11/07/2026 20:00:40: RPC_Disconnect
+Nov  7 20:00:40 supervisord: valheim-server 11/07/2026 20:00:40: Destroying abandoned non persistent zdo -940294233:1 owner -940294233
+Nov  7 20:00:40 supervisord: valheim-server 11/07/2026 20:00:40: Disposing socket
+Nov  7 20:00:40 supervisord: valheim-server 11/07/2026 20:00:40: Closing socket 76561190000000001
+Nov  7 20:00:40 supervisord: valheim-server 11/07/2026 20:00:40:   send queue size:0
+Nov  7 20:00:40 supervisord: valheim-server 11/07/2026 20:00:40: Disposing socket
+Nov  7 20:00:40 supervisord: valheim-server 11/07/2026 20:00:40: Got status changed msg k_ESteamNetworkingConnectionState_ClosedByPeer
+Nov  7 20:00:40 supervisord: valheim-server 11/07/2026 20:00:40: Socket closed by peer Steamworks.SteamNetConnectionStatusChangedCallback_t
+Nov  7 20:00:40 supervisord: valheim-server 11/07/2026 20:00:40: Got status changed msg k_ESteamNetworkingConnectionState_None
+Nov  7 20:00:56 supervisord: valheim-server 11/07/2026 20:00:56: Got status changed msg k_ESteamNetworkingConnectionState_Connecting
+Nov  7 20:00:56 supervisord: valheim-server 11/07/2026 20:00:56: New connection
+Nov  7 20:00:56 supervisord: valheim-server 11/07/2026 20:00:56: Accepting connection k_EResultOK
+Nov  7 20:00:56 supervisord: valheim-server 11/07/2026 20:00:56: Connecting to Steamworks.SteamNetworkingIdentity
+Nov  7 20:00:56 supervisord: valheim-server 11/07/2026 20:00:56: Got status changed msg k_ESteamNetworkingConnectionState_Connected
+Nov  7 20:00:56 supervisord: valheim-server 11/07/2026 20:00:56: Connected
+Nov  7 20:00:56 supervisord: valheim-server 11/07/2026 20:00:56: Got connection SteamID 76561190000000001

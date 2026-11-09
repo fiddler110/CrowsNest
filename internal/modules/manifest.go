@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/logtrack"
+	"github.com/fiddler110/crowsnest/internal/probes"
 )
 
 // APIVersion is the module.yaml schema major version this build understands.
@@ -42,6 +44,22 @@ type Manifest struct {
 		Join  string `yaml:"join"`  // regexp, group 1 = player id
 		Leave string `yaml:"leave"` // regexp, group 1 = player id
 		World string `yaml:"world"` // regexp, group 1 = world name (optional)
+
+		// http_json: poll URL (also the online check); PlayersURL overrides
+		// it for the count. CountPath/NamesPath/NameField pick fields.
+		URL         string `yaml:"url"`
+		PlayersURL  string `yaml:"players_url"`
+		User        string `yaml:"user"`
+		PasswordEnv string `yaml:"password_env"` // env var holding the password
+		CountPath   string `yaml:"count_path"`
+		NamesPath   string `yaml:"names_path"`
+		NameField   string `yaml:"name_field"`
+
+		// source_rcon: run Command at Addr, each line matching Pattern
+		// (group 1 = name) is one player. Password from PasswordEnv.
+		Addr    string `yaml:"addr"`
+		Command string `yaml:"command"`
+		Pattern string `yaml:"pattern"`
 	} `yaml:"players"`
 
 	Startup []StartupStep `yaml:"startup"`
@@ -58,7 +76,7 @@ var idRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
 // supportedPlayers lists the probe types an engine exists for. Declared types
 // beyond these are refused until their engine lands.
-var supportedPlayers = map[string]bool{"": true, "none": true, "log_markers": true}
+var supportedPlayers = map[string]bool{"": true, "none": true, "log_markers": true, "http_json": true, "source_rcon": true}
 
 // Parse decodes and validates one module.yaml. Unknown keys are an error so a
 // typo in a manifest cannot silently disable a setting.
@@ -106,6 +124,27 @@ func (m *Manifest) validate() error {
 			}
 		}
 	}
+	switch m.Players.Type {
+	case "http_json":
+		if u, err := url.Parse(m.Players.URL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+			return fmt.Errorf("module %q: players.url must be an http(s) URL", m.ID)
+		}
+		if m.Players.PlayersURL != "" {
+			if u, err := url.Parse(m.Players.PlayersURL); err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+				return fmt.Errorf("module %q: players.players_url must be an http(s) URL", m.ID)
+			}
+		}
+		if m.Players.CountPath == "" {
+			return fmt.Errorf("module %q: http_json needs players.count_path", m.ID)
+		}
+	case "source_rcon":
+		if m.Players.Addr == "" || m.Players.Command == "" || m.Players.Pattern == "" {
+			return fmt.Errorf("module %q: source_rcon needs players.addr, command and pattern", m.ID)
+		}
+		if _, err := regexp.Compile(m.Players.Pattern); err != nil {
+			return fmt.Errorf("module %q: players.pattern invalid: %v", m.ID, err)
+		}
+	}
 	for i, s := range m.Startup {
 		if _, err := regexp.Compile(s.Match); err != nil || s.Match == "" {
 			return fmt.Errorf("module %q: startup[%d].match invalid: %v", m.ID, i, err)
@@ -134,6 +173,20 @@ func (m *Manifest) Wire() WireFunc {
 			tr := logtrack.New(env.Docker, def.ContainerName, spec)
 			def.Status, def.Players, def.Info = tr, tr, tr
 			runners = append(runners, tr)
+		}
+		switch m.Players.Type {
+		case "http_json":
+			p := &probes.HTTPJSON{
+				Docker: env.Docker, URL: m.Players.URL, PlayersURL: m.Players.PlayersURL,
+				User: m.Players.User, Pass: os.Getenv(m.Players.PasswordEnv),
+				CountPath: m.Players.CountPath, NamesPath: m.Players.NamesPath, NameField: m.Players.NameField,
+			}
+			def.Status, def.Players = p, p
+		case "source_rcon":
+			def.Players = &probes.SourceRCON{
+				Addr: m.Players.Addr, Password: os.Getenv(m.Players.PasswordEnv),
+				Command: m.Players.Command, Pattern: regexp.MustCompile(m.Players.Pattern),
+			}
 		}
 		if m.Runtime.RestartCooldown > 0 {
 			def.RestartCooldown = m.Runtime.RestartCooldown
