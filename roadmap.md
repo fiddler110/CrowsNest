@@ -31,8 +31,10 @@ derived from it.
   - [x] Step 1 (2026-11-09): `internal/modules` registry; Palworld, Valheim
     and Windrose wiring moved into `modules.Bundled()`; `cmd/crowsnest` names
     no game; goldens unchanged.
-  - [ ] Step 2: `module.yaml` v1 schema + loader (manifest registers a
-    `WireFunc` built from declarative probes).
+  - [x] Step 2 (2026-11-09): `module.yaml` v1 schema + strict loader
+    (`modules.Parse`, `Set.LoadDir`): identity, restart cooldown, startup
+    milestones; unknown keys and unsupported probe types are refused. Not yet
+    called from `main` (needs a modules-dir setting; do with step 4).
   - [ ] Step 3: shared log-follow engine (`log_markers`) replacing the two
     trackers; `http_json` and `source_rcon` probes.
   - [ ] Step 4: map the legacy `config.yaml` games block onto the bundled
