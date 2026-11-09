@@ -193,6 +193,41 @@ so a game that did not finish installing is finished on the next start.
   games is not wired: use refresh.
 - Not yet: the Games page (step 4).
 
+### Deploying it (tested shape)
+
+Verified end to end on a real Docker daemon with the production chain (panel → execguard → guard → docker.sock), the
+panel and execguard read-only with all capabilities dropped, and the guard as uid 1000 plus the docker group:
+
+```yaml
+dockerproxy-crowsnest:                    # the guard
+  environment:
+    - GUARD_SCOPES=[...]                  # your hand-written scopes stay exactly as they are
+    - GUARD_SCOPES_FILE=/etc/crowsnest/managed/scopes.json
+    - GUARD_POLICY=/etc/crowsnest/policy/policy.yaml
+  volumes:
+    - ${USERDIR}/crowsnest/config/managed:/etc/crowsnest/managed:ro   # the panel's managed dir, read-only here
+    - ./policy:/etc/crowsnest/policy:ro                                # a directory holding policy.yaml
+crowsnest:                                # the panel
+  volumes:
+    - ${USERDIR}/crowsnest/config:/app/data                            # already there: managed/ lives inside it
+    - ./policy:/etc/crowsnest/policy:ro
+```
+
+```yaml
+# config.yaml
+platform: {games_root: /srv/games, host_ip: 10.0.0.2}
+managed: {dir: /app/data/managed, policy_file: /etc/crowsnest/policy/policy.yaml}
+```
+
+- **Mount directories, not single files.** A bind-mounted file is pinned to its inode: an editor that saves by
+  replacing the file (`sed -i`, most editors) leaves the container reading the old policy until it restarts. The
+  managed directory and the policy directory both avoid this.
+- `mkdir -p ${USERDIR}/crowsnest/config/managed` and make it writable by the panel's uid (1000).
+- `policy.yaml` is parsed at every reload, so tightening it takes effect within seconds and drops any managed scope
+  that no longer fits. The panel reads the same file for its preview.
+- Everything the panel does goes through execguard, so a managed game that needs `docker exec` (backups, module
+  actions that exec) needs its command in execguard's allowlist, which is read from `config.yaml` at start.
+
 ## Where this is heading: enable games from the dashboard
 
 Agreed direction: the dashboard renders and **applies** a game itself, but only inside a read-only policy file the

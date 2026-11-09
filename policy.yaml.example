@@ -1,5 +1,6 @@
 # Operator-owned envelope for what the dashboard may add. Mount read-only into
-# the guard (GUARD_POLICY=/etc/crowsnest/policy.yaml) next to GUARD_SCOPES_FILE.
+# the guard (GUARD_POLICY=/etc/crowsnest/policy/policy.yaml) next to GUARD_SCOPES_FILE.
+# Mount the DIRECTORY holding this file, not the file: an editor that replaces it leaves a file mount stale.
 # See docs/modules.md. Every list is required: no limit is ever implied.
 games_root: /srv/games
 names: [valheim, palworld, minecraft, "gs-*"]
