@@ -30,6 +30,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/dockerguard"
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/modules"
 )
 
 var update = flag.Bool("update", false, "rewrite the golden files")
@@ -134,9 +135,9 @@ func typeName(v any) string {
 
 func TestGoldenGameWiring(t *testing.T) {
 	cfg := loadProdConfig(t)
-	defs, tr := buildGameDefs(cfg, &dockerctl.Client{})
-	if len(tr.valheim) != 1 || len(tr.windrose) != 1 {
-		t.Errorf("trackers: valheim=%d windrose=%d, want 1 each", len(tr.valheim), len(tr.windrose))
+	defs, runners := modules.Bundled().Build(cfg, &dockerctl.Client{})
+	if len(runners) != 2 { // the Valheim and Windrose log followers
+		t.Errorf("runners = %d, want 2", len(runners))
 	}
 	var got []wiring
 	for _, d := range defs {

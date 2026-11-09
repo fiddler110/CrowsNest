@@ -25,6 +25,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/idleshutdown"
+	"github.com/fiddler110/crowsnest/internal/modules"
 	"github.com/fiddler110/crowsnest/internal/nightshutdown"
 	"github.com/fiddler110/crowsnest/internal/notify"
 	"github.com/fiddler110/crowsnest/internal/playerwatch"
@@ -118,7 +119,7 @@ func serve() error {
 	}
 
 	docker := &dockerctl.Client{Host: cfg.Server.DockerHost}
-	defs, trackers := buildGameDefs(cfg, docker)
+	defs, runners := modules.Bundled().Build(cfg, docker)
 	registry, err := games.NewRegistry(defs)
 	if err != nil {
 		return fmt.Errorf("build game registry: %w", err)
@@ -128,11 +129,8 @@ func serve() error {
 			log.Printf("warning: %s has no player counter configured — idle and night shutdown will never stop it", d.ID)
 		}
 	}
-	for _, tr := range trackers.valheim {
-		go tr.Run(ctx)
-	}
-	for _, tr := range trackers.windrose {
-		go tr.Run(ctx)
+	for _, r := range runners {
+		go r.Run(ctx)
 	}
 
 	userStore, err := auth.NewUserStore(cfg.UsersFile)
