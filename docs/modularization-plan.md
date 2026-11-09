@@ -4,7 +4,7 @@ Goal: add a game server to CrowsNest by dropping in a module (a directory), with
 and with the Docker guard, exec allowlist, secrets and UI form all derived from that one module.
 
 Status: **Phase 0 done** (golden tests, `buildGameDefs` seam, PR #22). **Phase 1 done** (module registry,
-manifest loader, shared log engine and probes, `modules_dir`). Phases 2-6 are not started.
+manifest loader, shared log engine and probes, `modules_dir`). **Phase 2 in progress**: Valheim, Palworld and Windrose are bundled `module.yaml` files and the typed config blocks are folded into `options`; the optional Windrose+ info adapter and the fourth-game test remain. Phases 3-6 are not started.
 Progress and the related accounts/settings and verification work are tracked in [`roadmap.md`](../roadmap.md);
 this file holds the design only.
 This document is the plan referenced from `cmd/crowsnest/gamewiring.go` and `cmd/crowsnest/golden_test.go`.
@@ -130,6 +130,27 @@ Steps 2-3 added `manifest.go` (strict `module.yaml` v1 parser; `Set.LoadDir` reg
 line regexp). Manifest URLs and addresses are operator-trusted today; Phase 3's `policy.yaml` envelope must
 constrain them. Step 4: `config.yaml` has `modules_dir`; `modules.ForConfig` builds bundled + local modules, and the legacy games
 block selects them by id. Until Phase 2 a manifest game still needs its container/compose entry in `config.yaml`.
+
+### Phase 2 additions
+
+- `internal/modules/bundled/<id>/module.yaml` are embedded (`go:embed`) and registered by `registerEmbedded`. Valheim
+  and Palworld ship this way; `internal/games/valheim` and `internal/games/palworld` are gone.
+- Manifest sections added for REST-style games: `options` (per-game settings, `${key}` substitution), `api`
+  (base URL, basic auth from an env var), `players.type: http_json`, `info` (sources + templated fields), `actions`
+  (fixed admin commands with validated fields, a request template and a result or list template), `pre_stop`
+  (ordered requests with `if_players`, `best_effort`, `pause`), `rcon` (admin-only raw console) and
+  `startup_progress` (a percentage read from the log and scaled onto the startup bar).
+- A game's `config.yaml` entry carries its settings under `options:`. The old `windrose:` / `palworld:` blocks are
+  deprecated and folded into `options` at load time (explicit options win), so existing files keep working.
+- Windrose: status, startup and players come from `log_markers` on the game's own log (join = `LogNet: Login request`,
+  leave = `UNetDriver::RemoveClientConnection`, both keyed by `BLPlayerSessionId`; fixture
+  `internal/modules/testdata/windrose_session.log`). Windrose+ is optional: through a Go extension (`extensions` in `embed.go`) it adds the info panel, player
+  names (only while its count agrees with the log, so names never flap and cause phantom join/leave notices), the admin
+  console (players, status, ban list, kick, ban, unban) and the raw console. While the markers are new, `comparingCounter` checks the log count against
+  Windrose+ and logs any disagreement; `players_source: windrose_plus` flips the primary back. A trap worth knowing:
+  `R5TurnProtocol::Disconnect` looks like a leave but fires 9 s into every join.
+- If a required option is unset the API half of a module is left unwired (logged) and the game keeps the baseline;
+  restart cooldown and startup milestones still apply.
 
 ## 3. Performance work that rides along
 

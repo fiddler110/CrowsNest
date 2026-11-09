@@ -1,0 +1,114 @@
+api_version: 1
+id: palworld
+name: Palworld
+# Palworld's dedicated-server REST API
+# (https://docs.palworldgame.com/api/rest-api/) as served by
+# thijsvanloef/palworld-server-docker with REST_API_ENABLED=true.
+# Verified against a real container on 2026-09-30.
+
+runtime:
+  # Bringing it back up seconds after a stop segfaulted it once.
+  restart_cooldown: 30s
+
+options:
+  - {key: rest_api_url, label: REST API base URL, required: true}
+  - {key: rest_api_user, label: REST API user, default: admin}
+  - {key: rest_api_password_env, label: Env var holding the admin password, required: true}
+  - {key: rcon_addr, label: "RCON host:port (enables the raw console)"}
+  - {key: rcon_password_env, label: "Env var holding the RCON password"}
+
+api:
+  base_url: ${rest_api_url}
+  user: ${rest_api_user}
+  password_env: ${rest_api_password_env}
+  status_path: /v1/api/info
+
+players:
+  type: http_json
+  path: /v1/api/players
+  count_path: players
+  name_field: name
+
+info:
+  sources:
+    - {name: info, path: /v1/api/info, required: true}
+    - {name: metrics, path: /v1/api/metrics}
+  fields:
+    - {key: server_name, template: "{info.servername}"}
+    - {key: version, template: "{info.version}"}
+    - {key: description, template: "{info.description}"}
+    - {key: world_id, template: "{info.worldguid}"}
+    - {key: players, template: "{metrics.currentplayernum} / {metrics.maxplayernum}"}
+    - {key: uptime, template: "{metrics.uptime|duration}"}
+    - {key: server_fps, template: "{metrics.serverfps|%.0f} (avg {metrics.serverfpsaverage|%.0f})"}
+    - {key: frame_time_ms, template: "{metrics.serverframetime|%.1f}"}
+    - {key: in_game_days, template: "{metrics.days}"}
+    - {key: base_camps, template: "{metrics.basecampnum}"}
+
+# There is deliberately no shutdown or stop action: starting and stopping
+# belong to CrowsNest, which also handles the save, the backup and the
+# restart cool-down.
+actions:
+  - id: players
+    label: Players
+    request: {path: /v1/api/players}
+    list:
+      path: players
+      line: "{name}  [{userId}]  level {level}  {ping|%.0f} ms"
+      empty: No players online.
+  - id: announce
+    label: Announce
+    fields: [{name: message, label: Message}]
+    request: {method: POST, path: /v1/api/announce, body: {message: "{message}"}}
+    result: Announced.
+  - id: save
+    label: Save world
+    request: {method: POST, path: /v1/api/save}
+    result: World saved.
+  - id: kick
+    label: Kick
+    danger: true
+    fields:
+      - {name: userid, label: User ID (see Players), max: 100}
+      - {name: message, label: Message to the player (optional), optional: true}
+    request: {method: POST, path: /v1/api/kick, body: {userid: "{userid}", message: "{message}"}}
+    result: Kick applied to {userid}.
+  - id: ban
+    label: Ban
+    danger: true
+    fields:
+      - {name: userid, label: User ID (see Players), max: 100}
+      - {name: message, label: Message to the player (optional), optional: true}
+    request: {method: POST, path: /v1/api/ban, body: {userid: "{userid}", message: "{message}"}}
+    result: Ban applied to {userid}.
+  - id: unban
+    label: Unban
+    fields: [{name: userid, label: User ID (see Players), max: 100}]
+    request: {method: POST, path: /v1/api/unban, body: {userid: "{userid}"}}
+    result: Unbanned {userid}.
+
+# Warn anyone connected, give them a moment, then force a save: given
+# Palworld's history of crashing around restarts the explicit save is the point.
+pre_stop:
+  - if_players: true
+    best_effort: true
+    pause: 5s
+    request: {method: POST, path: /v1/api/announce, body: {message: Server is shutting down now. Saving the world.}}
+  - request: {method: POST, path: /v1/api/save}
+
+rcon:
+  addr: ${rcon_addr}
+  password_env: ${rcon_password_env}
+
+startup_progress:
+  match: 'Update state \(0x61\) downloading, progress: (\d+(?:\.\d+)?)'
+  from: 10
+  to: 85
+  label: 'Downloading server files ({pct}%)'
+startup:
+  - {match: 'Checking Installation', pct: 5, label: Checking installation}
+  - {match: 'Checking for new Palworld Server updates', pct: 8, label: Checking for updates}
+  - {match: 'GENERATING CONFIG', pct: 86, label: Generating config}
+  - {match: '\*\*\*\*Starting Server\*\*\*\*', pct: 90, label: Launching server}
+  - {match: 'Running Palworld dedicated server', pct: 96, label: Loading world}
+  - {match: 'REST API\(\d+\) port is open', pct: 100, label: Server ready}

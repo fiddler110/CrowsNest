@@ -1,4 +1,4 @@
-package logtrack_test
+package modules
 
 import (
 	"context"
@@ -6,7 +6,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fiddler110/crowsnest/internal/games/valheim"
+	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/logtrack"
 )
 
 // testdata/valheim_session.log is a real lloesche/valheim-server session
@@ -19,7 +20,7 @@ func TestValheimRealSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := strings.SplitAfter(string(b), "\n")
-	tr := valheim.NewTracker(nil, "valheim")
+	tr := valheimTracker(t)
 	count := func() int { n, _, _ := tr.PlayerCount(context.Background()); return n }
 	var peak, after int
 	for _, l := range lines {
@@ -36,7 +37,7 @@ func TestValheimRealSession(t *testing.T) {
 		t.Errorf("players at end of fixture = %d, want 0", after)
 	}
 	// Up to just after the first "Closing socket" the count returns to 0.
-	tr2 := valheim.NewTracker(nil, "valheim")
+	tr2 := valheimTracker(t)
 	for _, l := range lines {
 		tr2.Replay(strings.NewReader(l))
 		if strings.Contains(l, "Closing socket") {
@@ -52,7 +53,7 @@ func TestValheimRealSession(t *testing.T) {
 // must NOT latch ready (the world is not loaded yet); the later
 // "Loading: Done. Total seconds sinze ZNet start" must.
 func TestValheimRealReadyLines(t *testing.T) {
-	tr := valheim.NewTracker(nil, "valheim")
+	tr := valheimTracker(t)
 	tr.Replay(strings.NewReader("Nov  7 19:37:04 supervisord: valheim-server 11/07/2026 19:37:04: Loading: Done, Total time: -7.810839\n"))
 	if tr.Ready() {
 		t.Fatal("early 'Loading: Done,' line latched ready")
@@ -61,4 +62,17 @@ func TestValheimRealReadyLines(t *testing.T) {
 	if !tr.Ready() {
 		t.Fatal("real ready line did not latch")
 	}
+}
+
+// valheimTracker wires the embedded valheim module and returns its log tracker.
+func valheimTracker(t *testing.T) *logtrack.Tracker { return trackerFor(t, "valheim") }
+
+func trackerFor(t *testing.T, id string) *logtrack.Tracker {
+	t.Helper()
+	var def games.GameDef
+	runners := Bundled().wire[id](&def, Env{})
+	if len(runners) != 1 {
+		t.Fatalf("runners = %d, want 1", len(runners))
+	}
+	return runners[0].(*logtrack.Tracker)
 }

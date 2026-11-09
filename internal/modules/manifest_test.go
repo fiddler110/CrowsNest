@@ -101,7 +101,7 @@ players: {type: log_markers, join: 'Got handshake from client (\S+)', leave: 'Cl
 
 func TestProbeWire(t *testing.T) {
 	for _, y := range []string{
-		"api_version: 1\nid: a\nname: A\nplayers: {type: http_json, url: 'http://x:1/p', count_path: players, name_field: name}\n",
+		"api_version: 1\nid: a\nname: A\napi: {base_url: 'http://x:1'}\nplayers: {type: http_json, path: /p, count_path: players, name_field: name}\n",
 		"api_version: 1\nid: a\nname: A\nplayers: {type: source_rcon, addr: 'x:27015', command: status, pattern: '^# \\d+ \"(.+?)\"'}\n",
 	} {
 		m, err := Parse(strings.NewReader(y))
@@ -112,6 +112,54 @@ func TestProbeWire(t *testing.T) {
 		m.Wire()(def, Env{})
 		if def.Players == nil {
 			t.Errorf("no players wired for %s", m.Players.Type)
+		}
+	}
+}
+
+func TestValheimStartup_RealLogLines(t *testing.T) {
+	var def games.GameDef
+	Bundled().wire["valheim"](&def, Env{})
+	pct := func(line string) int {
+		if p, _, ok := def.Startup.Parse(line); ok {
+			return p
+		}
+		for _, m := range def.Startup.Milestones {
+			if m.Pattern.MatchString(line) {
+				return m.Pct
+			}
+		}
+		return -1
+	}
+	for line, want := range map[string]int{
+		"supervisord: valheim-updater INFO - Downloading/updating/validating Valheim server from Steam":            5,
+		"supervisord: valheim-updater  Update state (0x61) downloading, progress: 50.00 (1093324632 / 2186649264)": 40,
+		"supervisord: valheim-server 09/30/2026 09:46:41: Zonesystem Awake 5366":                                   72,
+		"supervisord: valheim-server 09/30/2026 09:46:44: Load world: TestWorld (TestWorld)":                       80,
+		"supervisord: valheim-server 09/30/2026 09:46:49: Loading: Generating locations":                           88,
+		"supervisord: valheim-server 09/30/2026 09:47:12: Loading: Done. Total seconds sinze ZNet start: 27.97":    100,
+		"supervisord: valheim-server The referenced script on this Behaviour is missing!":                          -1,
+	} {
+		if got := pct(line); got != want {
+			t.Errorf("pct(%q) = %d, want %d", line, got, want)
+		}
+	}
+}
+
+func TestRESTSectionsRejected(t *testing.T) {
+	base := "api_version: 1\nid: a\nname: A\n"
+	for name, y := range map[string]string{
+		"actions without api":      base + "actions: [{id: x, label: X, request: {path: /x}}]\n",
+		"bad api url":              base + "api: {base_url: 'ftp://x'}\n",
+		"action path not absolute": base + "api: {base_url: 'http://x'}\nactions: [{id: x, label: X, request: {path: x}}]\n",
+		"bad method":               base + "api: {base_url: 'http://x'}\nactions: [{id: x, label: X, request: {method: PATCH, path: /x}}]\n",
+		"duplicate action":         base + "api: {base_url: 'http://x'}\nactions: [{id: x, label: X, request: {path: /x}}, {id: x, label: Y, request: {path: /y}}]\n",
+		"http_json without path":   base + "api: {base_url: 'http://x'}\nplayers: {type: http_json, count_path: p}\n",
+		"info source no slash":     base + "api: {base_url: 'http://x'}\ninfo: {sources: [{name: i, path: i}]}\n",
+		"long pre_stop pause":      base + "api: {base_url: 'http://x'}\npre_stop: [{pause: 5m, request: {path: /x}}]\n",
+		"duplicate option":         base + "options: [{key: k}, {key: k}]\n",
+	} {
+		if _, err := Parse(strings.NewReader(y)); err == nil {
+			t.Errorf("%s: want error", name)
 		}
 	}
 }

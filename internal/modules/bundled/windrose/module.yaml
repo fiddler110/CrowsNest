@@ -1,0 +1,33 @@
+api_version: 1
+id: windrose
+name: Windrose
+# Status, startup and player tracking come from the game's own log (the
+# container's stdout), so none of it needs the Windrose+ mod. The Windrose+
+# dashboard API only adds the rich info panel (time, weather, positions); see
+# the extension in internal/modules/bundled.go. Markers captured from a real
+# session on 2026-11-08 (internal/modules/testdata/windrose_session.log).
+#
+# Both player markers are plain Unreal Engine lines keyed by the same
+# BLPlayerSessionId, so they hold for every kind of disconnect:
+#   join  - "LogNet: Login request: ?BLPlayerSessionId=<32 hex>..." once the game
+#           connection is up (the earlier P2P "Add player" lines come before the
+#           connection exists and would leave ghosts if the handshake failed)
+#   leave - "UNetDriver::RemoveClientConnection - Removed address R5:<32 hex>:"
+# The "R5TurnProtocol::Disconnect" line looks like a leave but also fires 9 s
+# into every join (the handshake hands over from TCP to UDP): never use it.
+
+options:
+  - {key: http_api_url, label: "Windrose+ dashboard URL (rich info panel; optional)"}
+  - {key: rcon_password_env, label: "Env var holding the Windrose+ RCON password"}
+  - key: players_source
+    label: "Where the player count comes from: log (default) or windrose_plus"
+    default: log
+
+status:
+  ready_log: 'Host server is ready for owner to connect'
+players:
+  type: log_markers
+  join: 'LogNet: Login request: \?BLPlayerSessionId=([0-9a-f]{32})'
+  leave: 'UNetDriver::RemoveClientConnection - Removed address R5:([0-9a-f]{32}):'
+startup:
+  - {match: 'Host server is ready for owner to connect', pct: 100, label: Host server ready}

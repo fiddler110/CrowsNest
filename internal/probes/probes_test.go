@@ -33,7 +33,7 @@ func TestHTTPJSON_PlayersShapes(t *testing.T) {
 			}
 			w.Write([]byte(c.body))
 		}))
-		p := &HTTPJSON{URL: srv.URL, User: "admin", Pass: "pw", CountPath: c.count, NamesPath: c.names, NameField: c.field}
+		p := &HTTPJSON{BaseURL: srv.URL, StatusPath: "/", User: "admin", Pass: "pw", CountPath: c.count, NamesPath: c.names, NameField: c.field}
 		n, names, ok := p.PlayerCount(context.Background())
 		srv.Close()
 		if ok != c.ok || n != c.want || len(names) != len(c.wantNames) {
@@ -45,7 +45,7 @@ func TestHTTPJSON_PlayersShapes(t *testing.T) {
 func TestHTTPJSON_AuthFailureIsUndeterminable(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(401) }))
 	defer srv.Close()
-	if _, _, ok := (&HTTPJSON{URL: srv.URL, CountPath: "n"}).PlayerCount(context.Background()); ok {
+	if _, _, ok := (&HTTPJSON{BaseURL: srv.URL, StatusPath: "/", CountPath: "n"}).PlayerCount(context.Background()); ok {
 		t.Fatal("401 must be ok=false")
 	}
 }
