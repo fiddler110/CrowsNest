@@ -24,7 +24,7 @@ derived from it.
 
 - [ ] **Phase 1: manifest and loader.** `module.yaml` v1 and a loader that
   produces `GameDef`; replace the `buildGameDefs` switch
-  (`cmd/crowsnest/gamewiring.go`). Shared log-follow engine (replaces the
+  (done in step 1, now `internal/modules`). Shared log-follow engine (replaces the
   duplicate Valheim/Windrose trackers), `http_json` and `source_rcon` probes.
   Legacy `config.yaml` games block still works, mapped to built-in modules.
   Done when the golden tests are unchanged and `cmd/crowsnest` names no game.

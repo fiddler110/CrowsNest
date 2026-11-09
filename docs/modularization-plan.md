@@ -3,7 +3,8 @@
 Goal: add a game server to CrowsNest by dropping in a module (a directory), with no change to the Go core,
 and with the Docker guard, exec allowlist, secrets and UI form all derived from that one module.
 
-Status: **Phase 0 done** (golden tests, `buildGameDefs` seam, PR #22). Phases 1-6 not started.
+Status: **Phase 0 done** (golden tests, `buildGameDefs` seam, PR #22). **Phase 1 step 1 done** (module registry,
+below). The rest of Phase 1 and Phases 2-6 are not started.
 Progress and the related accounts/settings and verification work are tracked in [`roadmap.md`](../roadmap.md);
 this file holds the design only.
 This document is the plan referenced from `cmd/crowsnest/gamewiring.go` and `cmd/crowsnest/golden_test.go`.
@@ -13,8 +14,8 @@ This document is the plan referenced from `cmd/crowsnest/gamewiring.go` and `cmd
 The per-game interfaces in `internal/games/types.go` (`StatusChecker`, `PlayerCounter`, `InfoProvider`,
 `Console`, `StopPreparer`, `StartupMatcher`) are already the right shape. The wiring is the problem.
 
-1. `buildGameDefs` (`cmd/crowsnest/gamewiring.go`) switches on game ID and imports each game package. A new game
-   means new Go code, a rebuild and a release.
+1. Wiring was a hard-coded switch on game ID that imported each game package (`buildGameDefs`, now replaced by
+   `internal/modules`, see 2a). A new game still means new Go code, a rebuild and a release until manifests land.
 2. `config.GameConfig` has typed `Windrose` and `Palworld` fields, so the config schema changes per game.
 3. Every game is described three times, and the copies must match: `games.compose.yaml`, the `GUARD_SCOPES` JSON in
    `compose.yaml`, and `config.yaml`. Adding a game touches about eight places: compose service, guard scope,
@@ -106,6 +107,27 @@ pinned digest. `api_version` is checked; the core refuses a major mismatch.
 **Profiles.** A module is the template; a profile is the module plus your values. Two Valheim worlds are two
 profiles of one module.
 
+## 2a. Current implementation: `internal/modules` (phase 1, step 1)
+
+`cmd/crowsnest` no longer knows which games exist. The seam that Phase 0 carved out (`buildGameDefs`) is now a
+registry:
+
+- `modules.Set` maps a game ID to a `WireFunc(def *games.GameDef, env Env) []Runner`. `Env` carries the docker
+  client and that game's `config.GameConfig`.
+- `Set.Build(cfg, docker)` starts from `games.FromConfig` (the config-driven baseline: docker-state status, unknown
+  player count) and applies the module registered for each game's ID. A game with no module keeps the baseline.
+  Output order matches `config.yaml`.
+- A `Runner` is a background worker (today the Valheim and Windrose log followers). `serve()` starts every Runner
+  `Build` returns with `go r.Run(ctx)`, so adding a game that needs a follower needs no change in `main.go`.
+- `modules.Bundled()` registers Palworld, Valheim and Windrose. Their wiring is the Phase 0 code moved unchanged
+  (`internal/modules/bundled.go`); the golden tests in `cmd/crowsnest` pin it and must not change in this step.
+- `Register` panics on an empty or duplicate ID or a nil function: those are mistakes in the bundled set, not runtime
+  conditions.
+
+Next steps in Phase 1 (tracked in `roadmap.md`): the `module.yaml` v1 schema and loader, which will register a
+`WireFunc` built from declarative probes through the same `Set`; the shared `log_markers` engine, `http_json` and
+`source_rcon` probes; and mapping the legacy `config.yaml` games block onto the bundled modules.
+
 ## 3. Performance work that rides along
 
 1. Central state hub: poll each game once on an adaptive cadence, keep one snapshot, push to browsers over one SSE
@@ -120,7 +142,7 @@ profiles of one module.
 | Phase | Work | Done when |
 |---|---|---|
 | 0. Safety net | Golden tests for the three games (strategies, exec rules, guard scopes); `buildGameDefs` seam. **Done.** | Fixtures pass on today's code. |
-| 1. Manifest and loader | `module.yaml` v1 and a loader producing `GameDef`. Replace the `buildGameDefs` switch. Shared log-follow engine, `http_json` and `source_rcon` probes. Legacy `config.yaml` games block still read and mapped to built-in modules. | The three games behave identically (goldens unchanged); `cmd/crowsnest` has no game names. |
+| 1. Manifest and loader | `module.yaml` v1 and a loader producing `GameDef`. Replace the `buildGameDefs` switch (done, step 1). Shared log-follow engine, `http_json` and `source_rcon` probes. Legacy `config.yaml` games block still read and mapped to built-in modules. | The three games behave identically (goldens unchanged); `cmd/crowsnest` has no game names. |
 | 2. Dogfood | Re-express Valheim, Palworld, then Windrose+ as bundled modules. Adapter contract v0 with Windrose+ as first adapter. Remove typed per-game config fields. | A fourth game (e.g. Minecraft or a Source game) added with a manifest only, in under 30 minutes, no core change. |
 | 3. Derived security | Generate guard scopes, execguard rules and compose fragments from manifests. Per-module secrets. Scopes file with reload. `policy.yaml` envelope, privilege approval, lock file. Fuzz the guard. | Adding a game touches one directory plus `.env`; an out-of-envelope module cannot be applied from the UI. Gets its own security review. |
 | 4. State hub | Central poller, single SSE stream, adaptive cadence, memory-budget admission. | Dashboard load makes no per-tab probes. |
