@@ -780,15 +780,15 @@ func TestHistory_RecordsUserActionsButNotAutoStops(t *testing.T) {
 	if got := rec.kinds(); got != "" {
 		t.Fatalf("an actor-less stop recorded %q; idle/night record their own", got)
 	}
-	if err := m.RequestStart(WithActor(context.Background(), "scott"), "a"); err != nil {
+	if err := m.RequestStart(WithActor(context.Background(), "alex"), "a"); err != nil {
 		t.Fatal(err)
 	}
 	m.Wait()
-	if err := m.ConfirmSwitch(WithActor(context.Background(), "scott"), "a", "b"); err != nil {
+	if err := m.ConfirmSwitch(WithActor(context.Background(), "alex"), "a", "b"); err != nil {
 		t.Fatal(err)
 	}
 	m.Wait()
-	if got, want := rec.kinds(), "start:a:scott,stop:a:scott,start:b:scott"; got != want {
+	if got, want := rec.kinds(), "start:a:alex,stop:a:alex,start:b:alex"; got != want {
 		t.Fatalf("recorded %q, want %q", got, want)
 	}
 }

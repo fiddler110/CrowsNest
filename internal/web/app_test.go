@@ -880,6 +880,18 @@ func TestListGames_SharesProbesAcrossRequests(t *testing.T) {
 	h := newHarnessFromDefs(t, docker, []games.GameDef{
 		{ID: "a", DisplayName: "a", ContainerName: "a", Status: cs},
 	})
+	// The hub reconciles shortly after it starts; until it has an observer
+	// for the game, a request probes directly (by design). Wait for that, as
+	// a running server's first request always finds it.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if _, ok := h.App.Hub.Get("a"); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("hub never observed the game")
+		}
+	}
+	base := cs.calls.Load()
 	var wg sync.WaitGroup
 	for i := 0; i < 25; i++ {
 		wg.Add(1)
@@ -893,8 +905,10 @@ func TestListGames_SharesProbesAcrossRequests(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if n := cs.calls.Load(); n != 1 {
-		t.Fatalf("status checked %d times for 25 concurrent polls, want 1", n)
+	// Requests read the hub's observation; at most its own observer probes
+	// meanwhile. Without sharing it would be 25.
+	if n := cs.calls.Load() - base; n > 2 {
+		t.Fatalf("status checked %d times for 25 concurrent polls, want at most 2", n)
 	}
 }
 

@@ -1,14 +1,14 @@
-# CrowsNest config, production (Palworld-first). Reference: /home/plex/projects/crowsnest/config.yaml.example
+# CrowsNest config, production (Palworld-first). Reference: config.yaml.example
 server:
     addr: ":5000"
     session_secret_file: /app/.session_secret
-    tz: "America/Toronto"
+    tz: "UTC"
     # Docker calls go through execguard (exec allowlist) and then the scoped API guard, never the raw socket.
     docker_host: tcp://crowsnest-execguard:2375
     # Only Caddy, at its fixed address on crowsnest-web (docker-compose.yml), may set X-Forwarded-For. Caddy
     # trusts cloudflared for the visitor's real IP (Cf-Connecting-Ip) and sends exactly that one IP as
     # X-Forwarded-For (`header_up X-Forwarded-For {client_ip}`), so the login rate limit is per visitor.
-    trusted_proxies: ["192.168.241.2/32"]
+    trusted_proxies: ["172.30.0.2/32"]
     # Served over HTTPS (Cloudflare -> Caddy). Marks the cookie Secure and adds HSTS.
     secure_cookies: true
     # max_active_games comes from CROWSNEST_MAX_ACTIVE_GAMES in .env (1). This host can't carry two big servers.
@@ -110,11 +110,11 @@ games:
           - {label: Server password, env: WINDROSE_SERVER_PASSWORD}
       # Windrose+ (the server-side mod installed by the image when WINDROSE_PLUS_ENABLED=true) gives the player
       # count, so idle shutdown can stop an empty server, plus the world info panel. The container is on host
-      # networking, so its dashboard is bound (windrose_plus.json server.bind_ip) to 192.168.0.1, the host's
+      # networking, so its dashboard is bound (windrose_plus.json server.bind_ip) to 192.168.1.1, the host's
       # address on crowsnest-games-net: reachable from CrowsNest, not from the LAN. The password must match
       # rcon.password in ${USERDIR}/Windrose/Config/windrose_plus.json (the image sets it from .env on each start).
       windrose:
-          http_api_url: http://192.168.0.1:8780
+          http_api_url: http://192.168.1.1:8780
           rcon_password_env: WINDROSE_RCON_PASSWORD
       # The world (R5/Saved/SaveProfiles) has no backup of its own. Copies go to backups/ in the server folder.
       backup:

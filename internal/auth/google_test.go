@@ -68,7 +68,7 @@ func newGoogleHarness(t *testing.T) *googleHarness {
 		ClientID:     testClientID,
 		ClientSecret: "shh",
 		RedirectURL:  "https://crowsnest.example.com/auth/google/callback",
-		Users:        GoogleUsers{"scott@gmail.com": "scott", "friend@gmail.com": "friend"},
+		Users:        GoogleUsers{"alex@example.com": "alex", "friend@gmail.com": "friend"},
 		Service:      svc,
 		AuthURL:      "https://accounts.example/auth",
 		TokenURL:     srv.URL,
@@ -107,7 +107,7 @@ func (h *googleHarness) goodClaims(q url.Values) map[string]any {
 	return map[string]any{
 		"iss": "https://accounts.google.com", "aud": testClientID, "azp": testClientID,
 		"exp": h.now.Add(time.Hour).Unix(), "iat": h.now.Unix(), "nonce": q.Get("nonce"),
-		"email": "Scott@Gmail.com", "email_verified": true, "sub": "1234",
+		"email": "Alex@Example.com", "email_verified": true, "sub": "1234",
 	}
 }
 
@@ -155,8 +155,8 @@ func TestGoogleLogin_FullFlow(t *testing.T) {
 		t.Fatalf("callback = %d %q, want 303 /", rec.Code, rec.Header().Get("Location"))
 	}
 	s, ok := sessionFrom(t, h.g.Service, rec)
-	if !ok || s.Username != "scott" {
-		t.Fatalf("session = %+v (ok=%v), want user scott", s, ok)
+	if !ok || s.Username != "alex" {
+		t.Fatalf("session = %+v (ok=%v), want user alex", s, ok)
 	}
 
 	// The token request carried the code, the secret, and a PKCE verifier
@@ -221,7 +221,7 @@ func TestGoogleLogin_Refusals(t *testing.T) {
 		}, wantCode: LoginErrorExpired, noToken: true},
 		{name: "session cookie passed as state", cookie: func(c *http.Cookie) *http.Cookie {
 			m := NewSessionManager([]byte("test-secret"), time.Hour) // same secret as newTestService
-			sess, _ := m.New("scott")
+			sess, _ := m.New("alex")
 			tok, _ := m.Encode(sess)
 			return &http.Cookie{Name: oauthStateCookie, Value: tok}
 		}, wantCode: LoginErrorExpired, noToken: true},
@@ -286,11 +286,11 @@ func TestGoogleLogin_StartURLUsesRedirectOrigin(t *testing.T) {
 }
 
 func TestParseGoogleUsers(t *testing.T) {
-	users, err := ParseGoogleUsers(" Scott=Scott@Gmail.com, friend=pal@gmail.com\nscott=other@example.org ")
+	users, err := ParseGoogleUsers(" Alex=Alex@Example.com, friend=pal@gmail.com\nalex=other@example.org ")
 	if err != nil {
 		t.Fatalf("ParseGoogleUsers() error = %v", err)
 	}
-	want := GoogleUsers{"scott@gmail.com": "scott", "pal@gmail.com": "friend", "other@example.org": "scott"}
+	want := GoogleUsers{"alex@example.com": "alex", "pal@gmail.com": "friend", "other@example.org": "alex"}
 	if len(users) != len(want) {
 		t.Fatalf("users = %v, want %v", users, want)
 	}
@@ -300,7 +300,7 @@ func TestParseGoogleUsers(t *testing.T) {
 		}
 	}
 
-	for _, bad := range []string{"", "  ,", "scott", "=a@b.c", "scott=", "Bad Name=a@b.c", "x=notanemail", "a=x@y.z,b=x@y.z", "../x=a@b.c", "k=\u212aim@example.com", "i=fr\u0130end@gmail.com"} {
+	for _, bad := range []string{"", "  ,", "alex", "=a@b.c", "alex=", "Bad Name=a@b.c", "x=notanemail", "a=x@y.z,b=x@y.z", "../x=a@b.c", "k=\u212aim@example.com", "i=fr\u0130end@gmail.com"} {
 		if _, err := ParseGoogleUsers(bad); err == nil {
 			t.Errorf("ParseGoogleUsers(%q) = nil error, want an error", bad)
 		}

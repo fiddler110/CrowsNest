@@ -726,7 +726,7 @@ func TestInfoIsRedacted(t *testing.T) {
 	if got["Swarm"].(map[string]any)["LocalNodeState"] != "inactive" || len(got["Warnings"].([]any)) != 0 {
 		t.Error("swarm or warnings not reduced")
 	}
-	for _, secret := range []string{"HOST-ID", "my-secret-hostname", "proxy", "/var/lib/docker", "owner=plex", "mirror.internal", "node-secret", "47"} {
+	for _, secret := range []string{"HOST-ID", "my-secret-hostname", "proxy", "/var/lib/docker", "owner=ops", "mirror.internal", "node-secret", "47"} {
 		if strings.Contains(string(r.raw), secret) {
 			t.Errorf("info leaks %q", secret)
 		}

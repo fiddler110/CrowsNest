@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	palDir     = "/home/plex/docker/storage/mounts/Palworld"
+	palDir     = "/srv/games/Palworld"
 	palImageID = "sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
 	digest     = "sha256:1717171717171717171717171717171717171717171717171717171717171717"
 	execID     = "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
@@ -101,7 +101,7 @@ var (
 		"CgroupDriver": "systemd", "CgroupVersion": "2", "DefaultRuntime": "runc", "LoggingDriver": "json-file",
 		"SecurityOptions": []any{"name=apparmor", "name=seccomp,profile=builtin"}, "IndexServerAddress": "https://index.docker.io/v1/",
 		"Containers": 47, "Images": 120, "DockerRootDir": "/var/lib/docker", "HttpProxy": "http://user:pw@proxy:3128",
-		"Labels": []any{"owner=plex"}, "RegistryConfig": map[string]any{"Mirrors": []any{"https://mirror.internal"}}, "NCPU": 8, "MemTotal": 15 * (1 << 30),
+		"Labels": []any{"owner=ops"}, "RegistryConfig": map[string]any{"Mirrors": []any{"https://mirror.internal"}}, "NCPU": 8, "MemTotal": 15 * (1 << 30),
 		"Swarm": map[string]any{"LocalNodeState": "active", "NodeID": "node-secret"}, "Warnings": []any{"WARNING: something about the host"}}
 )
 

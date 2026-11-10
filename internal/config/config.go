@@ -187,7 +187,7 @@ type GoogleAuthConfig struct {
 	ClientSecretEnv string `yaml:"client_secret_env"`
 
 	// UsersEnv names the variable holding the allowlist: comma-separated
-	// name=email pairs, e.g. "scott=scott@gmail.com,friend=pal@gmail.com".
+	// name=email pairs, e.g. "alex=alex@example.com,friend=pal@gmail.com".
 	// Only these Google accounts may sign in, each as the CrowsNest
 	// username before the '='. Default: CROWSNEST_GOOGLE_USERS.
 	UsersEnv string `yaml:"users_env"`
