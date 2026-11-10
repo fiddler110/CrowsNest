@@ -73,6 +73,10 @@ type App struct {
 	// defaultMaxEventStreams.
 	MaxEventStreams int
 	eventStreams    atomic.Int32
+	// MaxEventStreamsPerUser caps one user's concurrent /api/events
+	// connections. Zero means defaultMaxEventStreamsPerUser.
+	MaxEventStreamsPerUser int
+	userEventStreams       userStreams
 
 	// EventsMinGap overrides the minimum spacing of /api/events sends
 	// (tests). Zero means defaultEventsMinGap.

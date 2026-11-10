@@ -133,3 +133,31 @@ func TestEvents_CapAndSession(t *testing.T) {
 		t.Fatalf("without a session = %d, want 401", rec.Code)
 	}
 }
+
+// One user's streams stop at their own cap, leaving the shared cap's slots
+// for others, and a refused stream holds no slot.
+func TestEvents_PerUserCap(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h.App.MaxEventStreamsPerUser = 2
+	for i := 0; i < 2; i++ {
+		if !h.App.userEventStreams.acquire("tester", 2) {
+			t.Fatalf("slot %d refused below the cap", i)
+		}
+	}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/api/events", nil))
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("over the per-user cap = %d, want 429", rec.Code)
+	}
+	if n := h.App.eventStreams.Load(); n != 0 {
+		t.Fatalf("refused stream holds %d global slots", n)
+	}
+	if !h.App.userEventStreams.acquire("someone-else", 2) {
+		t.Fatal("another user was refused by tester's cap")
+	}
+	h.App.userEventStreams.release("tester")
+	h.App.userEventStreams.release("tester")
+	if len(h.App.userEventStreams.n) != 1 {
+		t.Fatalf("released slots left entries: %v", h.App.userEventStreams.n)
+	}
+}

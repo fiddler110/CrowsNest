@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -16,6 +17,9 @@ const (
 	// dashboard tab). They are cheap, a goroutine reading the hub, but not
 	// free.
 	defaultMaxEventStreams = 32
+	// defaultMaxEventStreamsPerUser keeps one user's tabs from using up the
+	// shared cap and pushing everyone else onto polling.
+	defaultMaxEventStreamsPerUser = 4
 	// defaultEventsMinGap spaces sends: a burst of hub changes (a start
 	// flipping several states in a row) costs one send.
 	defaultEventsMinGap = time.Second
@@ -39,6 +43,34 @@ func acquireSlot(n *atomic.Int32, max int) bool {
 	}
 }
 
+// userStreams counts open event streams per username.
+type userStreams struct {
+	mu sync.Mutex
+	n  map[string]int
+}
+
+// acquire reserves one of max slots for user.
+func (u *userStreams) acquire(user string, max int) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.n[user] >= max {
+		return false
+	}
+	if u.n == nil {
+		u.n = map[string]int{}
+	}
+	u.n[user]++
+	return true
+}
+
+func (u *userStreams) release(user string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.n[user]--; u.n[user] <= 0 {
+		delete(u.n, user)
+	}
+}
+
 // handleEvents streams the dashboard's live state as Server-Sent Events:
 //
 //	event: games   data: the /api/games body for this user
@@ -59,6 +91,22 @@ func (a *App) handleEvents(w http.ResponseWriter, r *http.Request) {
 	if max <= 0 {
 		max = defaultMaxEventStreams
 	}
+	perUser := a.MaxEventStreamsPerUser
+	if perUser <= 0 {
+		perUser = defaultMaxEventStreamsPerUser
+	}
+	sess, err := auth.DecodeSessionCookie(a.Auth.Sessions, r)
+	if err != nil {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	// The per-user slot is taken first so a user at their limit never holds
+	// a global one.
+	if !a.userEventStreams.acquire(sess.Username, perUser) {
+		http.Error(w, "too many live update streams for this user", http.StatusTooManyRequests)
+		return
+	}
+	defer a.userEventStreams.release(sess.Username)
 	if !acquireSlot(&a.eventStreams, max) {
 		http.Error(w, "too many live update streams, try again shortly", http.StatusServiceUnavailable)
 		return
