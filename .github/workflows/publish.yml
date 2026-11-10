@@ -92,7 +92,7 @@ jobs:
             type=sha
             type=raw,value=dev,enable=${{ github.ref == 'refs/heads/main' }}
           labels: |
-            org.opencontainers.image.licenses=GPL-3.0-only
+            org.opencontainers.image.licenses=PolyForm-Noncommercial-1.0.0
             org.opencontainers.image.title=crowsnest
             org.opencontainers.image.version=${{ needs.version.outputs.tag }}
 

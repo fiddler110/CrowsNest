@@ -322,4 +322,13 @@ go run ./cmd/crowsnest serve
 
 ## License
 
-GPLv3 — see [LICENSE](LICENSE).
+[PolyForm Noncommercial 1.0.0](LICENSE). In plain words (the license text is what counts):
+
+- **Free** to self-host for yourself, your friends and family, a club or community, a school or a charity, and to
+  change and share, with the license and the notice in [NOTICE](NOTICE) kept.
+- **Not free** for commercial use: a company or service that runs CrowsNest as part of a business, such as a
+  game-server hosting provider, needs a separate license from the author.
+- Splitting the server bill with friends is fine; running it as a paid service is not.
+
+This is a source-available license, not an OSI-approved open-source one. Contributions are accepted under the same
+terms.
