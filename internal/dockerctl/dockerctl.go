@@ -16,10 +16,12 @@ package dockerctl
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
@@ -133,7 +135,18 @@ type Client struct {
 	httpc   *http.Client
 	apiVer  string
 	samples map[string]cpuSample
+
+	gpuMu      sync.Mutex
+	gpuAt      time.Time // when gpuStats/gpuOK were read
+	gpuStats   GPUStats
+	gpuOK      bool
+	gpuMissing bool // nvidia-smi not installed; retry only after gpuMissingRetry
 }
+
+const (
+	gpuCacheTTL     = 2 * time.Second
+	gpuMissingRetry = 10 * time.Minute
+)
 
 func (c *Client) bin() string {
 	if c.DockerBin != "" {
@@ -356,6 +369,23 @@ func (c *Client) cliStats(ctx context.Context, name string) (Stats, error) {
 // is the common case on a host with no GPU and is never surfaced as an
 // error, matching the original's silent try/except.
 func (c *Client) GPUStats(ctx context.Context) (GPUStats, bool) {
+	// Host-wide and polled once per game per refresh, so share one reading
+	// instead of forking nvidia-smi each time.
+	c.gpuMu.Lock()
+	defer c.gpuMu.Unlock()
+	ttl := gpuCacheTTL
+	if c.gpuMissing {
+		ttl = gpuMissingRetry
+	}
+	if !c.gpuAt.IsZero() && time.Since(c.gpuAt) < ttl {
+		return c.gpuStats, c.gpuOK
+	}
+	g, ok, missing := c.readGPU(ctx)
+	c.gpuAt, c.gpuStats, c.gpuOK, c.gpuMissing = time.Now(), g, ok, missing
+	return g, ok
+}
+
+func (c *Client) readGPU(ctx context.Context) (g GPUStats, ok, missing bool) {
 	timeout := defaultGPUTimeout
 	if c.Timeout > 0 {
 		timeout = c.Timeout
@@ -367,17 +397,17 @@ func (c *Client) GPUStats(ctx context.Context) (GPUStats, bool) {
 	var stdout bytes.Buffer
 	cmd.Stdout = &stdout
 	if err := cmd.Run(); err != nil {
-		return GPUStats{}, false
+		return GPUStats{}, false, errors.Is(err, exec.ErrNotFound) || errors.Is(err, os.ErrNotExist)
 	}
 
 	line, _, _ := strings.Cut(strings.TrimSpace(stdout.String()), "\n")
 	parts := strings.Split(line, ",")
 	if len(parts) < 3 {
-		return GPUStats{}, false
+		return GPUStats{}, false, false
 	}
 	return GPUStats{
 		UtilPercent: strings.TrimSpace(parts[0]),
 		MemUsedMiB:  strings.TrimSpace(parts[1]),
 		MemTotalMiB: strings.TrimSpace(parts[2]),
-	}, true
+	}, true, false
 }

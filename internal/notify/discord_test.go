@@ -42,7 +42,7 @@ func TestDiscord_Notify_RejectsNonDiscordURL(t *testing.T) {
 }
 
 func TestDiscord_Notify_PostsContent(t *testing.T) {
-	var gotBody map[string]string
+	var gotBody map[string]any
 	var gotPath string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -66,7 +66,11 @@ func TestDiscord_Notify_PostsContent(t *testing.T) {
 		t.Fatalf("path = %q, want /api/webhooks/123/abc", gotPath)
 	}
 	if gotBody["content"] != "🌙 test message" {
-		t.Fatalf("content = %q, want the message", gotBody["content"])
+		t.Fatalf("content = %v, want the message", gotBody["content"])
+	}
+	am, _ := gotBody["allowed_mentions"].(map[string]any)
+	if parse, ok := am["parse"].([]any); !ok || len(parse) != 0 {
+		t.Fatalf("allowed_mentions = %v, want parse: [] so @everyone in a name cannot ping", gotBody["allowed_mentions"])
 	}
 }
 

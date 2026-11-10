@@ -60,6 +60,9 @@ type Manager struct {
 	Registry       *games.Registry
 	// Settle is how long a new game waits for the guard to pick up its scope.
 	Settle time.Duration
+	// Busy, when set, reports a game that is mid start/stop. A start still
+	// pulling has no container yet, so Docker.Running alone would miss it.
+	Busy func(id string) bool
 
 	mu      sync.Mutex
 	ctx     context.Context
@@ -709,7 +712,12 @@ func (m *Manager) Update(r Request) error { return m.reinstall(r, false) }
 // same settings.
 func (m *Manager) Refresh(id string) error { return m.reinstall(Request{ID: id}, true) }
 
+var errBusy = errors.New("the game is starting or stopping; wait for it to finish")
+
 func (m *Manager) reinstall(r Request, refresh bool) error {
+	if m.Busy != nil && m.Busy(r.ID) {
+		return errBusy
+	}
 	ctx := m.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -773,6 +781,9 @@ func (m *Manager) Disable(id string) error {
 	m.mu.Unlock()
 	if e == nil {
 		return fmt.Errorf("game %q is not a dashboard-enabled game", id)
+	}
+	if m.Busy != nil && m.Busy(id) {
+		return errBusy
 	}
 	ctx := m.ctx
 	if ctx == nil {
