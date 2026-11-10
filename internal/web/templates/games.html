@@ -53,7 +53,8 @@
   <div id="fleet" class="fleet" aria-live="polite"></div>
 
   <h2 class="section-title">// policy</h2>
-  <section class="policy" aria-label="Policy">
+  <details class="policy" id="policy-box">
+    <summary>What this panel may create</summary>
     <p class="settings-help" id="policy-note">What this panel is allowed to create. Anything outside it is refused before a container exists.</p>
     <form id="policy-form" class="policy-form" autocomplete="off">
       <label class="field">Games folder <small>Every data folder must be inside this one.</small>
@@ -78,7 +79,7 @@
         <button id="policy-save" class="btn btn-primary" type="submit" hidden>Save policy</button>
       </div>
     </form>
-  </section>
+  </details>
 
   <div id="setup-section">
   <h2 class="section-title">// add a game</h2>

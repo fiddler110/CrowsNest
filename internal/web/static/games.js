@@ -377,7 +377,7 @@ const setPolicyEditing = (on) => {
 function fillPolicy() {
   const p = policyState.policy;
   pf.elements.games_root.value = p.games_root;
-  listFields.forEach((k) => { pf.elements[k].value = (p[k] || []).join("\n"); });
+  listFields.forEach((k) => { const v = (p[k] || []).join("\n"); pf.elements[k].value = v; pf.elements[k].rows = Math.max(2, (p[k] || []).length); });
   pf.elements.max_scopes.value = p.max_scopes;
   pf.elements.exec.checked = !!p.exec;
   $("policy-note").textContent = policyState.editable

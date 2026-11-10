@@ -548,3 +548,5 @@ a.btn { text-decoration: none; }
 .policy { margin-bottom: 2rem; max-width: 44rem; }
 .policy-form textarea { padding: 0.55rem 0.7rem; font: 0.82rem var(--mono); color: inherit; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; resize: vertical; }
 .policy-form input:disabled, .policy-form textarea:disabled { opacity: 0.75; cursor: default; }
+.policy > summary { cursor: pointer; color: var(--muted); margin-bottom: 0.8rem; }
+.policy[open] > summary { color: var(--text); }
