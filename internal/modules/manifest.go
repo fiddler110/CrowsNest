@@ -126,6 +126,15 @@ type Option struct {
 	// Secret marks a value that must never be written into a rendered file:
 	// it is referenced as a variable in .env instead.
 	Secret bool `yaml:"secret"`
+	// Derive fills the option in when the operator leaves it empty, so wiring
+	// that follows from the game itself is never typed in. {id} is the game's
+	// id (also its container name and hostname on the games network) and
+	// {env:KEY} is the name of the variable that holds secret option KEY.
+	// An option with a Derive is never required.
+	Derive string `yaml:"derive"`
+	// ManagedRequired makes the option required for games enabled from the dashboard only
+	// (a config.yaml game wires the same thing by hand, so it may leave it out).
+	ManagedRequired bool `yaml:"managed_required"`
 }
 
 // StartupStep maps a log pattern to a startup progress percentage.

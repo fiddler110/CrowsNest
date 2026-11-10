@@ -119,6 +119,7 @@ type OptionInfo struct {
 	Default  string `json:"default,omitempty"`
 	Required bool   `json:"required,omitempty"`
 	Secret   bool   `json:"secret,omitempty"`
+	Auto     bool   `json:"auto,omitempty"` // filled in from the game itself when left empty
 }
 
 type ModuleInfo struct {
@@ -129,6 +130,9 @@ type ModuleInfo struct {
 	Image       string   `json:"image,omitempty"`
 	Ports       []string `json:"ports,omitempty"` // "25565/tcp"
 	HasBackup   bool     `json:"has_backup,omitempty"`
+	// ConnectHint is the address players most likely use (published host address
+	// and first port), offered as the default connect address.
+	ConnectHint string `json:"connect_hint,omitempty"`
 	// Fits is whether a game from this module, with its defaults and the module's
 	// own id, is inside the operator's policy. Nil when it cannot be told (the
 	// module needs an image, or a game with that id already exists).
@@ -161,8 +165,11 @@ func (m *Manager) Catalogue() []ModuleInfo {
 		for _, p := range mf.Runtime.Ports {
 			mi.Ports = append(mi.Ports, fmt.Sprintf("%d/%s", p.Port, p.Proto))
 		}
+		if len(mf.Runtime.Ports) > 0 && m.Platform.HostIP != "" && m.Platform.HostIP != "0.0.0.0" {
+			mi.ConnectHint = fmt.Sprintf("%s:%d", m.Platform.HostIP, mf.Runtime.Ports[0].Port)
+		}
 		for _, o := range mf.Options {
-			mi.Options = append(mi.Options, OptionInfo{Key: o.Key, Label: o.Label, Default: o.Default, Required: o.Required, Secret: o.Secret})
+			mi.Options = append(mi.Options, OptionInfo{Key: o.Key, Label: o.Label, Default: o.Default, Required: (o.Required || o.ManagedRequired) && o.Derive == "", Secret: o.Secret, Auto: o.Derive != ""})
 		}
 		m.probeFit(&mi, mf)
 		out = append(out, mi)
@@ -193,6 +200,16 @@ func (m *Manager) probeFit(mi *ModuleInfo, mf *modules.Manifest) {
 	}
 	fits := plan.Fits
 	mi.Fits, mi.Reason = &fits, plan.Reason
+}
+
+var deriveEnvRe = regexp.MustCompile(`\{env:([a-z0-9_]+)\}`)
+
+// deriveOption expands an option's derive template for the game id.
+func deriveOption(tmpl, id string) string {
+	out := deriveEnvRe.ReplaceAllStringFunc(tmpl, func(ref string) string {
+		return envName(id, deriveEnvRe.FindStringSubmatch(ref)[1])
+	})
+	return strings.ReplaceAll(out, "{id}", id)
 }
 
 // validate checks a Request and returns the game config it stands for.
@@ -241,19 +258,24 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		}
 	}
 	for _, o := range mf.Options {
-		if !o.Required {
+		if !o.Required && !o.ManagedRequired {
 			continue
 		}
 		if o.Secret {
 			if r.Secrets[o.Key] == "" && !existing {
 				return g, nil, fmt.Errorf("option %q is required", o.Key)
 			}
-		} else if opts[o.Key] == "" && o.Default == "" {
+		} else if opts[o.Key] == "" && o.Default == "" && o.Derive == "" {
 			return g, nil, fmt.Errorf("option %q is required", o.Key)
 		}
 	}
 	if mf.Runtime.Image == "" && opts["image"] == "" {
 		return g, nil, fmt.Errorf("module %s has no image of its own: set the image option", mf.ID)
+	}
+	for _, o := range mf.Options {
+		if o.Derive != "" && opts[o.Key] == "" {
+			opts[o.Key] = deriveOption(o.Derive, r.ID)
+		}
 	}
 	// A secret option K with a sibling K_env names the variable the module reads: point it at ours.
 	for _, o := range mf.Options {

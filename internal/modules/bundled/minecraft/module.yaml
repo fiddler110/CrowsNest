@@ -45,7 +45,7 @@ options:
   - {key: max_players, label: Max players, default: "10"}
   - {key: difficulty, label: "peaceful, easy, normal or hard", default: normal}
   - {key: rcon_password, label: RCON password (same value as the env var named in rcon_password_env), secret: true}
-  - {key: rcon_addr, label: "RCON host:port (enables the raw console; optional)"}
+  - {key: rcon_addr, label: "RCON host:port (enables the raw console)", derive: "{id}:25575"}
   - {key: rcon_password_env, label: "Env var holding the RCON password", default: MINECRAFT_RCON_PASSWORD}
 
 status:

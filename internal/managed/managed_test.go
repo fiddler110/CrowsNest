@@ -421,3 +421,29 @@ func TestCatalogueDescribesAndProbesFit(t *testing.T) {
 		t.Errorf("minecraft should fit the test policy: %+v", mc)
 	}
 }
+
+func TestDerivedOptionsFillThemselvesIn(t *testing.T) {
+	if got := deriveOption("http://{id}:8212", "pal-1"); got != "http://pal-1:8212" {
+		t.Errorf("derive {id} = %q", got)
+	}
+	if got := deriveOption("{env:admin_password}", "pal-1"); got != envName("pal-1", "admin_password") {
+		t.Errorf("derive {env:} = %q", got)
+	}
+	m, _ := newManager(t)
+	// Palworld asks for an admin password only: the API address and the variable holding it follow from the game.
+	g, mf, err := m.validate(Request{ID: "pal-1", Module: "palworld", Secrets: map[string]string{"admin_password": "pw"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Options["rest_api_url"] != "http://pal-1:8212" || g.Options["rest_api_password_env"] != envName("pal-1", "admin_password") {
+		t.Errorf("not derived: %v", g.Options)
+	}
+	if _, _, err := m.validate(Request{ID: "pal-2", Module: "palworld"}, false); err == nil {
+		t.Error("a Palworld game without an admin password must be refused")
+	}
+	for _, o := range mf.Options {
+		if o.Key == "rest_api_url" && o.Derive == "" {
+			t.Error("rest_api_url lost its derive")
+		}
+	}
+}

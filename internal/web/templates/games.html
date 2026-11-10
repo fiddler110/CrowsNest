@@ -69,7 +69,7 @@
         <small>Lowercase letters, digits and dashes. Becomes the container name and cannot be changed later.</small></label>
       <label class="field">Address players connect to <span class="optional">optional</span>
         <input type="text" name="connect_address" maxlength="128" spellcheck="false" placeholder="e.g. 10.0.0.2:25565">
-        <small>Shown on the game's card with a copy button.</small></label>
+        <small>Shown on the game's card with a copy button. It is only a label for players: it does not change any other setting.</small></label>
       <label class="field" id="image-field" hidden>Image
         <input type="text" name="image" spellcheck="false" autocapitalize="none" placeholder="e.g. docker.io/itzg/minecraft-server">
         <small>This module has no image of its own, so say which one to run.</small></label>
@@ -77,7 +77,7 @@
       <h3 class="step-title"><span class="step-num">3</span> Settings</h3>
       <div id="options" class="options"></div>
       <details id="more" class="more">
-        <summary>More settings</summary>
+        <summary>More settings <small>(wiring such as the API address is filled in automatically)</small></summary>
         <div id="options-more" class="options"></div>
       </details>
     </div>

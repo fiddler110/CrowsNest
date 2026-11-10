@@ -145,6 +145,7 @@ function choose(id) {
   if (editing) return;
   selected = id;
   renderCatalogue();
+  form.elements.connect_address.value = "";
   buildForm();
   form.hidden = false;
   $("progress").hidden = true;
@@ -163,7 +164,7 @@ function buildForm(values = {}) {
   if (!m) return;
   // Settings that need an answer (required or secret) come first; the rest sit under "More settings".
   const opts = (m.options || []).filter((o) => o.key !== "image");
-  const main = opts.filter((o) => o.required || o.secret || /eula/i.test(o.key));
+  const main = opts.filter((o) => !o.auto && (o.required || o.secret || /eula/i.test(o.key)));
   const more = opts.filter((o) => !main.includes(o));
   const addTo = (root, o) => {
     const label = el("label", "field");
@@ -176,6 +177,10 @@ function buildForm(values = {}) {
     if (o.secret) {
       input.placeholder = editing ? "leave empty to keep the current value" : "";
       input.required = !!o.required && !editing;
+    } else if (o.auto) {
+      // Wiring that follows from the game itself: left empty, it is filled in automatically.
+      input.value = values[o.key] !== undefined ? values[o.key] : "";
+      input.placeholder = "automatic";
     } else {
       input.value = values[o.key] !== undefined ? values[o.key] : (o.default || "");
       input.required = !!o.required;
@@ -185,6 +190,9 @@ function buildForm(values = {}) {
   };
   main.forEach((o) => addTo($("options"), o));
   more.forEach((o) => addTo($("options-more"), o));
+  const connect = form.elements.connect_address;
+  connect.placeholder = m.connect_hint ? `e.g. ${m.connect_hint}` : "e.g. 10.0.0.2:25565";
+  if (!editing && m.connect_hint && !connect.value) connect.value = m.connect_hint;
   $("more").hidden = !more.length;
   $("options").hidden = !main.length;
 }

@@ -196,9 +196,17 @@ so a game that did not finish installing is finished on the next start.
   games is not wired: use refresh.
 - Not yet: the Games page (step 4).
 
-### The Games dialog
+### Options that fill themselves in
 
-Admins get a **Games** button in the header. It lists the games enabled from the dashboard (installing, ready or
+A module option can say `derive: "http://{id}:8212"`. For a game enabled from the dashboard, an option left empty
+is filled from the game itself, so nobody types wiring such as the REST API address. `{id}` is the game's id (also its
+container name on the games network) and `{env:KEY}` is the name of the variable that holds secret option `KEY`.
+`managed_required: true` makes an option required for dashboard games only. The Games page tucks derived options
+under "More settings" with an "automatic" placeholder; typing a value there overrides it.
+
+### The Games page
+
+Admins get a **Games** link in the header, opening `/games`. It lists the games enabled from the dashboard (installing, ready or
 failed, with the error), and has a form to add one: pick a module, an id, the module's options (secret options are
 password fields), then **Preview** to see whether it fits the policy before **Enable**. Per game: **Edit** (recreates
 the container; leaving a secret empty keeps it), **Update image**, and **Disable** (the data folder is kept). When an
