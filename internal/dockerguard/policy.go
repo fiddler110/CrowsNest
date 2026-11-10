@@ -343,6 +343,11 @@ func matchName(list []string, name string) bool {
 	return false
 }
 
+// PortAllowed reports whether the policy lets a managed game publish this host port on that address.
+func (p *Policy) PortAllowed(hostIP, host, proto string) bool {
+	return p.portOK(Port{HostIP: hostIP, HostPort: host, Proto: proto}) == nil
+}
+
 func (p *Policy) portOK(pt Port) error {
 	if pt.HostPort == "" {
 		return errors.New("a managed port must name its host port")

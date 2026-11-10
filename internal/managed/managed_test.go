@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -567,8 +568,13 @@ func TestTwoGamesFromOneModule(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitState(t, m, "gs-one", StateReady)
-	// Same module, default ports: refused, naming the game that holds the port.
+	// Same module, default ports: it moves to the next free host port by itself.
 	b := Request{ID: "gs-two", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "y"}}
+	if p, err := m.Preview(b); err != nil || !strings.Contains(strings.Join(p.Ports, " "), "25566:25565") {
+		t.Fatalf("the second game did not get its own port: %+v %v", p, err)
+	}
+	// A port typed by hand that is taken is refused, naming the game that holds it.
+	b.Options["ports"] = "25565:25565/tcp"
 	if _, err := m.Preview(b); err == nil || !strings.Contains(err.Error(), "gs-one") {
 		t.Fatalf("a shared host port was accepted: %v", err)
 	}
@@ -976,5 +982,37 @@ func TestAllowingAModuleAddsItsPortsAndTurnOffIsGuarded(t *testing.T) {
 	m.entries = nil
 	if err := m.SetAllowed("minecraft", false); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// A second game of one module gets the next free host port without being asked;
+// a port typed by hand that clashes is still refused.
+func TestSecondGameGetsNextFreePort(t *testing.T) {
+	m, _ := newManager(t)
+	first := Request{ID: "minecraft", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+	if err := m.Enable(first); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	second := Request{ID: "gs-two", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+	plan, err := m.Preview(second)
+	if err != nil || !plan.Fits {
+		t.Fatalf("preview: %+v %v", plan, err)
+	}
+	if !strings.Contains(strings.Join(plan.Ports, " "), "25566:25565") {
+		t.Errorf("ports %v, want host 25566", plan.Ports)
+	}
+	second.Options["ports"] = "25565:25565/tcp"
+	if _, err := m.Preview(second); err == nil || !strings.Contains(err.Error(), "already used by minecraft") {
+		t.Errorf("a hand-typed clash was not refused: %v", err)
+	}
+	// Outside the policy's ports there is nothing to suggest, and the clash says so.
+	delete(second.Options, "ports")
+	m.entries[0].rendered.Scope.Ports = append(m.entries[0].rendered.Scope.Ports, modules.GuardPort{HostIP: "10.0.0.2", HostPort: "25566", Proto: "tcp"})
+	for p := 25567; p <= 26000; p++ {
+		m.entries[0].rendered.Scope.Ports = append(m.entries[0].rendered.Scope.Ports, modules.GuardPort{HostIP: "10.0.0.2", HostPort: strconv.Itoa(p), Proto: "tcp"})
+	}
+	if _, err := m.Preview(second); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Errorf("with the range full: %v", err)
 	}
 }

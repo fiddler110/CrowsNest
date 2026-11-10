@@ -1,7 +1,8 @@
 # The limits the dashboard works inside. The guard enforces them; the panel cannot change them.
 # Widen them here, on the host, deliberately. See ../../docs/modules.md ("The policy envelope").
 games_root: /srv/games                  # game data may only be bound from inside this folder (a host path)
-# ports: []                            # optional: ports beyond those of the games you switch on (Games page)
+# ports: ["8200-8299/udp", "25560-25599/tcp", "2456-2499/udp"]   # optional: room for a second or third server of a game
+#                                       # (the next free port in these ranges is picked for you)
 host_ips: []
 exec: false                             # true lets games run the backup command declared in their module
 pin_digests: true                       # run images by digest so an upstream push changes nothing until you update

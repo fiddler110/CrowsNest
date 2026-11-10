@@ -24,6 +24,7 @@ import (
 	"regexp"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -519,16 +520,74 @@ func (m *Manager) renderAndFit(g config.GameConfig, mf *modules.Manifest) (*modu
 // the operator points at a folder that holds only game data). Two games from one module must never share a
 // folder (they would write the same world). A folder typed in the form is kept.
 func (m *Manager) withDefaults(r Request) Request {
-	if _, ok := m.Modules.Manifest(r.Module); !ok || r.Options["data_dir"] != "" || r.ID == "" {
+	if _, ok := m.Modules.Manifest(r.Module); !ok || r.ID == "" {
 		return r
 	}
-	opts := make(map[string]string, len(r.Options)+1)
+	opts := make(map[string]string, len(r.Options)+2)
 	for k, v := range r.Options {
 		opts[k] = v
 	}
-	opts["data_dir"] = r.ID
+	if spec := m.freePorts(r); spec != "" {
+		opts["ports"] = spec
+	}
+	if opts["data_dir"] == "" {
+		opts["data_dir"] = r.ID
+	}
 	r.Options = opts
 	return r
+}
+
+// freePorts picks host ports for a game that did not choose any, when the
+// module's own are taken by another dashboard game: each is moved up to the
+// next free one the policy admits (a second Palworld gets 8212, a third 8213).
+// It returns "" when the defaults are free or nothing workable is left, and
+// the clash check then says what is wrong.
+func (m *Manager) freePorts(r Request) string {
+	mf, ok := m.Modules.Manifest(r.Module)
+	if !ok || r.Options["ports"] != "" || len(mf.Runtime.Ports) == 0 {
+		return ""
+	}
+	pol, err := m.policy()
+	if err != nil {
+		return ""
+	}
+	used := map[string]bool{}
+	for _, o := range m.entries {
+		if o.ID == r.ID || o.rendered == nil {
+			continue
+		}
+		for _, p := range o.rendered.Scope.Ports {
+			used[p.HostPort+"/"+p.Proto] = true
+		}
+	}
+	hostIP := m.Platform.HostIP
+	if hostIP == "" {
+		hostIP = "0.0.0.0"
+	}
+	var spec []string
+	moved := false
+	for _, pt := range mf.Runtime.Ports {
+		proto := pt.Proto
+		if proto == "" {
+			proto = "udp"
+		}
+		h := pt.Port
+		for used[fmt.Sprintf("%d/%s", h, proto)] {
+			h++
+		}
+		if h != pt.Port {
+			moved = true
+			if h > 65535 || !pol.PortAllowed(hostIP, strconv.Itoa(h), proto) {
+				return ""
+			}
+		}
+		used[fmt.Sprintf("%d/%s", h, proto)] = true
+		spec = append(spec, fmt.Sprintf("%d:%d/%s", h, pt.Port, proto))
+	}
+	if !moved {
+		return ""
+	}
+	return strings.Join(spec, ",")
 }
 
 // Preview renders a Request without changing anything.

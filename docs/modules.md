@@ -168,8 +168,11 @@ max_scopes: 32
   for your password, is written to the history, and adds that game's published ports (shown under the card with
   the module's reason for each) to what the guard accepts. It is stored in `allowed.json` beside the managed
   scopes file; the guard only adds ports a *bundled* module declares, so the file cannot open anything else. A
-  game can't be switched off while one of its servers still exists, since the guard would drop it. `ports` in
-  `policy.yaml` is only for ports beyond those: a game installed from a URL, or a different host port. An admin with no
+  game can't be switched off while one of its servers still exists, since the guard would drop it. A second
+  server of the same game gets the next free host port on its own (a second Palworld is 8212, a third 8213), but only
+  if the policy admits that port, so add a range to `ports` for the games you plan to run more than one of, such
+  as `["8200-8299/udp", "25560-25599/tcp"]`. A port you type that another dashboard game holds is refused, naming
+  that game. `ports` in `policy.yaml` is only for ports beyond those: a game installed from a URL, or a different host port. An admin with no
   stored password (Google sign-in only) sees a banner on every page and is refused until they set one in Settings,
   Users: the password is only used to confirm this, so a hijacked session alone cannot widen the guard.
 - Point `games_root` at a folder that holds only game data, such as `<your data mount>/crowsnest/games`, not at a

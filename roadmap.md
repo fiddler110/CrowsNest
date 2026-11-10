@@ -105,7 +105,10 @@ derived from it.
      editor cannot empty a list). A module installed from a URL still needs its image listed.
   3. [x] A per-module **Allow** switch on the Games page (admin password again, audit-logged), and each game's
      published ports shown with the module's reason (`why:` on a module port). `ports` in the policy is optional.
-     Not done: a clash warning on host-port changes (a changed host port still needs a `ports` entry).
+     A password is required to allow (a Google-only admin gets a banner until they set one). A second server of a
+     game gets the next free host port the policy admits; a typed clash is refused naming the game. Not done: a
+     switch for URL-installed modules (needs the guard to read the lock file); the extra range is edited in
+     `policy.yaml`; the clash on *start* is Docker's own error; a LAN-address check for macvlan games.
   4. [ ] Host address as three plain choices (this machine, my network, a specific address); max active games as a
      number field with arrows, starting at 1.
 
