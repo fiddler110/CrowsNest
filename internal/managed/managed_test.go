@@ -671,6 +671,13 @@ func TestWindroseNeedsAPolicyException(t *testing.T) {
 	if spec.Binds[0] != "/srv/games/Windrose/Config:/home/steam/server-files" {
 		t.Errorf("binds = %v", spec.Binds)
 	}
+	// a second Windrose cannot take the same LAN address
+	dup := windroseReq
+	dup.ID = "windrose2"
+	dup.Options = map[string]string{"lan_ipv4": "10.0.1.16", "data_dir": "Windrose2"}
+	if err := m.Enable(dup); err == nil || !strings.Contains(err.Error(), "10.0.1.16") || !strings.Contains(err.Error(), "windrose") {
+		t.Errorf("same LAN address must be refused naming the holder: %v", err)
+	}
 }
 
 // The dashboard shows exceptions and keeps them when it saves the rest of the policy, but cannot make one.

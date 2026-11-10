@@ -450,6 +450,9 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		if err := m.bindClash(g.ID, rd); err != nil {
 			return g, nil, err
 		}
+		if err := m.addrClash(g.ID, rd); err != nil {
+			return g, nil, err
+		}
 	}
 	return g, mf, nil
 }
@@ -489,6 +492,24 @@ func (m *Manager) portClash(id string, rd *modules.Rendered) string {
 		}
 	}
 	return ""
+}
+
+// addrClash refuses a fixed address (a macvlan LAN address, or one on the games network) that another dashboard
+// game already holds on the same network: two containers cannot own one address.
+func (m *Manager) addrClash(id string, rd *modules.Rendered) error {
+	for _, o := range m.entries {
+		if o.ID == id || o.rendered == nil {
+			continue
+		}
+		for net, mine := range rd.Scope.IPv4 {
+			for _, a := range mine {
+				if slices.Contains(o.rendered.Scope.IPv4[net], a) {
+					return fmt.Errorf("address %s on network %s is already used by %s: choose another address", a, net, o.ID)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // bindClash refuses a data folder inside another dashboard game's, or holding one: the guard does not load such a

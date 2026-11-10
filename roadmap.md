@@ -108,7 +108,7 @@ derived from it.
      A password is required to allow (a Google-only admin gets a banner until they set one). A second server of a
      game gets the next free host port the policy admits; a typed clash is refused naming the game. Not done: a
      switch for URL-installed modules (needs the guard to read the lock file); the extra range is edited in
-     `policy.yaml`; the clash on *start* is Docker's own error; a LAN-address check for macvlan games.
+     `policy.yaml`; the clash on *start* is Docker's own error. A fixed LAN or games-network address another game already holds is refused naming that game.
   4. [x] Host address as three plain choices (my network, this machine only, a specific address) in the policy pane;
      the dashboard can still only narrow it. "Servers allowed at once" was already a number field starting at 1
      (Settings, General); the policy's `max_scopes` is now labelled "Most games that can be set up".
