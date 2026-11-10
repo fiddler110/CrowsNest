@@ -514,6 +514,13 @@ func (m *Manager) setupSteps(r Request, mf *modules.Manifest, rd *modules.Render
 			if k == "id" {
 				return r.ID
 			}
+			known := false
+			for _, o := range mf.Options {
+				known = known || o.Key == k
+			}
+			if !known {
+				return ref // not ours (a Go template in a docker command, say)
+			}
 			if v := strings.TrimSpace(r.Options[k]); v != "" {
 				return v
 			}

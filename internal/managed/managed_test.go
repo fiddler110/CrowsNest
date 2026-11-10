@@ -741,6 +741,9 @@ func TestWindrosePreviewGivesHostSteps(t *testing.T) {
 	for _, s := range plan.Setup {
 		all += s.Title + s.Detail + s.Command
 	}
+	if !strings.Contains(all, "{{range .IPAM.Config}}{{.Subnet}} {{end}}") {
+		t.Errorf("a docker format string was mangled:\n%s", all)
+	}
 	if !strings.Contains(all, "iptables -I INPUT -s 10.0.1.16") || strings.Contains(all, "{lan_ipv4}") {
 		t.Errorf("host steps not filled in:\n%s", all)
 	}
