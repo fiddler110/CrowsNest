@@ -186,9 +186,10 @@ player count should follow joins and leaves. If not, run `docker logs <container
 ### Updating and removing
 
 `crowsnest module update mygame` re-downloads from the recorded source and lists what changed (new image, new port,
-loosened isolation) before you approve. `crowsnest module remove mygame` deletes it. Disable any games made from it on the
-Games page first: once the module is gone CrowsNest can no longer edit or re-create them. `crowsnest module list` shows what is installed and flags any file that no
-longer matches its pinned hash.
+loosened isolation) before you approve. `crowsnest module remove mygame` deletes it. Games already made from it stay on the Games page as *failed*
+("module is not installed") and leave the dashboard; their containers and data are untouched. You can still
+**Disable** them (stop the game first), but you can't edit or re-create them until a module with that id is installed
+again. `crowsnest module list` shows what is installed and flags any file that no longer matches its pinned hash.
 
 ## Sharing your module
 
