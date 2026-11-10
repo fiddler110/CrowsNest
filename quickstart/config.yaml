@@ -19,6 +19,9 @@ platform:
   games_root: /srv/games
   host_ip: 0.0.0.0
 
+# Extra game modules (crowsnest module install ...) live here; restart after installing one.
+modules_dir: /app/data/modules
+
 # Games are added from the Games page, inside the limits in policy/policy.yaml.
 managed:
   dir: /app/data/managed

@@ -335,5 +335,7 @@ go run ./cmd/crowsnest serve
   game-server hosting provider, needs a separate license from the author.
 - Splitting the server bill with friends is fine; running it as a paid service is not.
 
-This is a source-available license, not an OSI-approved open-source one. Contributions are accepted under the same
-terms.
+This is a source-available license, not an OSI-approved open-source one.
+
+**Contributions:** CrowsNest is not taking outside pull requests. You are welcome to fork it under the license
+above, and to write your own game modules and share them: see [docs/writing-modules.md](docs/writing-modules.md).
