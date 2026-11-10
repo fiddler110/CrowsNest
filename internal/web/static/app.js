@@ -56,7 +56,7 @@ function setStatus(id, status) {
   card.querySelector(".start-btn").disabled = ["online", "starting", "stopping"].includes(status);
   card.querySelector(".stop-btn").disabled = status === "offline" || status === "stopping";
 
-  // While starting, (re)open the progress stream on every poll: it ends
+  // While starting, (re)open the progress stream on every update: it ends
   // early while the image is still being pulled (no container yet), and
   // startProgressTracking is a no-op while one is already open.
   if (status === "starting") {
@@ -148,9 +148,15 @@ function startProgressTracking(id) {
     progressDone[id] = true;
     stopProgressTracking(id);
   });
-  // Stream ended (e.g. still pulling): close it but keep the bar showing;
-  // the next status poll reopens it.
-  es.onerror = () => closeProgressSource(id);
+  // Stream ended (e.g. still pulling, no container yet): close it but keep
+  // the bar showing, and reopen it shortly if the game is still starting.
+  es.onerror = () => {
+    closeProgressSource(id);
+    setTimeout(() => {
+      const c = cardFor(id);
+      if (c && c.dataset.status === "starting" && !progressDone[id]) startProgressTracking(id);
+    }, POLL_INTERVAL_MS);
+  };
 }
 
 function closeProgressSource(id) {
@@ -504,15 +510,38 @@ function renderIdleTimer(card) {
 
 setInterval(() => document.querySelectorAll(".game-card").forEach(renderIdleTimer), 1000);
 
-// Docker reachability: checked every 30s, and straight away whenever the
-// game list fails to load.
+// Docker reachability: pushed by the live stream, or (while polling) checked
+// every 30s, and straight away whenever the game list fails to load.
+function applyHealth(health) {
+  document.getElementById("docker-banner").hidden = health.docker !== false;
+}
+
 async function refreshHealth() {
   try {
     const res = await fetch("/api/health");
-    if (res.ok) document.getElementById("docker-banner").hidden = (await res.json()).docker !== false;
+    if (res.ok) applyHealth(await res.json());
   } catch (err) {
     // transient; the next poll retries
   }
+}
+
+// applyGames paints one /api/games body (from the stream or a poll).
+function applyGames(games) {
+  games.forEach((g) => {
+    setStatus(g.id, g.status);
+    setPlayerCount(g.id, g.player_count);
+    setIdleTimer(g.id, g.idle_seconds_left);
+    // Starts run in the background, so a failure arrives here rather than
+    // as the Start button's HTTP response.
+    if (g.start_error && shownStartErrors[g.id] !== g.start_error_at) {
+      shownStartErrors[g.id] = g.start_error_at;
+      if (Date.now() / 1000 - g.start_error_at > 600) return; // stale; don't replay on reload
+      const card = cardFor(g.id);
+      const name = card ? card.dataset.name : g.id;
+      const isStartFailure = !/^(stop failed|switch from )/.test(g.start_error);
+      toast(`${name}${isStartFailure ? " failed to start" : ""}: ${g.start_error.slice(-300)}`, "error");
+    }
+  });
 }
 
 async function refreshStatuses() {
@@ -531,22 +560,49 @@ async function refreshStatuses() {
     refreshHealth();
     return;
   }
-  const games = await res.json();
-  games.forEach((g) => {
-    setStatus(g.id, g.status);
-    setPlayerCount(g.id, g.player_count);
-    setIdleTimer(g.id, g.idle_seconds_left);
-    // Starts run in the background, so a failure arrives here rather than
-    // as the Start button's HTTP response.
-    if (g.start_error && shownStartErrors[g.id] !== g.start_error_at) {
-      shownStartErrors[g.id] = g.start_error_at;
-      if (Date.now() / 1000 - g.start_error_at > 600) return; // stale; don't replay on reload
-      const card = cardFor(g.id);
-      const name = card ? card.dataset.name : g.id;
-      const isStartFailure = !/^(stop failed|switch from )/.test(g.start_error);
-      toast(`${name}${isStartFailure ? " failed to start" : ""}: ${g.start_error.slice(-300)}`, "error");
-    }
+  applyGames(await res.json());
+}
+
+// Live updates: /api/events pushes the /api/games and /api/health bodies
+// whenever they change. While the stream is down, poll both instead, and
+// try the stream again every STREAM_RETRY_MS.
+const STREAM_RETRY_MS = 30000;
+let liveEvents = null;
+let fallbackPolls = null;
+
+function startFallbackPolling() {
+  if (fallbackPolls) return;
+  fallbackPolls = [poll(refreshStatuses, POLL_INTERVAL_MS), poll(refreshHealth, HEALTH_POLL_MS)];
+}
+
+function stopFallbackPolling() {
+  if (!fallbackPolls) return;
+  fallbackPolls.forEach(stopPoll);
+  fallbackPolls = null;
+}
+
+function connectLiveEvents() {
+  if (liveEvents) return;
+  if (typeof EventSource === "undefined") {
+    refreshStatuses();
+    refreshHealth();
+    startFallbackPolling();
+    return;
+  }
+  const es = new EventSource("/api/events");
+  liveEvents = es;
+  es.addEventListener("games", (e) => {
+    stopFallbackPolling();
+    applyGames(JSON.parse(e.data));
   });
+  es.addEventListener("health", (e) => applyHealth(JSON.parse(e.data)));
+  es.onerror = () => {
+    es.close();
+    liveEvents = null;
+    refreshStatuses(); // also sends a signed-out tab to the login page
+    startFallbackPolling();
+    setTimeout(connectLiveEvents, STREAM_RETRY_MS);
+  };
 }
 
 // confirmSwitch asks which running game to stop in favour of targetId.
@@ -674,8 +730,7 @@ document.querySelectorAll(".game-card").forEach((card) => {
   setStatus(id, status);
 });
 
-refreshStatuses();
-refreshHealth();
+connectLiveEvents(); // its first events paint every card and the health banner
 
 document.querySelectorAll(".copy-btn").forEach((btn) => {
   btn.addEventListener("click", async () => {
@@ -693,10 +748,8 @@ window.addEventListener("beforeunload", () => {
   Object.values(logSources).forEach((es) => es.close());
   Object.values(progressSources).forEach((es) => es.close());
   Object.values(panelTimers).forEach(stopPoll);
+  if (liveEvents) liveEvents.close();
 });
-
-poll(refreshStatuses, POLL_INTERVAL_MS);
-poll(refreshHealth, HEALTH_POLL_MS);
 
 
 // Logbook: recent activity plus playtime per player.

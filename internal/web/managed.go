@@ -142,6 +142,7 @@ func (a *App) handleManagedEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, req.ID, "enabled from module "+req.Module)
+	a.pokeGame(req.ID) // re-observe; an id the hub lacks prompts a registry reconcile
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": req.ID, "state": managed.StateInstalling})
 }
 
@@ -155,6 +156,7 @@ func (a *App) handleManagedDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, id, "disabled")
+	a.pokeGame(id) // re-observe; an id the hub lacks prompts a registry reconcile
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -182,6 +184,7 @@ func (a *App) handleManagedUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, req.ID, "changed settings")
+	a.pokeGame(req.ID) // re-observe; an id the hub lacks prompts a registry reconcile
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": req.ID, "state": managed.StateInstalling})
 }
 
@@ -195,6 +198,7 @@ func (a *App) handleManagedRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, id, "updating image")
+	a.pokeGame(id) // re-observe; an id the hub lacks prompts a registry reconcile
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": managed.StateInstalling})
 }
 

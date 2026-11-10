@@ -27,6 +27,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/hoststats"
 	"github.com/fiddler110/crowsnest/internal/memo"
 	"github.com/fiddler110/crowsnest/internal/settings"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
 // App holds the dependencies HTTP handlers need.
@@ -68,15 +69,28 @@ type App struct {
 	MaxConcurrentStreams int
 	streamCount          atomic.Int32
 
-	// StatusTTL is how long a game's checked status, player count, stats and
-	// info are shared between requests; however many tabs poll, the docker
-	// and game-API probes behind them run at most once per TTL per game. Zero
-	// means defaultStatusTTL; negative disables sharing (tests).
+	// MaxEventStreams caps concurrent /api/events connections. Zero means
+	// defaultMaxEventStreams.
+	MaxEventStreams int
+	eventStreams    atomic.Int32
+
+	// EventsMinGap overrides the minimum spacing of /api/events sends
+	// (tests). Zero means defaultEventsMinGap.
+	EventsMinGap time.Duration
+
+	// StatusTTL is how long a game's stats and info and the docker health
+	// check are shared between requests; however many tabs poll, the probes
+	// behind them run at most once per TTL per game. Zero means
+	// defaultStatusTTL; negative disables sharing (tests). Status and player
+	// counts come from Hub instead.
 	StatusTTL time.Duration
+
+	// Hub observes every game (status and players) for every handler, and
+	// drives /api/events. Without one, each request probes directly.
+	Hub *statehub.Hub
 
 	hostMemo   memo.Memo[hoststats.Snapshot]
 	healthMemo memo.Memo[bool]
-	snapshots  memo.Memo[snapshot]
 	statsMemo  memo.Memo[statsResponse]
 	infoMemo   memo.Memo[infoResult]
 }
@@ -90,42 +104,20 @@ func (a *App) statusTTL() time.Duration {
 	return a.StatusTTL
 }
 
-// snapshot is one game's observed state: what its StatusChecker and
-// PlayerCounter reported at the same moment.
-type snapshot struct {
-	Status    games.Status
-	Count     int
-	Names     []string
-	PlayersOK bool
-}
-
-// observe returns d's snapshot, sharing one probe among concurrent and
-// near-in-time callers. Players are only asked for when the game could be
-// up, so an offline or booting game doesn't cost a failing HTTP call.
-func (a *App) observe(ctx context.Context, d games.GameDef) snapshot {
-	snap, err := a.snapshots.Do(ctx, d.ID, a.statusTTL(), func(ctx context.Context) snapshot {
-		var s snapshot
-		s.Status = games.StatusUnknown
-		if d.Status != nil {
-			if st, err := d.Status.Check(ctx, d.ContainerName); err == nil {
-				s.Status = st
-			}
-		}
-		if d.Players != nil && (s.Status == games.StatusOnline || s.Status == games.StatusUnknown) {
-			s.Count, s.Names, s.PlayersOK = d.Players.PlayerCount(ctx)
-		}
-		return s
-	})
-	if err != nil {
-		return snapshot{Status: games.StatusUnknown}
+// observe returns d's current observation from the hub (waiting for the
+// first one, or for a fresher one after an action poked the game), or a
+// direct probe when there is no hub.
+func (a *App) observe(ctx context.Context, d games.GameDef) statehub.Observation {
+	if a.Hub == nil {
+		return statehub.Probe(ctx, d)
 	}
-	return snap
+	return a.Hub.Current(ctx, d)
 }
 
 // observeAll observes every game in parallel (a slow probe on one game must
 // not delay the rest), preserving order.
-func (a *App) observeAll(ctx context.Context, defs []games.GameDef) []snapshot {
-	out := make([]snapshot, len(defs))
+func (a *App) observeAll(ctx context.Context, defs []games.GameDef) []statehub.Observation {
+	out := make([]statehub.Observation, len(defs))
 	var wg sync.WaitGroup
 	for i, d := range defs {
 		wg.Add(1)
@@ -138,10 +130,13 @@ func (a *App) observeAll(ctx context.Context, defs []games.GameDef) []snapshot {
 	return out
 }
 
-// forgetGame drops a game's shared observations after an action that changes
-// them, so the next poll reflects it.
-func (a *App) forgetGame(id string) {
-	a.snapshots.Forget(id)
+// pokeGame asks for a fresh observation of a game after an action that
+// changes it, and drops its shared stats and info, so the next read
+// reflects the action.
+func (a *App) pokeGame(id string) {
+	if a.Hub != nil {
+		a.Hub.Poke(id)
+	}
 	a.statsMemo.Forget(id)
 	a.infoMemo.Forget(id)
 }
@@ -172,6 +167,7 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /settings", a.requireSessionHTML(http.HandlerFunc(a.handleSettingsPage)))
 	mux.Handle("GET /games", a.requireSessionHTML(http.HandlerFunc(a.handleGamesPage)))
 	mux.Handle("GET /api/games", a.requireSession(http.HandlerFunc(a.handleListGames)))
+	mux.Handle("GET /api/events", a.requireSession(http.HandlerFunc(a.handleEvents)))
 	mux.Handle("GET /api/games/{id}/status", a.requireSession(http.HandlerFunc(a.handleStatus)))
 	mux.Handle("GET /api/games/{id}/logs", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleLogs)))) // S8: logs can carry secrets an image prints
 	mux.Handle("GET /api/games/{id}/startup-progress", a.requireSession(http.HandlerFunc(a.handleStartupProgress)))
@@ -353,12 +349,14 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 		CSRFToken: session.CSRFToken,
 	}
 	// First paint must not wait on game probes (a booting game's API can
-	// take seconds to time out): use the last shared snapshot if any, else
-	// "unknown"; the page's JS refreshes statuses immediately on load.
+	// take seconds to time out): use the hub's latest observation if any,
+	// else "unknown"; the page's JS refreshes statuses immediately on load.
 	for _, d := range defs {
-		snap, ok := a.snapshots.Peek(d.ID)
-		if !ok {
-			snap = snapshot{Status: games.StatusUnknown}
+		snap := statehub.Observation{Status: games.StatusUnknown}
+		if a.Hub != nil {
+			if o, ok := a.Hub.Get(d.ID); ok {
+				snap = o
+			}
 		}
 		data.Games = append(data.Games, dashboardGame{
 			ID:          d.ID,
@@ -379,6 +377,12 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.listGames(r))
+}
+
+// listGames builds the /api/games body for r's user (admins see raw error
+// detail); /api/events sends the same.
+func (a *App) listGames(r *http.Request) []gameSummary {
 	defs := a.Registry.All()
 	out := make([]gameSummary, len(defs))
 	snaps := a.observeAll(r.Context(), defs)
@@ -410,7 +414,7 @@ func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
 
 // playersResponse is the /api/games/{id}/players shape. Available is false
@@ -541,14 +545,19 @@ func (a *App) handleHost(w http.ResponseWriter, r *http.Request) {
 // daemon, so liveness stays green while this goes red and the dashboard warns.
 // The reason is logged, not returned.
 func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
-	ok, err := a.healthMemo.Do(r.Context(), "docker", a.statusTTL(), func(ctx context.Context) bool {
+	writeJSON(w, http.StatusOK, a.health(r.Context()))
+}
+
+// health is the /api/health body; /api/events sends the same.
+func (a *App) health(ctx context.Context) map[string]bool {
+	ok, err := a.healthMemo.Do(ctx, "docker", a.statusTTL(), func(ctx context.Context) bool {
 		if err := a.Docker.Ping(ctx); err != nil {
 			log.Printf("web: docker unreachable: %v", err)
 			return false
 		}
 		return true
 	})
-	writeJSON(w, http.StatusOK, map[string]bool{"docker": err == nil && ok})
+	return map[string]bool{"docker": err == nil && ok}
 }
 
 type infoResult struct {
@@ -677,7 +686,7 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	err := a.Exclusivity.RequestStart(exclusivity.WithActor(r.Context(), actor(r)), d.ID)
 	if err == nil {
-		a.forgetGame(d.ID)
+		a.pokeGame(d.ID)
 		log.Printf("audit: %s started %s", actor(r), d.ID)
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -714,7 +723,7 @@ func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, publicError(err), http.StatusBadGateway)
 		return
 	}
-	a.forgetGame(d.ID)
+	a.pokeGame(d.ID)
 	log.Printf("audit: %s requested stop of %s", actor(r), d.ID)
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -758,8 +767,8 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, publicError(err), http.StatusBadGateway)
 		return
 	}
-	a.forgetGame(from)
-	a.forgetGame(to.ID)
+	a.pokeGame(from)
+	a.pokeGame(to.ID)
 	log.Printf("audit: %s requested switch %q->%q", actor(r), from, to.ID)
 	w.WriteHeader(http.StatusAccepted)
 }

@@ -107,15 +107,3 @@ func (m *Memo[T]) Forget(key string) {
 		e.gen++
 	}
 }
-
-// Peek returns key's last cached value without blocking, regardless of its
-// age, and whether one exists. It never runs or waits for a computation.
-func (m *Memo[T]) Peek(key string) (T, bool) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if e := m.m[key]; e != nil && e.has {
-		return e.val, true
-	}
-	var zero T
-	return zero, false
-}

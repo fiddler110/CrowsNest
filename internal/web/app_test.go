@@ -23,6 +23,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/managed"
 	"github.com/fiddler110/crowsnest/internal/settings"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
 // testHarness bundles an App with a pre-authenticated session cookie and
@@ -85,10 +86,19 @@ func newHarnessFromDefs(t *testing.T, docker *dockerctl.Client, defs []games.Gam
 	sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
 	excl := exclusivity.NewManager(registry, docker)
 	t.Cleanup(excl.Wait) // no background start may outlive the fake docker
+	// Wired as in main: one observer per game, poked on every transition.
+	hub := statehub.New(registry)
+	hub.Busy = func(id string) bool { return excl.Starting(id) || excl.Stopping(id) }
+	excl.OnChange = func(id string) { hub.Poke(id); hub.Signal() }
+	hubCtx, stopHub := context.WithCancel(context.Background())
+	hubDone := make(chan struct{})
+	go func() { hub.Run(hubCtx); close(hubDone) }()
+	t.Cleanup(func() { stopHub(); <-hubDone })
 	app := &App{
 		Registry:    registry,
 		Docker:      docker,
 		Exclusivity: excl,
+		Hub:         hub,
 		Auth: &auth.Service{
 			Users:        auth.Users{},
 			Sessions:     sessions,

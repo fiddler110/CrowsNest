@@ -41,15 +41,7 @@ func (a *App) maxConcurrentStreams() int {
 // acquireStream reserves a slot for a new log-streaming subprocess,
 // reporting false if the process-wide cap is already reached.
 func (a *App) acquireStream() bool {
-	for {
-		cur := a.streamCount.Load()
-		if int(cur) >= a.maxConcurrentStreams() {
-			return false
-		}
-		if a.streamCount.CompareAndSwap(cur, cur+1) {
-			return true
-		}
-	}
+	return acquireSlot(&a.streamCount, a.maxConcurrentStreams())
 }
 
 func (a *App) releaseStream() {
