@@ -291,6 +291,35 @@ func writeUsers(path string, users Users) error {
 	return nil
 }
 
+// ClearPasswordHash removes username's password hash, so the stored hash can't be
+// used to sign in any more. otherLogin says the user can still sign in some other
+// way (Google); without it the call is refused, since the account would be locked
+// out. The user's effective role is written down first: a password account with no
+// role counts as an admin, and without the hash it would silently become a player.
+func ClearPasswordHash(path, username string, otherLogin bool) error {
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(username)
+	rec, ok := existing[key]
+	if !ok {
+		return fmt.Errorf("auth: no such user %q in %s", username, path)
+	}
+	if rec.Hash == "" {
+		return fmt.Errorf("auth: %q has no password to clear", username)
+	}
+	if !otherLogin && rec.GoogleEmail == "" {
+		return fmt.Errorf("auth: %q has no other way to sign in (no Google account), so clearing the password would lock them out", username)
+	}
+	rec.Role = rec.EffectiveRole()
+	rec.Hash = ""
+	existing[key] = rec
+	return writeUsers(path, existing)
+}
+
 // SetGoogleEmail sets (or, with "", clears) the Google account allowed to
 // sign in as username. The user must already have an entry.
 func SetGoogleEmail(path, username, email string) error {

@@ -278,6 +278,10 @@ user's sessions with `docker compose exec crowsnest crowsnest revoke-sessions <u
 which a running CrowsNest watches, so it applies within a few seconds (as does `set-password`). It works for Google
 users too, even though they have no password entry.
 
+If someone now signs in only with Google, run `crowsnest clear-password <username>` to drop their stored password
+hash. It refuses unless Google sign-in is set up for that user, keeps their role, and revokes their sessions.
+`crowsnest doctor` lists users who still have a hash while password login is off.
+
 To remove someone entirely, take them off the Google allowlist (restart to apply) or delete their password entry
 (applies within seconds). A session only stays valid while its username still has a way to sign in. Rotating or
 deleting the session-secret file logs everyone out at once.

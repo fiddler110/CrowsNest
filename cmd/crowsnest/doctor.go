@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -111,6 +112,19 @@ func runDoctor(cfg *config.Config, docker dockerPinger, w io.Writer) int {
 		r.add(docWarn, "no admin account", "run `crowsnest set-role <username> admin`")
 	default:
 		r.add(docOK, fmt.Sprintf("%d user(s), at least one admin", len(users)), "")
+	}
+	if err == nil && !cfg.Auth.PasswordLoginEnabled() {
+		var stale []string
+		for name, rec := range users {
+			if rec.Hash != "" {
+				stale = append(stale, name)
+			}
+		}
+		if len(stale) > 0 {
+			sort.Strings(stale)
+			r.add(docWarn, "password login is off but these users still have a stored password hash: "+strings.Join(stale, ", "),
+				"run `crowsnest clear-password <name>` for each, so a leaked users file holds nothing to crack")
+		}
 	}
 
 	fmt.Fprintln(w, "\nNetwork")

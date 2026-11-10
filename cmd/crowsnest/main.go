@@ -93,6 +93,14 @@ func main() {
 		if err := setPassword(os.Args[2]); err != nil {
 			log.Fatal(err)
 		}
+	case "clear-password":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: crowsnest clear-password <username>")
+			os.Exit(2)
+		}
+		if err := clearPassword(os.Args[2]); err != nil {
+			log.Fatal(err)
+		}
 	case "revoke-sessions":
 		if len(os.Args) < 3 {
 			fmt.Fprintln(os.Stderr, "usage: crowsnest revoke-sessions <username>")
@@ -440,6 +448,33 @@ func setPassword(username string) error {
 		return err
 	}
 	fmt.Printf("Password set for %s in %s\n", strings.ToLower(username), cfg.UsersFile)
+	return nil
+}
+
+// clearPassword implements `crowsnest clear-password <username>`: drops the stored
+// password hash of a user who signs in with Google, so a leaked users file or an
+// old password can't be used. It refuses unless Google sign-in is set up for them.
+// Existing sessions are revoked too, since they were issued on the password.
+func clearPassword(username string) error {
+	cfg, err := config.Load(configPath())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	other := cfg.Auth.Google != nil
+	if other {
+		users, err := auth.LoadUsers(cfg.UsersFile)
+		if err != nil {
+			return err
+		}
+		other = users[strings.ToLower(username)].GoogleEmail != "" || googleAllowed(cfg, username)
+	}
+	if err := auth.ClearPasswordHash(cfg.UsersFile, username, other); err != nil {
+		return err
+	}
+	if err := auth.RevokeSessions(cfg.UsersFile, username, true); err != nil {
+		return err
+	}
+	fmt.Printf("Cleared the password for %s; they sign in with Google now (role kept, sessions revoked)\n", strings.ToLower(username))
 	return nil
 }
 

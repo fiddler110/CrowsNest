@@ -218,3 +218,44 @@ func TestCreateFirstAdmin(t *testing.T) {
 		t.Fatal("a user with neither password nor Google email must be refused")
 	}
 }
+
+func TestClearPasswordHash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.env")
+	// alex is an older account: a hash and no explicit role (so an implicit admin).
+	if err := SetUserHash(path, "alex", "hash1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetGoogleEmail(path, "alex", "alex@example.com"); err != nil {
+		t.Fatal(err)
+	}
+	if err := CreateUser(path, "sam", "hash2", "", RolePlayer); err != nil {
+		t.Fatal(err)
+	}
+
+	// No other way in: refused, and nothing changes.
+	if err := ClearPasswordHash(path, "sam", false); err == nil {
+		t.Fatal("cleared the only way for sam to sign in")
+	}
+	if err := ClearPasswordHash(path, "sam", true); err != nil {
+		t.Fatalf("with another login allowed: %v", err)
+	}
+
+	// alex has a Google email on file. The implicit admin role is made explicit.
+	if err := ClearPasswordHash(path, "alex", false); err != nil {
+		t.Fatal(err)
+	}
+	users, _ := LoadUsers(path)
+	a := users["alex"]
+	if a.Hash != "" || a.Role != RoleAdmin || a.GoogleEmail != "alex@example.com" {
+		t.Fatalf("alex after clear: %+v", a)
+	}
+	if a.EffectiveRole() != RoleAdmin {
+		t.Error("clearing the hash demoted an admin")
+	}
+	if err := ClearPasswordHash(path, "alex", true); err == nil {
+		t.Error("clearing twice should say there is no password")
+	}
+	if err := ClearPasswordHash(path, "nobody", true); err == nil {
+		t.Error("unknown user accepted")
+	}
+}

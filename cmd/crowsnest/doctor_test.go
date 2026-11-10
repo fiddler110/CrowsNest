@@ -81,3 +81,26 @@ func TestDoctor_ManagedNeedsAPolicy(t *testing.T) {
 		t.Fatalf("exit %d, want 1 with a policy complaint:\n%s", code, out.String())
 	}
 }
+
+func TestDoctor_WarnsAboutUnusedPasswordHashes(t *testing.T) {
+	cfg := doctorConfig(t)
+	if err := os.WriteFile(cfg.UsersFile, []byte("ALEX_PASSWORD_HASH=x\nALEX_ROLE=admin\nALEX_GOOGLE_EMAIL=alex@example.com\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	off := false
+	cfg.Auth.PasswordLogin = &off
+	cfg.Auth.Google = &config.GoogleAuthConfig{}
+	var out strings.Builder
+	runDoctor(cfg, fakePing{}, &out)
+	if !strings.Contains(out.String(), "still have a stored password hash: alex") {
+		t.Errorf("no warning about the stale hash:\n%s", out.String())
+	}
+	// With password login on, the hash is in use and nothing is said.
+	on := true
+	cfg.Auth.PasswordLogin = &on
+	out.Reset()
+	runDoctor(cfg, fakePing{}, &out)
+	if strings.Contains(out.String(), "stored password hash") {
+		t.Errorf("warned while password login is on:\n%s", out.String())
+	}
+}
