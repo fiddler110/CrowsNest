@@ -108,8 +108,20 @@ func TestRecreateStepsCreateRemoveAndRenameInScope(t *testing.T) {
 	if r := h.request("DELETE", "/v1.52/containers/"+retiredID[:12]+"_valheim?force=true", nil); r.code != 200 {
 		t.Fatal(r)
 	}
-	if n := len(h.reached("DELETE", "/containers/valheim")); n != 2 {
-		t.Fatalf("engine saw %d deletes of valheim, want 2", n)
+	// the engine is sent the full ids the checks resolved, and rename keeps the checked name
+	if n := len(h.exactly("DELETE", "/containers/"+valID)); n != 2 {
+		t.Fatalf("engine saw %d deletes of valheim by id, want 2: %v", n, h.eng.all())
+	}
+	if r := h.exactly("POST", "/containers/"+retiredID+"/rename"); len(r) != 1 || r[0].uri != "/v1.52/containers/"+retiredID+"/rename?name=valheim" {
+		t.Fatalf("rename reached the engine as %v", r)
+	}
+	if n := len(h.exactly("DELETE", "/containers/"+retiredID)); n != 1 {
+		t.Fatalf("engine saw %d deletes of the copy by id, want 1", n)
+	}
+	for _, s := range h.eng.all() {
+		if s.method != "GET" && strings.Contains(s.path, "valheim") {
+			t.Fatalf("engine was sent a name, not an id: %s %s", s.method, s.uri)
+		}
 	}
 }
 
@@ -259,7 +271,11 @@ func TestLogFollowStreams(t *testing.T) {
 	if !strings.HasPrefix(out, "HTTP/1.1 200") || !strings.Contains(out, "log line 19") {
 		t.Fatalf("%q", out)
 	}
-	hdr := h.reached("GET", "/containers/palworld/logs")[0].header
+	seen := h.exactly("GET", "/containers/"+palID+"/logs") // the stream goes out with the checked id too
+	if len(seen) != 1 {
+		t.Fatalf("engine saw %v", h.eng.all())
+	}
+	hdr := seen[0].header
 	if hdr.Get("Connection") != "close" || hdr.Get("Upgrade") != "" {
 		t.Fatalf("engine got %v", hdr)
 	}
@@ -938,8 +954,9 @@ func TestTheEngineGetsTheTargetTheChecksRead(t *testing.T) {
 			targets = append(targets, s.uri)
 		}
 	}
-	want := []string{"/v1.52/containers/palworld/top?ps_args=-ef", "/v1.52/containers/palworld/logs?stdout=1&tail=10&since=",
-		"/containers/palworld/logs?tail=3", "/v1.52/containers/palworld/top?ps_args=a+b"}
+	// the ref the checks resolved, palworld, reaches the engine as the full id it resolved to
+	want := []string{"/v1.52/containers/" + palID + "/top?ps_args=-ef", "/v1.52/containers/" + palID + "/logs?stdout=1&tail=10&since=",
+		"/containers/" + palID + "/logs?tail=3", "/v1.52/containers/" + palID + "/top?ps_args=a+b"}
 	if strings.Join(targets, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("engine got\n%s\nwant\n%s", strings.Join(targets, "\n"), strings.Join(want, "\n"))
 	}
