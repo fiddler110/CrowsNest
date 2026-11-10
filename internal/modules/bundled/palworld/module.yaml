@@ -1,10 +1,15 @@
 api_version: 1
 id: palworld
 name: Palworld
+description: "Palworld dedicated server (thijsvanloef/palworld-server-docker) with the REST API for status, players and save-on-stop."
 # Palworld's dedicated-server REST API
 # (https://docs.palworldgame.com/api/rest-api/) as served by
 # thijsvanloef/palworld-server-docker with REST_API_ENABLED=true.
 # Verified against a real container on 2026-09-30.
+
+# Shown on the card of a game enabled from the dashboard.
+connect:
+  - {label: Join password, option: server_password}
 
 runtime:
   # Bringing it back up seconds after a stop segfaulted it once.
@@ -44,10 +49,10 @@ options:
   - {key: max_players, label: Max players, default: "8"}
   - {key: server_name, label: Server name, default: CrowsNest Palworld}
   - {key: server_password, label: Join password, secret: true}
-  - {key: admin_password, label: Admin / REST password, secret: true}
-  - {key: rest_api_url, label: REST API base URL, required: true}
+  - {key: admin_password, label: Admin / REST password, secret: true, managed_required: true}
+  - {key: rest_api_url, label: REST API base URL, required: true, derive: "http://{id}:8212"}
   - {key: rest_api_user, label: REST API user, default: admin}
-  - {key: rest_api_password_env, label: Env var holding the admin password, required: true}
+  - {key: rest_api_password_env, label: Env var holding the admin password, required: true, derive: "{env:admin_password}"}
   - {key: rcon_addr, label: "RCON host:port (enables the raw console)"}
   - {key: rcon_password_env, label: "Env var holding the RCON password"}
 

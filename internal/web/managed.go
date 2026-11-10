@@ -3,9 +3,11 @@ package web
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
+	"github.com/fiddler110/crowsnest/internal/auth"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/managed"
 )
@@ -20,6 +22,8 @@ type ManagedGames interface {
 	Update(managed.Request) error
 	Refresh(id string) error
 	Disable(id string) error
+	Policy() (managed.PolicyState, error)
+	SetPolicy(managed.PolicyDoc) error
 }
 
 const maxManagedBody = 32 << 10
@@ -44,6 +48,58 @@ func (a *App) handleManagedList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a.Managed.List())
+}
+
+// handleGamesPage serves the Games page (admins only; players go back to the dashboard).
+func (a *App) handleGamesPage(w http.ResponseWriter, r *http.Request) {
+	session, _ := auth.FromContext(r.Context())
+	if a.Auth.Sessions.RoleFor(session.Username) != auth.RoleAdmin {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	data := dashboardData{Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
+	if err := a.Templates.Games.Execute(w, data); err != nil {
+		log.Printf("web: render games page: %v", err)
+	}
+}
+
+// handleSettingsPage serves the Settings page (admins only).
+func (a *App) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
+	session, _ := auth.FromContext(r.Context())
+	if a.Auth.Sessions.RoleFor(session.Username) != auth.RoleAdmin {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	data := dashboardData{Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
+	if err := a.Templates.Settings.Execute(w, data); err != nil {
+		log.Printf("web: render settings page: %v", err)
+	}
+}
+
+// handleManagedConfigured lists the games that come from config.yaml (everything
+// on the dashboard that was not enabled from it), read-only, so the Games dialog
+// shows the whole fleet in one place.
+func (a *App) handleManagedConfigured(w http.ResponseWriter, r *http.Request) {
+	managedIDs := map[string]bool{}
+	if a.Managed != nil {
+		for _, g := range a.Managed.List() {
+			managedIDs[g.ID] = true
+		}
+	}
+	type row struct {
+		ID             string `json:"id"`
+		DisplayName    string `json:"display_name"`
+		ConnectAddress string `json:"connect_address,omitempty"`
+		Container      string `json:"container,omitempty"`
+	}
+	out := []row{}
+	for _, d := range a.Registry.All() {
+		if managedIDs[d.ID] {
+			continue
+		}
+		out = append(out, row{ID: d.ID, DisplayName: d.DisplayName, ConnectAddress: d.ConnectAddress, Container: d.ContainerName})
+	}
+	writeJSON(w, http.StatusOK, out)
 }
 
 func readManagedRequest(w http.ResponseWriter, r *http.Request) (managed.Request, bool) {
@@ -145,4 +201,37 @@ func (a *App) handleManagedRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	a.record(r, id, "updating image")
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": managed.StateInstalling})
+}
+
+func (a *App) handleManagedPolicy(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	st, err := a.Managed.Policy()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (a *App) handleManagedSetPolicy(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	var doc managed.PolicyDoc
+	r.Body = http.MaxBytesReader(w, r.Body, maxManagedBody)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := a.Managed.SetPolicy(doc); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	a.record(r, "policy", "changed the policy")
+	st, _ := a.Managed.Policy()
+	writeJSON(w, http.StatusOK, st)
 }

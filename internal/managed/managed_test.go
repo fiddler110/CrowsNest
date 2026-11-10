@@ -2,10 +2,12 @@ package managed
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,7 +23,7 @@ import (
 const policy = `
 games_root: /srv/games
 names: ["gs-*", minecraft]
-images: ["docker.io/itzg/*", lloesche/valheim-server]
+images: ["docker.io/itzg/*", lloesche/valheim-server, thijsvanloef/palworld-server-docker]
 networks: [crowsnest-games-net]
 ports: ["25000-26000/tcp", "27000-27999/udp"]
 host_ips: [10.0.0.2]
@@ -122,7 +124,7 @@ func TestEnableAndDisable(t *testing.T) {
 	if !strings.Contains(env, "RCON_PASSWORD=hunter2") || !strings.Contains(env, "EULA=TRUE") || !strings.Contains(env, "MOTD=hi") {
 		t.Errorf("env not resolved: %s", env)
 	}
-	if fd.created[0].Binds[0] != "/srv/games/Minecraft:/data" {
+	if fd.created[0].Binds[0] != "/srv/games/minecraft:/data" {
 		t.Errorf("binds = %v", fd.created[0].Binds)
 	}
 	if _, ok := m.Registry.Get("minecraft"); !ok {
@@ -381,5 +383,375 @@ func TestExecRulesComeFromModules(t *testing.T) {
 	}
 	if len(rules) != 2 {
 		t.Errorf("rules = %+v", rules)
+	}
+}
+
+func TestListCarriesEditFieldsButNoSecrets(t *testing.T) {
+	m, _ := newManager(t)
+	req := Request{ID: "minecraft", Module: "minecraft", DisplayName: "Minecraft", ConnectAddress: "10.0.0.2:25565",
+		Options: map[string]string{"eula": "TRUE", "motd": "hi"}, Secrets: map[string]string{"rcon_password": "hunter2"}}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	got := m.List()[0]
+	if got.DisplayName != "Minecraft" || got.ConnectAddress != "10.0.0.2:25565" || got.Options["motd"] != "hi" {
+		t.Errorf("edit fields missing: %+v", got)
+	}
+	if b, _ := json.Marshal(got); strings.Contains(string(b), "hunter2") {
+		t.Errorf("a secret leaked into the list: %s", b)
+	}
+}
+
+func TestCatalogueDescribesAndProbesFit(t *testing.T) {
+	m, _ := newManager(t)
+	var mc *ModuleInfo
+	for _, mi := range m.Catalogue() {
+		if mi.ID == "minecraft" {
+			c := mi
+			mc = &c
+		}
+	}
+	if mc == nil {
+		t.Fatal("minecraft missing from the catalogue")
+	}
+	if mc.Description == "" || mc.Image == "" || len(mc.Ports) == 0 || !mc.HasBackup {
+		t.Errorf("catalogue entry is thin: %+v", mc)
+	}
+	if mc.Fits == nil || !*mc.Fits {
+		t.Errorf("minecraft should fit the test policy: %+v", mc)
+	}
+}
+
+func TestDerivedOptionsFillThemselvesIn(t *testing.T) {
+	if got := deriveOption("http://{id}:8212", "pal-1"); got != "http://pal-1:8212" {
+		t.Errorf("derive {id} = %q", got)
+	}
+	if got := deriveOption("{env:admin_password}", "pal-1"); got != envName("pal-1", "admin_password") {
+		t.Errorf("derive {env:} = %q", got)
+	}
+	m, _ := newManager(t)
+	// Palworld asks for an admin password only: the API address and the variable holding it follow from the game.
+	g, mf, err := m.validate(Request{ID: "pal-1", Module: "palworld", Secrets: map[string]string{"admin_password": "pw"}}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if g.Options["rest_api_url"] != "http://pal-1:8212" || g.Options["rest_api_password_env"] != envName("pal-1", "admin_password") {
+		t.Errorf("not derived: %v", g.Options)
+	}
+	if _, _, err := m.validate(Request{ID: "pal-2", Module: "palworld"}, false); err == nil {
+		t.Error("a Palworld game without an admin password must be refused")
+	}
+	for _, o := range mf.Options {
+		if o.Key == "rest_api_url" && o.Derive == "" {
+			t.Error("rest_api_url lost its derive")
+		}
+	}
+}
+
+func TestPolicyEditing(t *testing.T) {
+	m, _ := newManager(t)
+	st, err := m.Policy()
+	if err != nil || st.Editable || len(st.Policy.Names) == 0 {
+		t.Fatalf("policy view: %+v %v", st, err)
+	}
+	if err := m.SetPolicy(st.Policy); err == nil {
+		t.Fatal("a read-only policy was rewritten")
+	}
+	m.PolicyEditable = true
+	st.Policy.Names = append(st.Policy.Names, "pal-*")
+	if err := m.SetPolicy(st.Policy); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := m.Policy(); !slices.Contains(again.Policy.Names, "pal-*") {
+		t.Errorf("edit not saved: %+v", again.Policy)
+	}
+	bad := st.Policy
+	bad.Names = []string{"*"}
+	if err := m.SetPolicy(bad); err == nil {
+		t.Error(`names: ["*"] was accepted`)
+	}
+	empty := st.Policy
+	empty.Ports = nil
+	if err := m.SetPolicy(empty); err == nil {
+		t.Error("an empty ports list was accepted")
+	}
+	if kept, _ := m.Policy(); !slices.Contains(kept.Policy.Names, "pal-*") || len(kept.Policy.Ports) == 0 {
+		t.Errorf("a refused edit changed the file: %+v", kept.Policy)
+	}
+}
+
+func TestTwoGamesFromOneModule(t *testing.T) {
+	m, fd := newManager(t)
+	a := Request{ID: "gs-one", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+	if err := m.Enable(a); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-one", StateReady)
+	// Same module, default ports: refused, naming the game that holds the port.
+	b := Request{ID: "gs-two", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "y"}}
+	if _, err := m.Preview(b); err == nil || !strings.Contains(err.Error(), "gs-one") {
+		t.Fatalf("a shared host port was accepted: %v", err)
+	}
+	b.Options["ports"] = "25570:25565/tcp"
+	if err := m.Enable(b); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-two", StateReady)
+	var binds []string
+	for _, c := range fd.created {
+		binds = append(binds, c.Binds...)
+	}
+	if len(binds) != 2 || binds[0] == binds[1] {
+		t.Errorf("two games share a data folder: %v", binds)
+	}
+}
+
+func TestJoinPasswordShownOnTheCard(t *testing.T) {
+	m, _ := newManager(t)
+	req := Request{ID: "gs-pal", Module: "palworld", Options: map[string]string{"ports": "27015:8211/udp"},
+		Secrets: map[string]string{"admin_password": "adm", "server_password": "letmein"}}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-pal", StateReady)
+	def, _ := m.Registry.Get("gs-pal")
+	if len(def.ConnectSecrets) != 1 || def.ConnectSecrets[0].Label != "Join password" || def.ConnectSecrets[0].Value != "letmein" {
+		t.Errorf("connect secrets = %+v", def.ConnectSecrets)
+	}
+	for _, g := range m.List() {
+		if b, _ := json.Marshal(g); strings.Contains(string(b), "letmein") {
+			t.Errorf("the join password leaked into the list: %s", b)
+		}
+	}
+}
+
+const windrosePolicy = policy + `
+exceptions:
+  - name: windrose
+    image: indifferentbroccoli/windrose-server-docker
+    networks:
+      dockervlan: [10.0.1.16]
+      crowsnest-games-net: [192.168.0.50]
+    secopts: [seccomp=unconfined]
+`
+
+var windroseReq = Request{ID: "windrose", Module: "windrose",
+	Options: map[string]string{"lan_ipv4": "10.0.1.16", "games_ipv4": "192.168.0.50", "data_dir": "Windrose"},
+	Secrets: map[string]string{"invite_code": "abc123", "server_password": "pw"}}
+
+// Windrose fits only because the operator's policy names it, and what it gets is exactly that.
+func TestWindroseNeedsAPolicyException(t *testing.T) {
+	m, fd := newManager(t)
+	m.Config = &config.Config{}
+	plan, err := m.Preview(windroseReq)
+	if err != nil || plan.Fits || !strings.Contains(plan.Reason, "windrose") {
+		t.Fatalf("without an exception it must not fit, and say why: %+v %v", plan, err)
+	}
+	if err := m.Enable(windroseReq); err == nil {
+		t.Fatal("enabled without an exception")
+	}
+
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if plan, err = m.Preview(windroseReq); err != nil || !plan.Fits {
+		t.Fatalf("with the exception it must fit: %+v %v", plan, err)
+	}
+	// other addresses are not covered
+	other := windroseReq
+	other.Options = map[string]string{"lan_ipv4": "10.0.1.99", "data_dir": "Windrose"}
+	if plan, _ = m.Preview(other); plan.Fits || !strings.Contains(plan.Reason, "10.0.1.99") || !strings.Contains(plan.Reason, "10.0.1.16") {
+		t.Fatalf("a different address must be refused and the allowed one named: %+v", plan)
+	}
+	if err := m.Enable(windroseReq); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "windrose", StateReady)
+	spec := fd.created[0]
+	if !slices.Contains(spec.SecOpts, "seccomp=unconfined") {
+		t.Errorf("secopts = %v", spec.SecOpts)
+	}
+	got := map[string]string{}
+	for _, n := range spec.Networks {
+		got[n.Name] = n.IPv4
+	}
+	if got["dockervlan"] != "10.0.1.16" || got["crowsnest-games-net"] != "192.168.0.50" || len(got) != 2 {
+		t.Errorf("networks = %+v", spec.Networks)
+	}
+	env := strings.Join(spec.Env, "|")
+	if !strings.Contains(env, "INVITE_CODE=abc123") || !strings.Contains(env, "P2P_PROXY_ADDRESS=10.0.1.16") {
+		t.Errorf("env = %s", env)
+	}
+	if spec.Binds[0] != "/srv/games/Windrose/Config:/home/steam/server-files" {
+		t.Errorf("binds = %v", spec.Binds)
+	}
+}
+
+// The dashboard shows exceptions and keeps them when it saves the rest of the policy, but cannot make one.
+func TestPolicyExceptionsSurviveDashboardEdits(t *testing.T) {
+	m, _ := newManager(t)
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.PolicyEditable = true
+	st, _ := m.Policy()
+	if len(st.Policy.Exceptions) != 1 {
+		t.Fatalf("exception not shown: %+v", st.Policy)
+	}
+	st.Policy.Names = append(st.Policy.Names, "pal-*")
+	st.Policy.Exceptions = append(st.Policy.Exceptions, dockerguard.Exception{Name: "sneaky", Image: "evil/miner", SecOpts: []string{"seccomp=unconfined"}})
+	if err := m.SetPolicy(st.Policy); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := m.Policy()
+	if len(again.Policy.Exceptions) != 1 || again.Policy.Exceptions[0].Name != "windrose" || !slices.Contains(again.Policy.Names, "pal-*") {
+		t.Errorf("after save: %+v", again.Policy)
+	}
+}
+
+// The guard itself lets the excepted create through, and refuses the same spec for any other secopt.
+func TestWindroseCreateThroughRealGuard(t *testing.T) {
+	m, _ := newManager(t)
+	m.Config = &config.Config{}
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, mf, err := m.validate(windroseReq, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rd, err := m.renderAndFit(g, mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := rd.Spec(func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, _ := modules.ScopesJSON([]*modules.Rendered{rd})
+	scopes, err := dockerguard.LoadScopes(string(js))
+	if err != nil {
+		t.Fatalf("%v\n%s", err, js)
+	}
+
+	sock := filepath.Join(t.TempDir(), "engine.sock")
+	l, _ := net.Listen("unix", sock)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/containers/create" {
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"Id":"abc","Warnings":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"done"}` + "\n"))
+	})}
+	go srv.Serve(l)
+	defer srv.Close()
+	guard := dockerguard.New(sock, scopes)
+	gl, _ := net.Listen("tcp", "127.0.0.1:0")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go guard.ServeContext(ctx, gl)
+	client := &dockerctl.Client{Host: "tcp://" + gl.Addr().String()}
+
+	if err := client.Create(ctx, spec); err != nil {
+		t.Fatalf("the excepted create was refused by the guard: %v", err)
+	}
+	bad := spec
+	bad.SecOpts = []string{"apparmor=unconfined"}
+	if err := client.Create(ctx, bad); !dockerctl.IsDenied(err) {
+		t.Errorf("another security option: want a denial, got %v", err)
+	}
+	bad = spec
+	bad.Networks = []dockerctl.NetEndpoint{{Name: "dockervlan", IPv4: "10.0.1.77", GwPriority: 100}, {Name: "crowsnest-games-net"}}
+	if err := client.Create(ctx, bad); !dockerctl.IsDenied(err) {
+		t.Errorf("another address: want a denial, got %v", err)
+	}
+}
+
+// The catalogue says why Windrose is not addable until the operator writes an exception, and flips once they do.
+func TestCatalogueSaysWindroseNeedsAnException(t *testing.T) {
+	m, _ := newManager(t)
+	m.Config = &config.Config{} // no hand-written windrose to clash with
+	find := func() ModuleInfo {
+		for _, mi := range m.Catalogue() {
+			if mi.ID == "windrose" {
+				return mi
+			}
+		}
+		t.Fatal("windrose is not in the catalogue")
+		return ModuleInfo{}
+	}
+	mi := find()
+	if !mi.NeedsException || mi.Fits == nil || *mi.Fits || !strings.Contains(mi.Reason, "exception") {
+		t.Fatalf("without an exception: %+v", mi)
+	}
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if mi = find(); mi.Fits == nil || !*mi.Fits {
+		t.Fatalf("with the exception it should fit: %+v", mi)
+	}
+}
+
+// Another game holding a module's default port must not blank the module's verdict in the catalogue.
+func TestCatalogueVerdictIgnoresPortsInUse(t *testing.T) {
+	m, _ := newManager(t)
+	if err := m.Enable(Request{ID: "gs-one", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, mi := range m.Catalogue() {
+		if mi.ID == "minecraft" && mi.Fits == nil {
+			t.Fatalf("no verdict while gs-one holds minecraft's port: %+v", mi)
+		}
+	}
+}
+
+// The preview tells the operator exactly what to put in policy.yaml and what else to do on the host.
+func TestWindrosePreviewGivesHostSteps(t *testing.T) {
+	m, _ := newManager(t)
+	m.Config = &config.Config{}
+	plan, err := m.Preview(windroseReq)
+	if err != nil || plan.Fits || len(plan.Setup) < 3 {
+		t.Fatalf("plan: %+v %v", plan, err)
+	}
+	first := plan.Setup[0]
+	if first.Done == nil || *first.Done {
+		t.Errorf("the policy step must be open while the policy has no exception: %+v", first)
+	}
+	for _, want := range []string{"exceptions:", "name: windrose", "dockervlan:", "10.0.1.16", "192.168.0.50", "seccomp=unconfined"} {
+		if !strings.Contains(first.Command, want) {
+			t.Errorf("generated exception lacks %q:\n%s", want, first.Command)
+		}
+	}
+	// what it generated must be accepted by the policy parser and admit this very game
+	pol, err := dockerguard.ParsePolicy([]byte(policy + "\n" + first.Command + "\n"))
+	if err != nil {
+		t.Fatalf("generated block does not parse: %v\n%s", err, first.Command)
+	}
+	g, mf, _ := m.validate(windroseReq, false)
+	rd, _ := mf.Render(g, m.Platform)
+	js, _ := modules.ScopesJSON([]*modules.Rendered{rd})
+	sc, _ := dockerguard.LoadScopes(string(js))
+	if err := pol.Admit(sc[0]); err != nil {
+		t.Errorf("the generated exception does not admit the game it was made for: %v", err)
+	}
+	all := ""
+	for _, s := range plan.Setup {
+		all += s.Title + s.Detail + s.Command
+	}
+	if !strings.Contains(all, "{{range .IPAM.Config}}{{.Subnet}} {{end}}") {
+		t.Errorf("a docker format string was mangled:\n%s", all)
+	}
+	if !strings.Contains(all, "iptables -I INPUT -s 10.0.1.16") || strings.Contains(all, "{lan_ipv4}") {
+		t.Errorf("host steps not filled in:\n%s", all)
+	}
+	// once the policy has it, the first step reads as done
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if plan, _ = m.Preview(windroseReq); plan.Setup[0].Done == nil || !*plan.Setup[0].Done {
+		t.Errorf("step not marked done: %+v", plan.Setup[0])
 	}
 }

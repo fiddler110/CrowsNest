@@ -31,8 +31,24 @@ type Manifest struct {
 	APIVersion int    `yaml:"api_version"`
 	ID         string `yaml:"id"`
 	Name       string `yaml:"name"`
+	// Description is one or two sentences the dashboard shows in the catalogue.
+	Description string `yaml:"description"`
 
 	Runtime Runtime `yaml:"runtime"`
+
+	// Connect lists values from a game's options that players need to join (a
+	// join password, an invite code). For games enabled from the dashboard they
+	// are shown on the game's card, as connect_secrets are for config.yaml games.
+	Connect []struct {
+		Label  string `yaml:"label"`
+		Option string `yaml:"option"`
+	} `yaml:"connect"`
+
+	// HostSetup lists the steps an operator must do on the host themselves for
+	// this game, because the dashboard cannot (and should not) do them: creating
+	// a network, a firewall rule. Shown beside the form, in order, with {id} and
+	// {option} replaced by what was typed in it (an unset option shows as <option>).
+	HostSetup []HostStep `yaml:"host_setup"`
 
 	// Backup is the command (run with docker exec) that backs this game up and
 	// the folder its backups land in. Used for games enabled from the dashboard,
@@ -107,6 +123,13 @@ type Manifest struct {
 	StartupProgress *StartupProgress `yaml:"startup_progress"`
 }
 
+// HostStep is one thing to do on the host.
+type HostStep struct {
+	Title   string `yaml:"title"`
+	Detail  string `yaml:"detail"`
+	Command string `yaml:"command"` // optional, shown to copy
+}
+
 // StartupProgress is a percentage parsed from the log and scaled onto a range.
 type StartupProgress struct {
 	Match string `yaml:"match"` // regexp, group 1 = number
@@ -124,6 +147,15 @@ type Option struct {
 	// Secret marks a value that must never be written into a rendered file:
 	// it is referenced as a variable in .env instead.
 	Secret bool `yaml:"secret"`
+	// Derive fills the option in when the operator leaves it empty, so wiring
+	// that follows from the game itself is never typed in. {id} is the game's
+	// id (also its container name and hostname on the games network) and
+	// {env:KEY} is the name of the variable that holds secret option KEY.
+	// An option with a Derive is never required.
+	Derive string `yaml:"derive"`
+	// ManagedRequired makes the option required for games enabled from the dashboard only
+	// (a config.yaml game wires the same thing by hand, so it may leave it out).
+	ManagedRequired bool `yaml:"managed_required"`
 }
 
 // StartupStep maps a log pattern to a startup progress percentage.
@@ -233,6 +265,23 @@ func (m *Manifest) validate() error {
 	}
 	if m.Runtime.RestartCooldown < 0 {
 		return fmt.Errorf("module %q: restart_cooldown must not be negative", m.ID)
+	}
+	declared := map[string]bool{}
+	for _, o := range m.Options {
+		declared[o.Key] = true
+	}
+	for _, n := range m.Runtime.Networks {
+		if !declared[n.NameOption] || (n.IPv4Option != "" && !declared[n.IPv4Option]) {
+			return fmt.Errorf("module %q: runtime.networks must name declared options", m.ID)
+		}
+	}
+	if o := m.Runtime.GamesIPv4Option; o != "" && !declared[o] {
+		return fmt.Errorf("module %q: runtime.games_ipv4_option %q is not a declared option", m.ID, o)
+	}
+	for _, o := range m.Runtime.SecOpts {
+		if o == "" || strings.ContainsAny(o, " ,") {
+			return fmt.Errorf("module %q: bad runtime.secopts entry %q", m.ID, o)
+		}
 	}
 	if !supportedPlayers[m.Players.Type] {
 		return fmt.Errorf("module %q: players.type %q is not supported yet", m.ID, m.Players.Type)

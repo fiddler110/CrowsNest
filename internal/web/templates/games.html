@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<meta name="csrf-token" content="{{.CSRFToken}}">
+<title>CrowsNest · Shipyard</title>
+<link rel="icon" type="image/png" href="/static/brand.png">
+<link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<svg xmlns="http://www.w3.org/2000/svg" class="sr-only" aria-hidden="true" focusable="false">
+  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M4 6l6 6-6 6M12 19h8"/></symbol>
+  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
+  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></symbol>
+  <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
+  <symbol id="i-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></symbol>
+  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
+  <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></symbol>
+</svg>
+
+<div class="backdrop" aria-hidden="true"><span class="grid"></span><span class="glow glow-a"></span><span class="glow glow-b"></span></div>
+
+<header class="topbar">
+  <a class="brand" href="/">
+    <img src="/static/brand.png" alt="" width="38" height="38">
+    <span class="brand-text"><strong>CrowsNest</strong><small>// shipyard</small></span>
+  </a>
+  <div class="user-bar">
+    <a class="btn btn-ghost" href="/">Dashboard</a>
+    <a class="btn btn-ghost" href="/settings">Settings</a>
+    <span class="user-chip"><svg class="icon"><use href="#i-user"/></svg><b>{{.Username}}</b></span>
+  </div>
+</header>
+
+<main class="shell">
+  <section class="page-head">
+    <p class="eyebrow"><i class="beacon"></i>// shipyard</p>
+    <h1>Games</h1>
+    <p class="hero-sub">Add a game server, change its settings, or take it out of service. Nothing is created until you press Enable, and everything is checked against the operator's policy first. <a href="/settings#policy">View or change the policy</a>.</p>
+  </section>
+
+  <p id="games-off" class="banner" role="alert" hidden>
+    <svg class="icon"><use href="#i-alert"/></svg>
+    <span>Enabling games from the dashboard is not configured (managed.dir in config.yaml).</span>
+  </p>
+
+  <h2 class="section-title">// your fleet</h2>
+  <div id="fleet" class="fleet" aria-live="polite"></div>
+
+  <div id="setup-section">
+  <h2 class="section-title">// add a game</h2>
+
+  <h3 class="step-title"><span class="step-num">1</span> Choose a game</h3>
+  <div id="catalogue" class="catalogue" role="radiogroup" aria-label="Game"></div>
+
+  <form id="setup" class="setup" autocomplete="off" hidden>
+    <div class="setup-form">
+      <h3 class="step-title"><span class="step-num">2</span> <span id="basics-title">Name it</span></h3>
+      <label class="field">Name
+        <input type="text" name="display_name" maxlength="64" placeholder="e.g. Family Minecraft" required>
+        <small>Shown on the dashboard.</small></label>
+      <label class="field">Short id
+        <input type="text" name="id" maxlength="31" pattern="[a-z][a-z0-9\-]{1,30}" autocapitalize="none" spellcheck="false" required>
+        <small>Lowercase letters, digits and dashes. Becomes the container name and cannot be changed later.</small></label>
+      <label class="field">Address players connect to <span class="optional">optional</span>
+        <input type="text" name="connect_address" maxlength="128" spellcheck="false" placeholder="e.g. 10.0.0.2:25565">
+        <small>Shown on the game's card with a copy button. It is only a label for players: it does not change any other setting.</small></label>
+      <label class="field" id="image-field" hidden>Image
+        <input type="text" name="image" spellcheck="false" autocapitalize="none" placeholder="e.g. docker.io/itzg/minecraft-server">
+        <small>This module has no image of its own, so say which one to run.</small></label>
+
+      <h3 class="step-title"><span class="step-num">3</span> Settings</h3>
+      <div id="options" class="options"></div>
+      <details id="more" class="more">
+        <summary>More settings <small>(wiring such as the API address is filled in automatically)</small></summary>
+        <div id="options-more" class="options"></div>
+      </details>
+    </div>
+
+    <aside class="summary" id="summary" aria-live="polite">
+      <p class="eyebrow">// what will be created</p>
+      <h3 id="sum-title">Pick a game</h3>
+      <p id="sum-status" class="sum-status"></p>
+      <dl class="sum-list" id="sum-list"></dl>
+      <section id="setup" class="setup" hidden>
+        <h4>Do this on the host first</h4>
+        <p class="settings-help">The dashboard can't do these for you, on purpose. They are filled in from the form.</p>
+        <ol id="setup-list"></ol>
+      </section>
+      <details class="tech" id="tech">
+        <summary>Technical details</summary>
+        <p class="settings-help">The compose service and Docker guard scope this produces.</p>
+        <pre id="tech-service"></pre>
+        <pre id="tech-scope"></pre>
+      </details>
+      <p id="form-error" class="settings-error" role="alert" hidden></p>
+      <div class="sum-actions">
+        <button id="cancel-edit" class="btn btn-ghost" type="button" hidden>Cancel</button>
+        <button id="enable" class="btn btn-primary" type="submit" disabled>Enable</button>
+      </div>
+    </aside>
+  </form>
+
+  <section id="progress" class="progress-card" hidden aria-live="polite">
+    <p class="eyebrow">// under way</p>
+    <h3 id="progress-title">Setting up…</h3>
+    <ol class="steps" id="progress-steps">
+      <li data-step="record" class="done">Saved and permitted by the guard</li>
+      <li data-step="install" class="active">Downloading the image and creating the container <small>(the first download can take a couple of minutes)</small></li>
+      <li data-step="ready">Added to the dashboard</li>
+    </ol>
+    <div class="progress-track"><div class="progress-bar progress-indeterminate" id="progress-bar"></div></div>
+    <p id="progress-error" class="settings-error" role="alert" hidden></p>
+    <div class="dialog-actions">
+      <button id="progress-again" class="btn btn-ghost" type="button" hidden>Back to the form</button>
+      <a id="progress-done" class="btn btn-primary" href="/" hidden>Open the dashboard</a>
+    </div>
+  </section>
+  </div>
+</main>
+
+<div id="toast" class="toast" role="status" hidden>
+  <svg class="icon"><use href="#i-alert"/></svg><span id="toast-text"></span>
+</div>
+
+<script src="/static/games.js"></script>
+</body>
+</html>

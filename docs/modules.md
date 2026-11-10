@@ -144,13 +144,47 @@ labels: []                             # extra labels they may require (the watc
 max_scopes: 32
 ```
 
+- Point `games_root` at a folder that holds only game data, such as `<your data mount>/crowsnest/games`, not at a
+  mount shared with other services: every dashboard-added game's folder is `<games_root>/<id>`, and the policy
+  lets the panel bind anything inside `games_root`. Create it once, owned by you, before the first game.
+  `platform.games_root` in config.yaml must be the same path. Servers you set up by hand keep their own paths.
 - `names` matters: the guard lets a scope manage the container of the same name, so without it a scope called
   `caddy` would let the panel stop your reverse proxy.
-- A managed scope can never carry volumes, security options, capabilities, aliases or fixed addresses, host
-  networking, or exec unless the policy allows it. Windrose-style needs stay in the operator's own `GUARD_SCOPES`.
+- A managed scope can never carry volumes, capabilities, aliases, host networking, or exec unless the policy allows
+  it. Security options, extra networks and fixed addresses are only for a game the policy names in an
+  [exception](#exceptions-one-game-beyond-the-envelope).
 - Official Docker Hub images are fully qualified in a scope (`itzg/minecraft-server` is `docker.io/itzg/minecraft-server`),
   so policy prefixes are written that way.
 - `Policy.Admit` is the same check the dashboard will use to preview "does this fit?" before enabling a game.
+
+### Exceptions: one game beyond the envelope
+
+Some games need what the envelope never grants. Windrose is the case: its invite-code relay needs a real LAN
+address (a macvlan network, with a pinned IPv4 so a firewall rule can find it) and its Wine runtime needs
+`seccomp=unconfined`. An `exceptions` entry grants exactly that to one container and nothing else:
+
+```yaml
+exceptions:
+  - name: windrose                       # exact container name, never a wildcard
+    image: indifferentbroccoli/windrose-server-docker   # the one image it may run
+    networks:                            # extra networks, with the only addresses it may be pinned to
+      dockervlan: [10.0.1.16]
+      crowsnest-games-net: [192.168.0.50]
+    secopts: [seccomp=unconfined]        # the only security options it may ask for
+```
+
+- Only the file on the host can add or change one. The dashboard's Game policy page lists them but cannot edit
+  them, and saving the rest of the policy from the dashboard keeps them as they are.
+- A game whose module asks for more than the envelope grants (`runtime.secopts`, `runtime.networks`) shows as
+  *needs a policy exception* in Settings → Game modules until the policy has an entry for its name.
+- The guard checks the exception itself, on the create request: another address, another network or another
+  security option is refused.
+- The module takes the operator's network and addresses from options (`lan_network`, `lan_ipv4`, `games_ipv4`),
+  so they are typed in the form, not written into the module. The host firewall script
+  (`windrose-firewall.sh`) that keeps the macvlan address away from the host stays a manual step.
+- Moving a hand-written Windrose to the dashboard: remove its entry from `GUARD_SCOPES` and `config.yaml`
+  (the dashboard refuses an id config.yaml already uses), add the exception above, then enable `windrose`
+  on the Games page with the data folder set to `Windrose` so it keeps its world.
 
 ## Enabling games from the dashboard (API)
 
@@ -195,6 +229,31 @@ so a game that did not finish installing is finished on the next start.
   registry is tolerated on an edit if the image is already local, but not on a refresh. Pull-on-start for managed
   games is not wired: use refresh.
 - Not yet: the Games page (step 4).
+
+### Options that fill themselves in
+
+A module option can say `derive: "http://{id}:8212"`. For a game enabled from the dashboard, an option left empty
+is filled from the game itself, so nobody types wiring such as the REST API address. `{id}` is the game's id (also its
+container name on the games network) and `{env:KEY}` is the name of the variable that holds secret option `KEY`.
+`managed_required: true` makes an option required for dashboard games only. The Games page tucks derived options
+under "More settings" with an "automatic" placeholder; typing a value there overrides it.
+
+### The Games page
+
+Admins get a **Games** link in the header, opening `/games`. It lists the games enabled from the dashboard (installing, ready or
+failed, with the error), and has a form to add one: pick a module, an id, the module's options (secret options are
+password fields), then **Preview** to see whether it fits the policy before **Enable**. Per game: **Edit** (recreates
+the container; leaving a secret empty keeps it), **Update image**, and **Disable** (the data folder is kept). When an
+install finishes the page reloads so the game's card appears. It talks to `/api/managed/*`; without `managed.dir` the
+dialog says the feature is off.
+
+### Policy on the Games page
+
+The page shows the policy in force. It is read-only by default: the panel mounts the policy directory read-only, so a
+compromised panel cannot widen its own limits. To edit it from the dashboard, mount the policy **directory**
+writable into the panel and set `managed.policy_editable: true`. Saves are validated with the same parser as the
+guard, written atomically, and applied by the guard within seconds (a managed game that no longer fits is dropped).
+Keep the guard's own mount read-only.
 
 ### Deploying it (tested shape)
 
@@ -253,3 +312,11 @@ for the operator to approve outside the dashboard. Steps, each shippable on its 
 4. A Games page: pick a module, fill in its options, see the rendered compose and what falls outside the policy,
    enable.
 5. Remote module sources with signature checks.
+
+## Several servers from one module
+
+You can enable the same module more than once (for example two Valheim worlds) as long as each game has its own id and title. Every game gets its own data folder, named after its id (`<games_root>/<id>`), unless you set **Data folder name** under *More settings*. Host ports must differ: a clash with another managed game is refused with a message naming it, and you set different ones in **Published ports** (`host:container/proto`, comma-separated). The operator's policy must allow the names and ports, and memory limits still apply.
+
+## Showing join details on the card
+
+A module can list `connect:` entries (a `label` and the `option` whose value to show), such as the Palworld and Valheim server passwords. They appear on the game's card for admins and are never part of the list API.

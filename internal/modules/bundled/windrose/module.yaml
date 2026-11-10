@@ -16,7 +16,84 @@ name: Windrose
 # The "R5TurnProtocol::Disconnect" line looks like a leave but also fires 9 s
 # into every join (the handshake hands over from TCP to UDP): never use it.
 
+description: "Windrose dedicated server (indifferentbroccoli/windrose-server-docker). Joined by invite code over the game's own relay, so it needs a LAN address (macvlan) and a policy exception; see docs/modules.md."
+
+# Shown on the card of a game enabled from the dashboard.
+connect:
+  - {label: Invite code, option: invite_code}
+  - {label: Server name, option: server_name}
+  - {label: Server password, option: server_password}
+
+runtime:
+  image: indifferentbroccoli/windrose-server-docker
+  stop_grace: 30s
+  data_dir: Windrose
+  data:
+    - {sub: Config, path: /home/steam/server-files}
+  # The invite-code relay (ICE) needs the server to advertise a real LAN address,
+  # which a macvlan network gives it without exposing the host's own network stack.
+  # The operator's network and addresses are typed in the form; the policy must
+  # carry an exception for this game (exceptions: in policy.yaml) or the guard
+  # refuses it. Nothing here is a default for any other game.
+  networks:
+    - {name_option: lan_network, ipv4_option: lan_ipv4, gw_priority: 100}
+  games_ipv4_option: games_ipv4
+  secopts:
+    - seccomp=unconfined      # the image's Wine runtime needs it
+  env:
+    - PUID=1000
+    - PGID=1000
+    - SERVER_NAME=${server_name}
+    - SERVER_PASSWORD=${server_password}
+    - INVITE_CODE=${invite_code}
+    - MAX_PLAYERS=${max_players}
+    - P2P_PROXY_ADDRESS=${lan_ipv4}
+    - UPDATE_ON_START=true
+    - WINDROSE_PLUS_ENABLED=${windrose_plus}
+    - WINDROSE_PLUS_RCON_PASSWORD=${rcon_password}
+
+# Steps only the operator can do on the host. The Games page shows them beside the form with
+# your values filled in, after the policy.yaml block it generates for the exception.
+host_setup:
+  - title: "Make sure the Docker network {lan_network} exists"
+    detail: >-
+      Windrose joins your LAN through a macvlan network, so players' invite-code relay sees a real LAN address.
+      Check it exists. If it does not, create it on the NIC that faces your LAN, with your LAN's subnet and
+      gateway, and an ip-range that does not overlap your router's DHCP pool.
+    command: >-
+      docker network inspect {lan_network} --format '{{.Driver}} {{range .IPAM.Config}}{{.Subnet}} {{end}}'
+      || docker network create -d macvlan --subnet=<lan-subnet> --gateway=<lan-gateway> --ip-range=<small-range> -o parent=<nic> {lan_network}
+  - title: "Keep {lan_ipv4} away from this host"
+    detail: >-
+      A macvlan container is a peer on your LAN and can reach this host's own services through the host's
+      addresses. Run these once as root, then make them survive a reboot (a oneshot systemd unit that re-applies
+      them after Docker starts, as the windrose-firewall.sh pattern does). Also filter {lan_ipv4} on your
+      router if it lets you.
+    command: |-
+      sudo iptables -I INPUT -s {lan_ipv4} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      sudo iptables -I INPUT 2 -s {lan_ipv4} -j DROP
+      sudo iptables -I DOCKER-USER -s {lan_ipv4} -j DROP
+  - title: "Windrose+ dashboard (only if you turn the mod on)"
+    detail: >-
+      Bind the mod's dashboard to {games_ipv4} so only CrowsNest can reach it: set server.bind_ip to that
+      address in <data folder>/Config/windrose_plus.json, then put http://{games_ipv4}:8780 in the
+      Windrose+ dashboard URL option.
+
+backup:
+  exec: ["/bin/sh", "-c", "mkdir -p /home/steam/server-files/backups && tar czf /home/steam/server-files/backups/world-$(date +%Y%m%d-%H%M%S).tar.gz -C /home/steam/server-files/R5/Saved SaveProfiles && chown -R 1000:1000 /home/steam/server-files/backups"]
+  list_dir: /home/steam/server-files/backups
+  before_stop: true
+
 options:
+  - {key: server_name, label: Server name, default: My Windrose Server}
+  - {key: server_password, label: Server password, secret: true}
+  - {key: invite_code, label: Invite code, secret: true}
+  - {key: max_players, label: Max players, default: "4"}
+  - {key: lan_network, label: "LAN (macvlan) network the server joins", default: dockervlan}
+  - {key: lan_ipv4, label: "Fixed LAN address (also the address players' relay sees)"}
+  - {key: games_ipv4, label: "Fixed address on the games network (the Windrose+ dashboard binds to it)"}
+  - {key: windrose_plus, label: "Windrose+ mod (true/false)", default: "false"}
+  - {key: rcon_password, label: "Windrose+ RCON password", secret: true}
   - {key: http_api_url, label: "Windrose+ dashboard URL (rich info panel; optional)"}
   - {key: rcon_password_env, label: "Env var holding the Windrose+ RCON password"}
   - key: players_source

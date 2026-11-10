@@ -49,13 +49,15 @@ type Docker interface {
 // Manager owns the dashboard-enabled games.
 type Manager struct {
 	Dir        string // state directory
-	PolicyFile string // operator's policy.yaml (read only)
-	Platform   modules.Platform
-	Modules    *modules.Set
-	Config     *config.Config
-	Docker     Docker
-	Wire       *dockerctl.Client // for module wiring (status, logs, exec)
-	Registry   *games.Registry
+	PolicyFile string // operator's policy.yaml
+	// PolicyEditable lets SetPolicy rewrite PolicyFile (the operator mounted it writable and opted in).
+	PolicyEditable bool
+	Platform       modules.Platform
+	Modules        *modules.Set
+	Config         *config.Config
+	Docker         Docker
+	Wire           *dockerctl.Client // for module wiring (status, logs, exec)
+	Registry       *games.Registry
 	// Settle is how long a new game waits for the guard to pick up its scope.
 	Settle time.Duration
 
@@ -83,6 +85,8 @@ type Request struct {
 	// Secrets holds the values of the module's secret options. They are kept
 	// in secrets.json and never appear in a plan, a rendered file or a list.
 	Secrets map[string]string `json:"secrets,omitempty"`
+
+	probe bool // set by the catalogue's fit check: judge the policy only
 }
 
 // Info is a managed game as the dashboard lists it.
@@ -91,6 +95,10 @@ type Info struct {
 	Module string `json:"module"`
 	State  string `json:"state"` // installing, ready, failed
 	Error  string `json:"error,omitempty"`
+	// What the edit form pre-fills. Secret values are never listed.
+	DisplayName    string            `json:"display_name,omitempty"`
+	ConnectAddress string            `json:"connect_address,omitempty"`
+	Options        map[string]string `json:"options,omitempty"`
 }
 
 // Plan is the dry-run of a Request.
@@ -100,6 +108,22 @@ type Plan struct {
 	Env     []string `json:"env"`     // .env variables the service reads
 	Fits    bool     `json:"fits"`    // inside the operator's policy
 	Reason  string   `json:"reason,omitempty"`
+	// The plain-language summary the dashboard shows beside the form.
+	Container string   `json:"container,omitempty"`
+	Image     string   `json:"image,omitempty"`
+	Ports     []string `json:"ports,omitempty"`   // host_ip:port/proto -> container
+	Folders   []string `json:"folders,omitempty"` // host folders the game stores data in
+	Memory    string   `json:"memory,omitempty"`
+	// Setup is what the operator has to do on the host for this game, in order.
+	Setup []SetupStep `json:"setup,omitempty"`
+}
+
+// SetupStep is one host-side step the dashboard cannot do for the operator.
+type SetupStep struct {
+	Title   string `json:"title"`
+	Detail  string `json:"detail,omitempty"`
+	Command string `json:"command,omitempty"` // text to copy
+	Done    *bool  `json:"done,omitempty"`    // known to be done (nil = cannot be told from here)
 }
 
 // OptionInfo and ModuleInfo describe the catalogue to the dashboard.
@@ -109,13 +133,33 @@ type OptionInfo struct {
 	Default  string `json:"default,omitempty"`
 	Required bool   `json:"required,omitempty"`
 	Secret   bool   `json:"secret,omitempty"`
+	Auto     bool   `json:"auto,omitempty"` // filled in from the game itself when left empty
 }
 
 type ModuleInfo struct {
-	ID         string       `json:"id"`
-	Name       string       `json:"name"`
-	NeedsImage bool         `json:"needs_image"` // the module has no image of its own
-	Options    []OptionInfo `json:"options"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	NeedsImage  bool     `json:"needs_image"` // the module has no image of its own
+	Description string   `json:"description,omitempty"`
+	Image       string   `json:"image,omitempty"`
+	Ports       []string `json:"ports,omitempty"` // "25565/tcp"
+	HasBackup   bool     `json:"has_backup,omitempty"`
+	// ConnectHint is the address players most likely use (published host address
+	// and first port), offered as the default connect address.
+	ConnectHint string `json:"connect_hint,omitempty"`
+	// Fits is whether a game from this module, with its defaults and the module's
+	// own id, is inside the operator's policy. Nil when it cannot be told (the
+	// module needs an image, or a game with that id already exists).
+	Fits *bool `json:"fits,omitempty"`
+	// FitID is an id the policy's names admit, when the module's own id is not one:
+	// the verdict above was reached with it.
+	FitID string `json:"fit_id,omitempty"`
+	// NeedsException is true for a module that asks for more than the envelope
+	// ever grants by itself (a LAN address, a pinned IPv4, a relaxed seccomp
+	// profile): it only fits when policy.yaml carries an exception for its id.
+	NeedsException bool         `json:"needs_exception,omitempty"`
+	Reason         string       `json:"reason,omitempty"`
+	Options        []OptionInfo `json:"options"`
 }
 
 const (
@@ -137,13 +181,87 @@ func (m *Manager) Catalogue() []ModuleInfo {
 		if len(mf.Runtime.Ports) == 0 && mf.Runtime.Image == "" && len(mf.Runtime.Data) == 0 {
 			continue
 		}
-		mi := ModuleInfo{ID: mf.ID, Name: mf.Name, NeedsImage: mf.Runtime.Image == ""}
-		for _, o := range mf.Options {
-			mi.Options = append(mi.Options, OptionInfo{Key: o.Key, Label: o.Label, Default: o.Default, Required: o.Required, Secret: o.Secret})
+		rt := mf.Runtime
+		mi := ModuleInfo{ID: mf.ID, Name: mf.Name, NeedsImage: mf.Runtime.Image == "",
+			NeedsException: len(rt.SecOpts) > 0 || len(rt.Networks) > 0 || rt.GamesIPv4Option != "",
+			Description:    mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil}
+		for _, p := range mf.Runtime.Ports {
+			mi.Ports = append(mi.Ports, fmt.Sprintf("%d/%s", p.Port, p.Proto))
 		}
+		if len(mf.Runtime.Ports) > 0 && m.Platform.HostIP != "" && m.Platform.HostIP != "0.0.0.0" {
+			mi.ConnectHint = fmt.Sprintf("%s:%d", m.Platform.HostIP, mf.Runtime.Ports[0].Port)
+		}
+		for _, o := range mf.Options {
+			mi.Options = append(mi.Options, OptionInfo{Key: o.Key, Label: o.Label, Default: o.Default, Required: (o.Required || o.ManagedRequired) && o.Derive == "", Secret: o.Secret, Auto: o.Derive != ""})
+		}
+		m.probeFit(&mi, mf)
 		out = append(out, mi)
 	}
 	return out
+}
+
+// probeFit dry-runs the module with its defaults (placeholders for what has
+// none) under its own id, to tell the catalogue whether the policy admits it.
+func (m *Manager) probeFit(mi *ModuleInfo, mf *modules.Manifest) {
+	if mi.NeedsImage {
+		return
+	}
+	if mi.NeedsException {
+		pol, err := m.policy()
+		if err == nil && pol.ExceptionFor(mf.ID) == nil {
+			fits := false
+			mi.Fits = &fits
+			mi.Reason = fmt.Sprintf("needs an exception in policy.yaml for a container named %s (a LAN address and a relaxed security profile). The dashboard cannot grant it.", mf.ID)
+			return
+		}
+	}
+	req := Request{ID: mf.ID, Module: mf.ID, Options: map[string]string{}, Secrets: map[string]string{}, probe: true}
+	for _, o := range mf.Options {
+		switch {
+		case o.Secret:
+			req.Secrets[o.Key] = "placeholder"
+		case o.Default != "":
+			req.Options[o.Key] = o.Default
+		case o.Required:
+			req.Options[o.Key] = "placeholder"
+		}
+	}
+	plan, err := m.Preview(req)
+	if err != nil {
+		return
+	}
+	if !plan.Fits && strings.Contains(plan.Reason, "policy's names") {
+		// The module's own id is not an allowed name. Judge the image and ports with one that is.
+		if pol, perr := m.policy(); perr == nil {
+			for _, n := range pol.Names {
+				id := strings.TrimSuffix(n, "*")
+				if id == n {
+					continue // an exact name is only for that one game
+				}
+				id += mf.ID
+				if !idRe.MatchString(id) {
+					continue
+				}
+				req.ID = id
+				if p2, e2 := m.Preview(req); e2 == nil && (p2.Fits || !strings.Contains(p2.Reason, "policy's names")) {
+					plan, mi.FitID = p2, id
+					break
+				}
+			}
+		}
+	}
+	fits := plan.Fits
+	mi.Fits, mi.Reason = &fits, plan.Reason
+}
+
+var deriveEnvRe = regexp.MustCompile(`\{env:([a-z0-9_]+)\}`)
+
+// deriveOption expands an option's derive template for the game id.
+func deriveOption(tmpl, id string) string {
+	out := deriveEnvRe.ReplaceAllStringFunc(tmpl, func(ref string) string {
+		return envName(id, deriveEnvRe.FindStringSubmatch(ref)[1])
+	})
+	return strings.ReplaceAll(out, "{id}", id)
 }
 
 // validate checks a Request and returns the game config it stands for.
@@ -192,19 +310,24 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		}
 	}
 	for _, o := range mf.Options {
-		if !o.Required {
+		if !o.Required && !o.ManagedRequired {
 			continue
 		}
 		if o.Secret {
 			if r.Secrets[o.Key] == "" && !existing {
 				return g, nil, fmt.Errorf("option %q is required", o.Key)
 			}
-		} else if opts[o.Key] == "" && o.Default == "" {
+		} else if opts[o.Key] == "" && o.Default == "" && o.Derive == "" {
 			return g, nil, fmt.Errorf("option %q is required", o.Key)
 		}
 	}
 	if mf.Runtime.Image == "" && opts["image"] == "" {
 		return g, nil, fmt.Errorf("module %s has no image of its own: set the image option", mf.ID)
+	}
+	for _, o := range mf.Options {
+		if o.Derive != "" && opts[o.Key] == "" {
+			opts[o.Key] = deriveOption(o.Derive, r.ID)
+		}
 	}
 	// A secret option K with a sibling K_env names the variable the module reads: point it at ours.
 	for _, o := range mf.Options {
@@ -220,6 +343,11 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	}
 	if g.DisplayName == "" {
 		g.DisplayName = mf.Name
+	}
+	if rd, err := mf.Render(g, m.Platform); err == nil && !r.probe { // a catalogue probe asks about the policy, not the ports in use
+		if clash := m.portClash(g.ID, rd); clash != "" {
+			return g, nil, errors.New(clash)
+		}
 	}
 	return g, mf, nil
 }
@@ -242,6 +370,23 @@ func (m *Manager) find(id string) *entry {
 		}
 	}
 	return nil
+}
+
+// portClash reports a published host port that another dashboard game already uses.
+func (m *Manager) portClash(id string, rd *modules.Rendered) string {
+	for _, o := range m.entries {
+		if o.ID == id || o.rendered == nil {
+			continue
+		}
+		for _, a := range rd.Scope.Ports {
+			for _, b := range o.rendered.Scope.Ports {
+				if a.HostPort == b.HostPort && a.Proto == b.Proto && (a.HostIP == b.HostIP || a.HostIP == "0.0.0.0" || b.HostIP == "0.0.0.0") {
+					return fmt.Sprintf("host port %s/%s is already used by %s: set different ports under More settings", a.HostPort, a.Proto, o.ID)
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func (m *Manager) policy() (*dockerguard.Policy, error) {
@@ -272,10 +417,27 @@ func (m *Manager) renderAndFit(g config.GameConfig, mf *modules.Manifest) (*modu
 	return r, pol.Admit(sc[0])
 }
 
+// withDefaults gives a new game its own data folder, named after its id, directly under games_root (which
+// the operator points at a folder that holds only game data). Two games from one module must never share a
+// folder (they would write the same world). A folder typed in the form is kept.
+func (m *Manager) withDefaults(r Request) Request {
+	if _, ok := m.Modules.Manifest(r.Module); !ok || r.Options["data_dir"] != "" || r.ID == "" {
+		return r
+	}
+	opts := make(map[string]string, len(r.Options)+1)
+	for k, v := range r.Options {
+		opts[k] = v
+	}
+	opts["data_dir"] = r.ID
+	r.Options = opts
+	return r
+}
+
 // Preview renders a Request without changing anything.
 func (m *Manager) Preview(r Request) (*Plan, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	r = m.withDefaults(r)
 	g, mf, err := m.validate(r, false)
 	if err != nil {
 		return nil, err
@@ -286,14 +448,89 @@ func (m *Manager) Preview(r Request) (*Plan, error) {
 	}
 	svc, _ := yaml.Marshal(map[string]any{r.ID: rd.Service})
 	sc, _ := json.MarshalIndent(rd.Scope, "", "  ")
-	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil}
+	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil,
+		Container: rd.Service.ContainerName, Image: rd.Service.Image, Ports: rd.Service.Ports, Memory: rd.Service.MemLimit}
+	for _, v := range rd.Service.Volumes {
+		p.Folders = append(p.Folders, strings.SplitN(v, ":", 2)[0])
+	}
 	if fitErr != nil {
 		p.Reason = fitErr.Error()
 	}
 	for _, v := range rd.EnvVars {
 		p.Env = append(p.Env, v.Name)
 	}
+	p.Setup = m.setupSteps(r, mf, rd, p.Fits)
 	return p, nil
+}
+
+var setupRef = regexp.MustCompile(`\{([a-z][a-z0-9_]*)\}`)
+
+// setupSteps is the host-side checklist for this game: the policy exception it needs (written out, ready to
+// paste), then the module's own steps with the form's values filled in.
+func (m *Manager) setupSteps(r Request, mf *modules.Manifest, rd *modules.Rendered, fits bool) []SetupStep {
+	var steps []SetupStep
+	sc := rd.Scope
+	if len(sc.SecOpts) > 0 || len(sc.IPv4) > 0 || len(sc.Networks) > 1 {
+		primary := ""
+		if len(sc.Networks) > 0 {
+			primary = sc.Networks[0]
+		}
+		ex := dockerguard.Exception{Name: sc.Name, Networks: map[string][]string{}}
+		if len(sc.Images) > 0 {
+			ex.Image = sc.Images[0]
+		}
+		for _, n := range sc.Networks {
+			if n != primary || len(sc.IPv4[n]) > 0 {
+				ex.Networks[n] = append([]string{}, sc.IPv4[n]...)
+			}
+		}
+		for _, o := range sc.SecOpts {
+			if strings.Contains(o, "=") {
+				ex.SecOpts = append(ex.SecOpts, o)
+			}
+		}
+		if len(ex.Networks) == 0 {
+			ex.Networks = nil
+		}
+		b, _ := yaml.Marshal(map[string]any{"exceptions": []dockerguard.Exception{ex}})
+		done := fits
+		detail := "This game needs more than the dashboard may ever grant (a LAN address, a pinned address or a relaxed security profile). Add this block to policy.yaml on the host. The guard picks it up within a few seconds; no restart is needed."
+		if m.PolicyFile != "" {
+			detail += " The file is " + m.PolicyFile + " inside the panel, which is the policy folder on the host."
+		}
+		if fits {
+			detail = "The policy already has an exception that covers this game exactly as set up here."
+		}
+		steps = append(steps, SetupStep{Title: "Allow it in policy.yaml", Detail: detail, Command: strings.TrimRight(string(b), "\n"), Done: &done})
+	}
+	fill := func(t string) string {
+		return setupRef.ReplaceAllStringFunc(t, func(ref string) string {
+			k := ref[1 : len(ref)-1]
+			if k == "id" {
+				return r.ID
+			}
+			known := false
+			for _, o := range mf.Options {
+				known = known || o.Key == k
+			}
+			if !known {
+				return ref // not ours (a Go template in a docker command, say)
+			}
+			if v := strings.TrimSpace(r.Options[k]); v != "" {
+				return v
+			}
+			for _, o := range mf.Options {
+				if o.Key == k && o.Default != "" {
+					return o.Default
+				}
+			}
+			return "<" + k + ">"
+		})
+	}
+	for _, h := range mf.HostSetup {
+		steps = append(steps, SetupStep{Title: fill(h.Title), Detail: fill(h.Detail), Command: fill(h.Command)})
+	}
+	return steps
 }
 
 // Enable records the game and installs it in the background: scope, image,
@@ -302,6 +539,7 @@ func (m *Manager) Preview(r Request) (*Plan, error) {
 func (m *Manager) Enable(r Request) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	r = m.withDefaults(r)
 	g, mf, err := m.validate(r, false)
 	if err != nil {
 		return err
@@ -433,6 +671,17 @@ func (m *Manager) register(e *entry, g config.GameConfig) error {
 		return os.Getenv(name)
 	}
 	def, runners := m.Modules.BuildOne(m.Config, g, m.Wire, lookup)
+	if mf, ok := m.Modules.Manifest(e.Module); ok {
+		for _, c := range mf.Connect {
+			v := e.Secrets[c.Option]
+			if v == "" {
+				v = e.Options[c.Option]
+			}
+			if v != "" {
+				def.ConnectSecrets = append(def.ConnectSecrets, games.ConnectSecret{Label: c.Label, Value: v})
+			}
+		}
+	}
 	if err := m.Registry.Add(def); err != nil {
 		if _, have := m.Registry.Get(g.ID); !have {
 			return err
@@ -565,7 +814,12 @@ func (m *Manager) List() []Info {
 	defer m.mu.Unlock()
 	out := make([]Info, 0, len(m.entries))
 	for _, e := range m.entries {
-		out = append(out, Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error})
+		opts := make(map[string]string, len(e.Options))
+		for k, v := range e.Options {
+			opts[k] = v
+		}
+		out = append(out, Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error,
+			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Options: opts})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -735,4 +989,79 @@ func ExecRules(dir string, mods *modules.Set) ([]execguard.Rule, error) {
 		}
 	}
 	return rules, nil
+}
+
+// PolicyDoc is policy.yaml as the dashboard shows and edits it.
+type PolicyDoc struct {
+	GamesRoot string   `json:"games_root" yaml:"games_root"`
+	Names     []string `json:"names" yaml:"names"`
+	Images    []string `json:"images" yaml:"images"`
+	Networks  []string `json:"networks" yaml:"networks"`
+	Ports     []string `json:"ports" yaml:"ports"`
+	HostIPs   []string `json:"host_ips" yaml:"host_ips,omitempty"`
+	Exec      bool     `json:"exec" yaml:"exec"`
+	Labels    []string `json:"labels" yaml:"labels,omitempty"`
+	MaxScopes int      `json:"max_scopes" yaml:"max_scopes"`
+	// Exceptions are shown, never edited here: SetPolicy keeps whatever the file has.
+	Exceptions []dockerguard.Exception `json:"exceptions,omitempty" yaml:"exceptions,omitempty"`
+}
+
+// PolicyState is the current policy and whether the dashboard may change it.
+type PolicyState struct {
+	Policy   PolicyDoc `json:"policy"`
+	Editable bool      `json:"editable"`
+}
+
+// Policy reads the policy in force.
+func (m *Manager) Policy() (PolicyState, error) {
+	p, err := m.policy()
+	if err != nil {
+		return PolicyState{}, err
+	}
+	return PolicyState{Editable: m.PolicyEditable, Policy: PolicyDoc{
+		GamesRoot: p.GamesRoot, Names: p.Names, Images: p.Images, Networks: p.Networks, Ports: p.Ports,
+		HostIPs: p.HostIPs, Exec: p.Exec, Labels: p.Labels, MaxScopes: p.MaxScopes, Exceptions: p.Exceptions,
+	}}, nil
+}
+
+// SetPolicy validates and rewrites policy.yaml. The guard reads the same file and applies it within
+// seconds; a managed game that no longer fits is dropped by the guard, not here.
+func (m *Manager) SetPolicy(d PolicyDoc) error {
+	if !m.PolicyEditable {
+		return errors.New("the policy is read-only here: it is edited in policy.yaml on the host")
+	}
+	// An exception loosens the guard for one container, so only the file on the host can add or change one.
+	d.Exceptions = nil
+	if cur, err := m.policy(); err == nil {
+		d.Exceptions = cur.Exceptions
+	}
+	body, err := yaml.Marshal(d)
+	if err != nil {
+		return err
+	}
+	doc := append([]byte("# Operator-owned envelope for what the dashboard may add. Last written from the dashboard.\n"+
+		"# Docs: docs/modules.md in the CrowsNest repo. Every list is required: no limit is ever implied.\n"), body...)
+	if _, err := dockerguard.ParsePolicy(doc); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dir := filepath.Dir(m.PolicyFile)
+	tmp, err := os.CreateTemp(dir, ".policy-*.yaml")
+	if err != nil {
+		return fmt.Errorf("the policy folder is not writable by the panel: %w", err)
+	}
+	defer os.Remove(tmp.Name()) // #nosec G104 -- best effort once renamed away
+	if _, err := tmp.Write(doc); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), m.PolicyFile)
 }
