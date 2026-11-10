@@ -61,6 +61,13 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+	case "doctor":
+		cfg, err := config.Load(configPath())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FAIL  config does not load:", err)
+			os.Exit(1)
+		}
+		os.Exit(runDoctor(cfg, &dockerctl.Client{Host: cfg.Server.DockerHost}, os.Stdout))
 	case "healthcheck":
 		os.Exit(healthcheck())
 	case "set-password":
@@ -88,7 +95,7 @@ func main() {
 			log.Fatal(err)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, execguard, guard, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, doctor, execguard, guard, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
 		os.Exit(2)
 	}
 }

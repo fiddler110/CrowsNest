@@ -45,6 +45,11 @@ message to bump higher, `[skip release]` to skip. Images are scanned before
 they're pushed, signed with cosign and shipped with an SBOM. See
 [docs/publishing.md](docs/publishing.md). No local Go toolchain needed.
 
+**Fastest start:** [`quickstart/`](quickstart/README.md) is a ready stack (the panel plus the two guards that keep it away
+from the raw Docker socket) with no games preconfigured; you add them from the web page. Run
+`docker compose exec crowsnest crowsnest doctor` at any time: it checks Docker access, file permissions, the policy
+and a few safety settings, and says what to fix. The steps below are the fuller, hand-configured setup.
+
 1. Copy [`config.yaml.example`](config.yaml.example) to `config.yaml`,
    [`compose.yaml.example`](compose.yaml.example) to `compose.yaml`, and
    [`.env.example`](.env.example) to `.env`. Edit all three for your setup —

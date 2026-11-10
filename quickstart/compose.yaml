@@ -1,0 +1,90 @@
+# CrowsNest quickstart: the panel, plus the two guards that keep it away from the raw Docker socket.
+# No games are set up here: add them from the Games page once you are signed in.
+#
+#   panel ---> execguard ---> guard ---> /var/run/docker.sock
+#
+# The panel can only reach execguard (an internal network), execguard only the guard, and the guard only what
+# policy/policy.yaml allows. Read README.md in this folder first.
+name: crowsnest
+
+x-hardening: &hardening
+  restart: unless-stopped
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+
+services:
+  crowsnest:
+    <<: *hardening
+    image: ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG:-latest}
+    container_name: crowsnest
+    depends_on: [execguard]
+    ports:
+      - "${CROWSNEST_BIND:-127.0.0.1}:5000:5000"   # put HTTPS in front before exposing it beyond this machine
+    environment:
+      - TZ=${TZ:-UTC}
+      - DOCKER_CONFIG=/tmp/.docker
+    tmpfs:
+      - /tmp:size=16m,mode=1777
+    pids_limit: 256
+    mem_limit: 512m
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data                         # users, session secret, settings, activity log, dashboard games
+      - ./policy:/etc/crowsnest/policy:ro        # the limits the dashboard cannot change
+    networks: [crowsnest-docker, crowsnest-games-net]
+
+  # Allows exactly the exec commands the games' modules declare (backups); everything else passes through.
+  execguard:
+    <<: *hardening
+    image: ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG:-latest}
+    container_name: crowsnest-execguard
+    command: ["execguard", "--listen", ":2375", "--upstream", "tcp://dockerproxy-crowsnest:2375"]
+    depends_on: [guard]
+    pids_limit: 64
+    mem_limit: 64m
+    environment:
+      - TZ=${TZ:-UTC}
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data/managed:/app/data/managed:ro      # the games the dashboard enabled, reloaded live
+      - ./policy:/etc/crowsnest/policy:ro        # execguard only issues rules for names the policy allows
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2375/_ping"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    networks: [crowsnest-docker, crowsnest-guard]
+
+  # The scoped Docker API filter: creates, starts and sees only what policy.yaml admits.
+  # Refusals: docker logs dockerproxy-crowsnest 2>&1 | grep DENY
+  guard:
+    <<: *hardening
+    image: ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG:-latest}
+    container_name: dockerproxy-crowsnest
+    hostname: dockerproxy-crowsnest
+    command: ["guard", "--listen", ":2375"]
+    user: "1000"
+    group_add: ["${DOCKER_GID:-999}"]
+    tmpfs: [/tmp]
+    environment:
+      - GUARD_SCOPES_FILE=/etc/crowsnest/managed/scopes.json
+      - GUARD_POLICY=/etc/crowsnest/policy/policy.yaml
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2375/_ping"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./data/managed:/etc/crowsnest/managed:ro
+      - ./policy:/etc/crowsnest/policy:ro
+    networks: [crowsnest-guard]
+
+networks:
+  crowsnest-docker:   # panel <-> execguard only
+    internal: true
+  crowsnest-guard:    # execguard <-> guard only
+    internal: true
+  crowsnest-games-net:   # the panel and every game it starts
+    name: crowsnest-games-net

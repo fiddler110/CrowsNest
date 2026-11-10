@@ -107,6 +107,12 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   one-time setup code printed in the log and kept in `setup-token` (so only
   someone with host access can claim the panel). It closes for good once a
   user exists. Remaining: retiring the unused password hashes in `users.env`.
+- [x] **Hardening for other people's hosts (done 2026-11-10):** `crowsnest
+  doctor` (Docker access, writable state, policy, cookies, memory), a
+  `quickstart/` stack with the guards and no preset games, a history and
+  fixture audit (no secrets found; personal details removed from fixtures).
+  Still to do before going public: license headers and `SECURITY.md`, a
+  module-authoring guide, and the author email in git history.
 - [ ] **Per-game settings** (idle timeout, restart cooldown, max players,
   night opt-out per game, instead of global only). Comes from manifest
   `params` and `runtime`: Phase 1-2, form in Phase 5.
