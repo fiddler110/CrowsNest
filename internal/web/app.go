@@ -166,6 +166,7 @@ func (a *App) Routes(mux *http.ServeMux) {
 	}
 
 	mux.Handle("GET /{$}", a.requireSessionHTML(http.HandlerFunc(a.handleDashboard)))
+	mux.Handle("GET /settings", a.requireSessionHTML(http.HandlerFunc(a.handleSettingsPage)))
 	mux.Handle("GET /games", a.requireSessionHTML(http.HandlerFunc(a.handleGamesPage)))
 	mux.Handle("GET /api/games", a.requireSession(http.HandlerFunc(a.handleListGames)))
 	mux.Handle("GET /api/games/{id}/status", a.requireSession(http.HandlerFunc(a.handleStatus)))

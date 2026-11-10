@@ -364,50 +364,6 @@ $("cancel-edit").addEventListener("click", () => {
   renderCatalogue();
 });
 
-// ---------- policy ----------
-const pf = $("policy-form");
-const listFields = ["names", "images", "networks", "ports", "host_ips"];
-let policyState = null;
-const setPolicyEditing = (on) => {
-  [...pf.elements].forEach((f) => { if (f.name) f.disabled = !on; });
-  $("policy-edit").hidden = on || !(policyState && policyState.editable);
-  $("policy-cancel").hidden = !on;
-  $("policy-save").hidden = !on;
-};
-function fillPolicy() {
-  const p = policyState.policy;
-  pf.elements.games_root.value = p.games_root;
-  listFields.forEach((k) => { const v = (p[k] || []).join("\n"); pf.elements[k].value = v; pf.elements[k].rows = Math.max(2, (p[k] || []).length); });
-  pf.elements.max_scopes.value = p.max_scopes;
-  pf.elements.exec.checked = !!p.exec;
-  $("policy-note").textContent = policyState.editable
-    ? "What this panel is allowed to create. Saved changes apply within a few seconds, and a game that no longer fits is dropped by the guard."
-    : "What this panel is allowed to create. It is read-only here on purpose: it is edited in policy.yaml on the host, so a compromised panel cannot widen its own limits.";
-  setPolicyEditing(false);
-}
-async function loadPolicy() {
-  const res = await callAPI("/api/managed/policy");
-  if (!res.ok) { $("policy-note").textContent = "The policy could not be read: " + (await res.text()).trim(); return; }
-  policyState = await res.json();
-  fillPolicy();
-}
-const lines = (v) => v.split("\n").map((x) => x.trim()).filter(Boolean);
-$("policy-edit").addEventListener("click", () => { $("policy-error").hidden = true; setPolicyEditing(true); });
-$("policy-cancel").addEventListener("click", () => { $("policy-error").hidden = true; fillPolicy(); });
-pf.addEventListener("submit", async (e) => {
-  e.preventDefault();
-  const body = { games_root: pf.elements.games_root.value.trim(), exec: pf.elements.exec.checked,
-    max_scopes: parseInt(pf.elements.max_scopes.value, 10) || 0 };
-  listFields.forEach((k) => { body[k] = lines(pf.elements[k].value); });
-  const res = await callAPI("/api/managed/policy", { method: "PUT", body: JSON.stringify(body) });
-  if (!res.ok) { $("policy-error").textContent = (await res.text()).trim(); $("policy-error").hidden = false; return; }
-  policyState = await res.json();
-  fillPolicy();
-  toast("Policy saved.");
-  const mres = await callAPI("/api/managed/modules");
-  if (mres.ok) { modules = await mres.json(); renderCatalogue(); if (selected) schedulePreview(); }
-});
-
 // ---------- start ----------
 (async () => {
   const mres = await callAPI("/api/managed/modules");
@@ -420,5 +376,4 @@ pf.addEventListener("submit", async (e) => {
   if (mres.ok) modules = await mres.json();
   renderCatalogue();
   await loadGames();
-  await loadPolicy();
 })();

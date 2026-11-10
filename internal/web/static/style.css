@@ -550,3 +550,19 @@ a.btn { text-decoration: none; }
 .policy-form input:disabled, .policy-form textarea:disabled { opacity: 0.75; cursor: default; }
 .policy > summary { cursor: pointer; color: var(--muted); margin-bottom: 0.8rem; }
 .policy[open] > summary { color: var(--text); }
+
+/* ---------- settings page: sidebar + panes ---------- */
+.settings-shell { display: grid; grid-template-columns: 14rem minmax(0, 1fr); gap: 2rem; align-items: start; }
+.settings-nav { position: sticky; top: 1rem; display: flex; flex-direction: column; gap: 0.25rem; padding: 1rem 0.8rem; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); }
+.settings-nav .eyebrow { margin: 0 0 0.4rem 0.5rem; }
+.settings-nav a { display: flex; align-items: center; gap: 0.6rem; padding: 0.55rem 0.7rem; border-radius: 8px; color: var(--muted); text-decoration: none; border: 1px solid transparent; }
+.settings-nav a:hover { color: var(--text); background: var(--surface-2); }
+.settings-nav a[aria-current="page"] { color: var(--text); border-color: var(--border-strong); background: color-mix(in srgb, var(--cyan) 10%, transparent); }
+.settings-content { min-width: 0; max-width: 44rem; }
+.settings-pane h1 { font-size: 1.8rem; letter-spacing: -0.02em; margin: 0 0 0.4rem; }
+.pane-form { margin-top: 1.2rem; }
+.pane-form h3 { margin: 1.6rem 0 0.2rem; font-size: 1rem; color: var(--cyan); font-family: var(--mono); letter-spacing: 0.06em; text-transform: uppercase; font-weight: 500; }
+.pane-form h3:first-child { margin-top: 0; }
+.pane-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.4rem; }
+.settings-pane .users-list { margin-top: 1.2rem; }
+@media (max-width: 760px) { .settings-shell { grid-template-columns: 1fr; } .settings-nav { position: static; flex-direction: row; flex-wrap: wrap; } .settings-nav .eyebrow { display: none; } }

@@ -63,6 +63,19 @@ func (a *App) handleGamesPage(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleSettingsPage serves the Settings page (admins only).
+func (a *App) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
+	session, _ := auth.FromContext(r.Context())
+	if a.Auth.Sessions.RoleFor(session.Username) != auth.RoleAdmin {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	data := dashboardData{Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
+	if err := a.Templates.Settings.Execute(w, data); err != nil {
+		log.Printf("web: render settings page: %v", err)
+	}
+}
+
 // handleManagedConfigured lists the games that come from config.yaml (everything
 // on the dashboard that was not enabled from it), read-only, so the Games dialog
 // shows the whole fleet in one place.

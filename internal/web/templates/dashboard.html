@@ -33,9 +33,8 @@
   </a>
   <div class="user-bar">
     <span class="user-chip"><svg class="icon"><use href="#i-user"/></svg><b>{{.Username}}</b></span>
-    {{if .IsAdmin}}<button id="users-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-user"/></svg>Users</button>{{end}}
     {{if .IsAdmin}}<a id="games-btn" class="btn btn-ghost" href="/games"><svg class="icon"><use href="#i-play"/></svg>Games</a>{{end}}
-    {{if .IsAdmin}}<button id="settings-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-gear"/></svg>Settings</button>{{end}}
+    {{if .IsAdmin}}<a id="settings-btn" class="btn btn-ghost" href="/settings"><svg class="icon"><use href="#i-gear"/></svg>Settings</a>{{end}}
     <button id="logout-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-logout"/></svg>Log out</button>
   </div>
 </header>
@@ -196,65 +195,6 @@
       <button id="conflict-cancel" class="btn btn-ghost" type="button">Cancel</button>
       <button id="conflict-confirm" class="btn btn-primary" type="button">Switch</button>
     </div>
-  </div>
-</div>
-
-<div id="settings-dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="settings-title" hidden>
-  <form class="dialog-box" id="settings-form">
-    <p class="eyebrow">// ship's orders</p>
-    <h3 id="settings-title">Settings</h3>
-    <p class="settings-help">Applies to every game, immediately. A server that is shut down automatically stays down until someone starts it here.</p>
-
-    <label class="setting-check"><input type="checkbox" name="idle_enabled"> Stop a server when nobody is on it</label>
-    <label class="setting-field">After this many minutes empty
-      <input type="number" name="idle_minutes" min="1" max="1440" required></label>
-
-    <label class="setting-check"><input type="checkbox" name="night_enabled"> Stop empty servers overnight</label>
-    <div class="setting-row">
-      <label class="setting-field">From hour (0-23)
-        <input type="number" name="night_start_hour" min="0" max="23" required></label>
-      <label class="setting-field">Until hour (0-23)
-        <input type="number" name="night_end_hour" min="0" max="23" required></label>
-    </div>
-
-    <label class="setting-field">Servers allowed at once
-      <input type="number" name="max_active_games" min="1" max="32" required></label>
-
-    <label class="setting-check"><input type="checkbox" name="auto_update"> Update a server to the latest version each time it starts</label>
-    <label class="setting-check"><input type="checkbox" name="raw_console"> Allow the raw RCON console for admins (sends any command to the game server)</label>
-
-    <p id="settings-error" class="settings-error" role="alert" hidden></p>
-    <div class="dialog-actions">
-      <button id="settings-cancel" class="btn btn-ghost" type="button">Cancel</button>
-      <button class="btn btn-primary" type="submit">Save</button>
-    </div>
-  </form>
-</div>
-
-<div id="users-dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="users-title" hidden>
-  <div class="dialog-box users-box">
-    <p class="eyebrow">// crew manifest</p>
-    <h3 id="users-title">Users</h3>
-    <p class="settings-help">Admins can change settings and manage users. Players can start, stop and switch games. Changes apply immediately.</p>
-    <ul id="users-list" class="users-list"></ul>
-
-    <form id="user-form" class="user-form" autocomplete="off">
-      <h4 id="user-form-title">Add a user</h4>
-      <label class="setting-field">Username
-        <input type="text" name="username" maxlength="32" pattern="[a-z0-9][a-z0-9_\-]*" autocapitalize="none" spellcheck="false" required></label>
-      <label class="setting-field" id="user-google-field" hidden>Google account email (lets them sign in with Google)
-        <input type="email" name="google_email" maxlength="254" autocapitalize="none" spellcheck="false"></label>
-      <label class="setting-field"><span id="user-pw-label">Password (8+ characters)</span>
-        <input type="password" name="password" minlength="8" maxlength="72" autocomplete="new-password"></label>
-      <label class="setting-field">Role
-        <select name="role"><option value="player">Player</option><option value="admin">Admin</option></select></label>
-      <p id="users-error" class="settings-error" role="alert" hidden></p>
-      <div class="dialog-actions">
-        <button id="user-form-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
-        <button id="users-close" class="btn btn-ghost" type="button">Close</button>
-        <button class="btn btn-primary" type="submit" id="user-form-submit">Add user</button>
-      </div>
-    </form>
   </div>
 </div>
 

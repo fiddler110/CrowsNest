@@ -1202,3 +1202,19 @@ func TestGamesPageIsAdminOnly(t *testing.T) {
 		t.Errorf("admin /games = %d, want the page", rec.Code)
 	}
 }
+
+func TestSettingsPageIsAdminOnly(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/settings", nil))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+		t.Errorf("player /settings = %d -> %q, want a redirect to /", rec.Code, rec.Header().Get("Location"))
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/settings", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "settings.js") {
+		t.Errorf("admin /settings = %d, want the page", rec.Code)
+	}
+}
