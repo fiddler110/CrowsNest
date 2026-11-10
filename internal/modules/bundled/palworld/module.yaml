@@ -7,6 +7,10 @@ description: "Palworld dedicated server (thijsvanloef/palworld-server-docker) wi
 # thijsvanloef/palworld-server-docker with REST_API_ENABLED=true.
 # Verified against a real container on 2026-09-30.
 
+# Shown on the card of a game enabled from the dashboard.
+connect:
+  - {label: Join password, option: server_password}
+
 runtime:
   # Bringing it back up seconds after a stop segfaulted it once.
   restart_cooldown: 30s

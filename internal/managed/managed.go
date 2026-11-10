@@ -317,6 +317,11 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	if g.DisplayName == "" {
 		g.DisplayName = mf.Name
 	}
+	if rd, err := mf.Render(g, m.Platform); err == nil {
+		if clash := m.portClash(g.ID, rd); clash != "" {
+			return g, nil, errors.New(clash)
+		}
+	}
 	return g, mf, nil
 }
 
@@ -338,6 +343,23 @@ func (m *Manager) find(id string) *entry {
 		}
 	}
 	return nil
+}
+
+// portClash reports a published host port that another dashboard game already uses.
+func (m *Manager) portClash(id string, rd *modules.Rendered) string {
+	for _, o := range m.entries {
+		if o.ID == id || o.rendered == nil {
+			continue
+		}
+		for _, a := range rd.Scope.Ports {
+			for _, b := range o.rendered.Scope.Ports {
+				if a.HostPort == b.HostPort && a.Proto == b.Proto && (a.HostIP == b.HostIP || a.HostIP == "0.0.0.0" || b.HostIP == "0.0.0.0") {
+					return fmt.Sprintf("host port %s/%s is already used by %s: set different ports under More settings", a.HostPort, a.Proto, o.ID)
+				}
+			}
+		}
+	}
+	return ""
 }
 
 func (m *Manager) policy() (*dockerguard.Policy, error) {
@@ -368,10 +390,32 @@ func (m *Manager) renderAndFit(g config.GameConfig, mf *modules.Manifest) (*modu
 	return r, pol.Admit(sc[0])
 }
 
+// withDefaults gives a new game its own data folder: <module folder>-<id>. Two games from one module must
+// never share a folder (they would write the same world), and a new game must not land in a folder an
+// existing hand-set-up server already uses. A folder typed in the form is kept.
+func (m *Manager) withDefaults(r Request) Request {
+	mf, ok := m.Modules.Manifest(r.Module)
+	if !ok || r.Options["data_dir"] != "" || r.ID == "" {
+		return r
+	}
+	base := mf.Runtime.DataDir
+	if base == "" {
+		base = mf.Name
+	}
+	opts := make(map[string]string, len(r.Options)+1)
+	for k, v := range r.Options {
+		opts[k] = v
+	}
+	opts["data_dir"] = base + "-" + r.ID
+	r.Options = opts
+	return r
+}
+
 // Preview renders a Request without changing anything.
 func (m *Manager) Preview(r Request) (*Plan, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	r = m.withDefaults(r)
 	g, mf, err := m.validate(r, false)
 	if err != nil {
 		return nil, err
@@ -402,6 +446,7 @@ func (m *Manager) Preview(r Request) (*Plan, error) {
 func (m *Manager) Enable(r Request) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	r = m.withDefaults(r)
 	g, mf, err := m.validate(r, false)
 	if err != nil {
 		return err
@@ -533,6 +578,17 @@ func (m *Manager) register(e *entry, g config.GameConfig) error {
 		return os.Getenv(name)
 	}
 	def, runners := m.Modules.BuildOne(m.Config, g, m.Wire, lookup)
+	if mf, ok := m.Modules.Manifest(e.Module); ok {
+		for _, c := range mf.Connect {
+			v := e.Secrets[c.Option]
+			if v == "" {
+				v = e.Options[c.Option]
+			}
+			if v != "" {
+				def.ConnectSecrets = append(def.ConnectSecrets, games.ConnectSecret{Label: c.Label, Value: v})
+			}
+		}
+	}
 	if err := m.Registry.Add(def); err != nil {
 		if _, have := m.Registry.Get(g.ID); !have {
 			return err

@@ -23,7 +23,7 @@ import (
 const policy = `
 games_root: /srv/games
 names: ["gs-*", minecraft]
-images: ["docker.io/itzg/*", lloesche/valheim-server]
+images: ["docker.io/itzg/*", lloesche/valheim-server, thijsvanloef/palworld-server-docker]
 networks: [crowsnest-games-net]
 ports: ["25000-26000/tcp", "27000-27999/udp"]
 host_ips: [10.0.0.2]
@@ -124,7 +124,7 @@ func TestEnableAndDisable(t *testing.T) {
 	if !strings.Contains(env, "RCON_PASSWORD=hunter2") || !strings.Contains(env, "EULA=TRUE") || !strings.Contains(env, "MOTD=hi") {
 		t.Errorf("env not resolved: %s", env)
 	}
-	if fd.created[0].Binds[0] != "/srv/games/Minecraft:/data" {
+	if fd.created[0].Binds[0] != "/srv/games/Minecraft-minecraft:/data" {
 		t.Errorf("binds = %v", fd.created[0].Binds)
 	}
 	if _, ok := m.Registry.Get("minecraft"); !ok {
@@ -478,5 +478,50 @@ func TestPolicyEditing(t *testing.T) {
 	}
 	if kept, _ := m.Policy(); !slices.Contains(kept.Policy.Names, "pal-*") || len(kept.Policy.Ports) == 0 {
 		t.Errorf("a refused edit changed the file: %+v", kept.Policy)
+	}
+}
+
+func TestTwoGamesFromOneModule(t *testing.T) {
+	m, fd := newManager(t)
+	a := Request{ID: "gs-one", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+	if err := m.Enable(a); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-one", StateReady)
+	// Same module, default ports: refused, naming the game that holds the port.
+	b := Request{ID: "gs-two", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "y"}}
+	if _, err := m.Preview(b); err == nil || !strings.Contains(err.Error(), "gs-one") {
+		t.Fatalf("a shared host port was accepted: %v", err)
+	}
+	b.Options["ports"] = "25570:25565/tcp"
+	if err := m.Enable(b); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-two", StateReady)
+	var binds []string
+	for _, c := range fd.created {
+		binds = append(binds, c.Binds...)
+	}
+	if len(binds) != 2 || binds[0] == binds[1] {
+		t.Errorf("two games share a data folder: %v", binds)
+	}
+}
+
+func TestJoinPasswordShownOnTheCard(t *testing.T) {
+	m, _ := newManager(t)
+	req := Request{ID: "gs-pal", Module: "palworld", Options: map[string]string{"ports": "27015:8211/udp"},
+		Secrets: map[string]string{"admin_password": "adm", "server_password": "letmein"}}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-pal", StateReady)
+	def, _ := m.Registry.Get("gs-pal")
+	if len(def.ConnectSecrets) != 1 || def.ConnectSecrets[0].Label != "Join password" || def.ConnectSecrets[0].Value != "letmein" {
+		t.Errorf("connect secrets = %+v", def.ConnectSecrets)
+	}
+	for _, g := range m.List() {
+		if b, _ := json.Marshal(g); strings.Contains(string(b), "letmein") {
+			t.Errorf("the join password leaked into the list: %s", b)
+		}
 	}
 }

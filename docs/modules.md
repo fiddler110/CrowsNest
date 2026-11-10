@@ -278,3 +278,11 @@ for the operator to approve outside the dashboard. Steps, each shippable on its 
 4. A Games page: pick a module, fill in its options, see the rendered compose and what falls outside the policy,
    enable.
 5. Remote module sources with signature checks.
+
+## Several servers from one module
+
+You can enable the same module more than once (for example two Valheim worlds) as long as each game has its own id and title. Every game gets its own data folder, named `<module folder>-<id>`, unless you set **Data folder name** under *More settings*. Host ports must differ: a clash with another managed game is refused with a message naming it, and you set different ones in **Published ports** (`host:container/proto`, comma-separated). The operator's policy must allow the names and ports, and memory limits still apply.
+
+## Showing join details on the card
+
+A module can list `connect:` entries (a `label` and the `option` whose value to show), such as the Palworld and Valheim server passwords. They appear on the game's card for admins and are never part of the list API.

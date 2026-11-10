@@ -191,10 +191,21 @@ function buildForm(values = {}) {
   };
   main.forEach((o) => addTo($("options"), o));
   more.forEach((o) => addTo($("options-more"), o));
+  // Every game has these two; they are what keeps two servers of one game apart.
+  const have = new Set(opts.map((o) => o.key));
+  [
+    ["data_dir", "Data folder name", "automatic (one folder per game)"],
+    ["ports", "Published ports (host:container/proto, comma-separated)", "automatic (the game's defaults)"],
+  ].forEach(([key, label, hint]) => {
+    if (have.has(key)) return;
+    addTo($("options-more"), { key, label, auto: true });
+    const f = form.elements["opt:" + key];
+    if (f) f.placeholder = hint;
+  });
   const connect = form.elements.connect_address;
   connect.placeholder = m.connect_hint ? `e.g. ${m.connect_hint}` : "e.g. 10.0.0.2:25565";
   if (!editing && m.connect_hint && !connect.value) connect.value = m.connect_hint;
-  $("more").hidden = !more.length;
+  $("more").hidden = false;
   $("options").hidden = !main.length;
 }
 
@@ -208,7 +219,7 @@ function collect() {
     options: {}, secrets: {},
   };
   if (m.needs_image && form.elements.image.value.trim()) req.options.image = form.elements.image.value.trim();
-  (m.options || []).forEach((o) => {
+  [...(m.options || []), { key: "data_dir" }, { key: "ports" }].forEach((o) => {
     const f = form.elements["opt:" + o.key];
     if (!f) return;
     const v = f.value.trim();

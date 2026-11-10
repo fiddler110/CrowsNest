@@ -36,6 +36,14 @@ type Manifest struct {
 
 	Runtime Runtime `yaml:"runtime"`
 
+	// Connect lists values from a game's options that players need to join (a
+	// join password, an invite code). For games enabled from the dashboard they
+	// are shown on the game's card, as connect_secrets are for config.yaml games.
+	Connect []struct {
+		Label  string `yaml:"label"`
+		Option string `yaml:"option"`
+	} `yaml:"connect"`
+
 	// Backup is the command (run with docker exec) that backs this game up and
 	// the folder its backups land in. Used for games enabled from the dashboard,
 	// whose config has no backup block: execguard allows exactly this command in
