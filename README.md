@@ -5,6 +5,17 @@ start/stop, live logs, status, resource stats — with a built-in guard that
 keeps at most **one** game server running at a time and prompts before
 switching between them.
 
+## Why this exists
+
+CrowsNest is a side project. It started with hosting a Valheim server, then a Windrose server, then a Palworld
+server, for me and a friend we play these with. I didn't want the servers running all the time and eating
+resources on my homelab machine. So this lets either of us start a game server when we want to play, play as long
+as we like, and then stop it, or let it stop itself after a set time with nobody on, so the resources are freed
+up again.
+
+It is built for that: a handful of friends sharing one box, not a hosting business. If that sounds like you,
+it may be useful to you too.
+
 This is a ground-up Go rewrite of the original Python/Flask CrowsNest
 (single-game, Windrose-only), generalized to control multiple games from one
 dashboard. See the [implementation plan](docs/implementation-plan.md) for
