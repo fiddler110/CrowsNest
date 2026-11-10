@@ -71,6 +71,9 @@ Bots are never counted. Without `rcon_addr` the game still starts and stops, but
 
 ## Writing a new module
 
+See the step-by-step [guide to writing a module](writing-modules.md), and check yours with
+`crowsnest module check <dir> --log <captured log>`.
+
 A module may also carry a `backup:` block (`exec`, `list_dir`, `before_stop`, same meaning as the config.yaml block).
 It applies to games enabled from the dashboard only; games in `config.yaml` keep their own.
 

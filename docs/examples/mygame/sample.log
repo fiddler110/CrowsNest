@@ -1,0 +1,8 @@
+# Illustrative lines in the shape a typical server prints. Capture your own with: docker logs <container> > sample.log
+[10:00:01] [INFO] Loading config
+[10:00:03] [INFO] Loading world "Default"
+[10:00:09] [INFO] Server is listening on port 7777
+[10:03:20] [INFO] Alex connected
+[10:04:02] [INFO] Sam connected
+[10:12:40] [INFO] Alex disconnected
+[10:20:11] [INFO] Sam disconnected

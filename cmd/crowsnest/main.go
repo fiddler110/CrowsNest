@@ -61,6 +61,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+	case "module":
+		if len(os.Args) < 3 || os.Args[2] != "check" {
+			fmt.Fprintln(os.Stderr, "usage: crowsnest module check <module.yaml|dir> [--log container.log]")
+			os.Exit(2)
+		}
+		os.Exit(runModuleCheck(os.Args[3:], os.Stdout))
 	case "doctor":
 		cfg, err := config.Load(configPath())
 		if err != nil {
@@ -95,7 +101,7 @@ func main() {
 			log.Fatal(err)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, doctor, execguard, guard, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, doctor, module, execguard, guard, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
 		os.Exit(2)
 	}
 }

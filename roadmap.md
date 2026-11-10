@@ -111,8 +111,10 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   doctor` (Docker access, writable state, policy, cookies, memory), a
   `quickstart/` stack with the guards and no preset games, a history and
   fixture audit (no secrets found; personal details removed from fixtures).
-  License is PolyForm Noncommercial 1.0.0 with a `SECURITY.md`. Still to do before going public: a
-  module-authoring guide, and the author email in git history.
+  License is PolyForm Noncommercial 1.0.0 with a `SECURITY.md`. A module-authoring guide
+  (`docs/writing-modules.md`) and `crowsnest module check <dir> --log` (validates a manifest and replays a
+  captured log) are done. The author email stays in git history by decision. Still to do before going public:
+  hash-pinned remote module install, and the real-server checks in track C.
 - [ ] **Per-game settings** (idle timeout, restart cooldown, max players,
   night opt-out per game, instead of global only). Comes from manifest
   `params` and `runtime`: Phase 1-2, form in Phase 5.

@@ -129,6 +129,11 @@ precedence from then on. Mount a **directory** there so it survives container
 recreation (`${USERDIR}/crowsnest/config:/app/data` in `compose.yaml.example`; it must be
 writable by uid 1000). Delete the file to go back to the `config.yaml` values.
 
+### Adding your own game
+
+A game is one `module.yaml` file, no code. [docs/writing-modules.md](docs/writing-modules.md) walks through writing
+one, and `crowsnest module check` replays a captured log through it so you can see it work before you run the game.
+
 ### Roles
 
 Two roles: **admin** can do everything; **player** can start, stop and switch
