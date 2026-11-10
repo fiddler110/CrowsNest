@@ -44,6 +44,8 @@ type Docker interface {
 	Remove(ctx context.Context, name string) error
 	Exists(ctx context.Context, name string) (bool, error)
 	Running(ctx context.Context, name string) (bool, error)
+	// ImageDigests is a local image's RepoDigests ("repo@sha256:...").
+	ImageDigests(ctx context.Context, image string) ([]string, error)
 }
 
 // Manager owns the dashboard-enabled games.
@@ -73,10 +75,31 @@ type entry struct {
 	Request
 	State string `json:"state"`
 	Error string `json:"error,omitempty"`
+	pin
 
 	rendered *modules.Rendered
 	stop     context.CancelFunc
+	refresh  string // outcome of the last image update: RefreshUpdated or RefreshUpToDate
 }
+
+// pin is the exact image a game runs. A game is pulled by tag, and the digest
+// that tag resolved to is what its container is created from, so an upstream
+// push changes nothing until the operator presses Update image. The digest
+// before the last change is kept for a rollback.
+type pin struct {
+	Image          string `json:"image,omitempty"` // repo:tag the digest was resolved from
+	Digest         string `json:"digest,omitempty"`
+	PreviousDigest string `json:"previous_digest,omitempty"`
+}
+
+// Outcomes of an image update, as Info.Refresh reports them.
+const (
+	RefreshUpdated  = "updated"
+	RefreshUpToDate = "up_to_date"
+)
+
+// ErrNoPrevious is a rollback with nothing to go back to.
+var ErrNoPrevious = errors.New("there is no previous image to roll back to")
 
 // Request is what the dashboard sends to enable a game.
 type Request struct {
@@ -102,6 +125,14 @@ type Info struct {
 	DisplayName    string            `json:"display_name,omitempty"`
 	ConnectAddress string            `json:"connect_address,omitempty"`
 	Options        map[string]string `json:"options,omitempty"`
+	// Image is the tag the game follows (repo:tag); Digest is the exact image it
+	// runs (empty for a game installed before pinning, until its next update);
+	// PreviousDigest is what Rollback goes back to.
+	Image          string `json:"image,omitempty"`
+	Digest         string `json:"digest,omitempty"`
+	PreviousDigest string `json:"previous_digest,omitempty"`
+	// Refresh is how the last Update image ended: "updated" or "up_to_date".
+	Refresh string `json:"refresh,omitempty"`
 }
 
 // Plan is the dry-run of a Request.
@@ -117,6 +148,8 @@ type Plan struct {
 	Ports     []string `json:"ports,omitempty"`   // host_ip:port/proto -> container
 	Folders   []string `json:"folders,omitempty"` // host folders the game stores data in
 	Memory    string   `json:"memory,omitempty"`
+	// Pinning says how the image is held still: the tag is resolved to a digest on install.
+	Pinning string `json:"pinning,omitempty"`
 	// Setup is what the operator has to do on the host for this game, in order.
 	Setup []SetupStep `json:"setup,omitempty"`
 }
@@ -452,7 +485,8 @@ func (m *Manager) Preview(r Request) (*Plan, error) {
 	svc, _ := yaml.Marshal(map[string]any{r.ID: rd.Service})
 	sc, _ := json.MarshalIndent(rd.Scope, "", "  ")
 	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil,
-		Container: rd.Service.ContainerName, Image: rd.Service.Image, Ports: rd.Service.Ports, Memory: rd.Service.MemLimit}
+		Container: rd.Service.ContainerName, Image: rd.Service.Image, Ports: rd.Service.Ports, Memory: rd.Service.MemLimit,
+		Pinning: "Pinned: the container runs the exact image " + rd.Ref() + " points to when it is installed, by digest. Update image moves it on; Roll back returns to the one before."}
 	for _, v := range rd.Service.Volumes {
 		p.Folders = append(p.Folders, strings.SplitN(v, ":", 2)[0])
 	}
@@ -586,42 +620,142 @@ func (m *Manager) install(e *entry, g config.GameConfig, mode installMode) {
 func (m *Manager) doInstall(e *entry, g config.GameConfig, mode installMode) error {
 	m.mu.Lock()
 	rd := e.rendered
-	spec, err := rd.Spec(m.lookup(e))
-	if err == nil {
-		err = m.writeScopes()
-	}
+	ref, repo, name := rd.Ref(), rd.Repo, rd.Service.ContainerName
+	cur := e.pin
+	err := m.writeScopes()
 	m.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if name == "" {
+		name = rd.ID
 	}
 	ctx := m.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	exists, err := m.Docker.Exists(ctx, spec.Name)
+	exists, err := m.Docker.Exists(ctx, name)
 	if err != nil {
 		return err
 	}
-	if exists && mode.recreate {
-		if err := m.Docker.Remove(ctx, spec.Name); err != nil {
+	if exists && !mode.recreate {
+		return m.register(e, g) // a half-finished install whose container is already there
+	}
+	// A pull tolerated when it fails: an edit or rollback can use the image already on the host.
+	tolerant := mode.recreate && !mode.pull
+	pull := func(image string) error {
+		// The guard reloads on its own schedule; until it has our scope it answers 403.
+		err := m.retryDenied(ctx, func() error { return m.Docker.Pull(ctx, image) })
+		if err != nil && tolerant && !dockerctl.IsDenied(err) {
+			log.Printf("managed: pull %s failed, using the local image: %v", image, err)
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("pull %s: %w", image, err)
+		}
+		return nil
+	}
+
+	next := cur
+	if mode.pull || cur.Digest == "" || cur.Image != ref {
+		// Follow the tag: pull it and pin what it resolves to now.
+		before := cur.Digest
+		if before == "" && exists {
+			before, _ = m.digestOf(ctx, ref, repo) // an install from before pinning: what the tag pointed to until now
+		}
+		if cur.Image != "" && cur.Image != ref && !sameRepo(cur.Image, repo) {
+			before = "" // another repository: its digests mean nothing here
+		}
+		if err := pull(ref); err != nil {
+			if exists {
+				// The old container was never touched: keep the game on the dashboard as it was.
+				if rerr := m.register(e, g); rerr != nil {
+					log.Printf("managed: %s: %v", e.ID, rerr)
+				}
+			}
+			return err
+		}
+		d, derr := m.digestOf(ctx, ref, repo)
+		if derr != nil {
+			log.Printf("managed: %s: no digest to pin, running the tag: %v", e.ID, derr)
+		}
+		next = pin{Image: ref, Digest: d, PreviousDigest: cur.PreviousDigest}
+		if cur.Image != "" && !sameRepo(cur.Image, repo) {
+			next.PreviousDigest = ""
+		}
+		if before != "" && d != "" && before != d {
+			next.PreviousDigest = before
+		}
+		if mode.pull {
+			m.mu.Lock()
+			e.refresh = RefreshUpdated
+			if d != "" && d == before {
+				e.refresh = RefreshUpToDate // the same image (an older install is still recreated once, to pin it)
+			}
+			if d != "" && d == cur.Digest && exists {
+				// Nothing new upstream: the container stays exactly as it is.
+				e.refresh = RefreshUpToDate
+				m.mu.Unlock()
+				return m.register(e, g)
+			}
+			m.mu.Unlock()
+		}
+	} else if _, ierr := m.Docker.ImageDigests(ctx, repo+"@"+cur.Digest); ierr != nil {
+		// Pinned, but the image is not on the host (pruned): fetch exactly that one.
+		if err := pull(repo + "@" + cur.Digest); err != nil {
+			return err
+		}
+	}
+
+	m.mu.Lock()
+	e.pin = next
+	rd.Pin(next.Digest)
+	spec, err := rd.Spec(m.lookup(e))
+	if err == nil {
+		err = m.save()
+	}
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if exists {
+		if err := m.Docker.Remove(ctx, name); err != nil {
 			return fmt.Errorf("remove the old container: %w", err)
 		}
-		exists = false
 	}
-	if !exists {
-		// The guard reloads on its own schedule; until it has our scope it answers 403.
-		if err := m.retryDenied(ctx, func() error { return m.Docker.Pull(ctx, spec.Image) }); err != nil {
-			if mode.recreate && !mode.pull && !dockerctl.IsDenied(err) {
-				log.Printf("managed: pull %s failed, using the local image: %v", spec.Image, err)
-			} else {
-				return fmt.Errorf("pull %s: %w", spec.Image, err)
-			}
-		}
-		if err := m.retryDenied(ctx, func() error { return m.Docker.Create(ctx, spec) }); err != nil {
-			return fmt.Errorf("create container: %w", err)
-		}
+	if err := m.retryDenied(ctx, func() error { return m.Docker.Create(ctx, spec) }); err != nil {
+		return fmt.Errorf("create container: %w", err)
 	}
 	return m.register(e, g)
+}
+
+// digestOf is the registry digest (sha256:...) the local image ref carries for repo.
+func (m *Manager) digestOf(ctx context.Context, ref, repo string) (string, error) {
+	list, err := m.Docker.ImageDigests(ctx, ref)
+	if err != nil {
+		return "", err
+	}
+	want, _, _, err := dockerguard.ParseImageRef(repo)
+	if err != nil {
+		return "", err
+	}
+	for _, rd := range list {
+		name, d, ok := strings.Cut(rd, "@")
+		if !ok || !dockerguard.IsDigest(d) {
+			continue
+		}
+		if r, _, _, err := dockerguard.ParseImageRef(name); err == nil && r == want {
+			return d, nil
+		}
+	}
+	return "", fmt.Errorf("%s has no registry digest for %s (built locally?)", ref, repo)
+}
+
+// sameRepo reports whether the tag reference ref names repository repo.
+func sameRepo(ref, repo string) bool {
+	a, _, _, err1 := dockerguard.ParseImageRef(ref)
+	b, _, _, err2 := dockerguard.ParseImageRef(repo)
+	return err1 == nil && err2 == nil && a == b
 }
 
 func (m *Manager) retryDenied(ctx context.Context, f func() error) error {
@@ -706,15 +840,30 @@ func (m *Manager) register(e *entry, g config.GameConfig) error {
 // Update changes an enabled game's settings and recreates its container with
 // them. The module cannot change. Secrets left out keep their stored value.
 // The game must be stopped; its data folder is untouched.
-func (m *Manager) Update(r Request) error { return m.reinstall(r, false) }
+func (m *Manager) Update(r Request) error { return m.reinstall(r, opEdit) }
 
-// Refresh pulls the game's image again and recreates its container with the
-// same settings.
-func (m *Manager) Refresh(id string) error { return m.reinstall(Request{ID: id}, true) }
+// Refresh pulls the game's image tag again and, only if it now points at
+// another image, recreates the container on that digest (the old one becomes
+// the rollback target). List reports the outcome in Info.Refresh once done.
+func (m *Manager) Refresh(id string) error { return m.reinstall(Request{ID: id}, opRefresh) }
+
+// Rollback recreates a stopped game's container on its previous image digest,
+// and makes the current one the previous (so a second rollback undoes it).
+// ErrNoPrevious when there is none.
+func (m *Manager) Rollback(id string) error { return m.reinstall(Request{ID: id}, opRollback) }
 
 var errBusy = errors.New("the game is starting or stopping; wait for it to finish")
 
-func (m *Manager) reinstall(r Request, refresh bool) error {
+type reinstallOp int
+
+const (
+	opEdit reinstallOp = iota
+	opRefresh
+	opRollback
+)
+
+func (m *Manager) reinstall(r Request, op reinstallOp) error {
+	refresh := op != opEdit
 	if m.Busy != nil && m.Busy(r.ID) {
 		return errBusy
 	}
@@ -735,6 +884,9 @@ func (m *Manager) reinstall(r Request, refresh bool) error {
 	}
 	if e.State == StateInstalling {
 		return errors.New("the game is still installing")
+	}
+	if op == opRollback && (e.PreviousDigest == "" || e.Image == "") {
+		return ErrNoPrevious
 	}
 	next := e.Request
 	if !refresh {
@@ -765,11 +917,14 @@ func (m *Manager) reinstall(r Request, refresh bool) error {
 		e.stop = nil
 	}
 	m.Registry.Remove(e.ID)
-	e.Request, e.rendered, e.State, e.Error = next, rd, StateInstalling, ""
+	e.Request, e.rendered, e.State, e.Error, e.refresh = next, rd, StateInstalling, "", ""
+	if op == opRollback {
+		e.Digest, e.PreviousDigest = e.PreviousDigest, e.Digest
+	}
 	if err := m.save(); err != nil {
 		return err
 	}
-	go m.install(e, g, installMode{recreate: true, pull: refresh})
+	go m.install(e, g, installMode{recreate: true, pull: op == opRefresh})
 	return nil
 }
 
@@ -829,8 +984,13 @@ func (m *Manager) List() []Info {
 		for k, v := range e.Options {
 			opts[k] = v
 		}
-		out = append(out, Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error,
-			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Options: opts})
+		in := Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error,
+			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Options: opts,
+			Image: e.Image, Digest: e.Digest, PreviousDigest: e.PreviousDigest, Refresh: e.refresh}
+		if in.Image == "" && e.rendered != nil {
+			in.Image = e.rendered.Ref()
+		}
+		out = append(out, in)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -839,11 +999,14 @@ func (m *Manager) List() []Info {
 // ---- persistence
 
 type stateFile struct {
-	Games []struct {
-		Request
-		State string `json:"state"`
-		Error string `json:"error,omitempty"`
-	} `json:"games"`
+	Games []savedGame `json:"games"`
+}
+
+type savedGame struct {
+	Request
+	State string `json:"state"`
+	Error string `json:"error,omitempty"`
+	pin
 }
 
 func (m *Manager) path(name string) string { return filepath.Join(m.Dir, name) }
@@ -855,11 +1018,7 @@ func (m *Manager) save() error {
 	for _, e := range m.entries {
 		req := e.Request
 		req.Secrets = nil
-		st.Games = append(st.Games, struct {
-			Request
-			State string `json:"state"`
-			Error string `json:"error,omitempty"`
-		}{req, e.State, e.Error})
+		st.Games = append(st.Games, savedGame{req, e.State, e.Error, e.pin})
 		if len(e.Secrets) > 0 {
 			secrets[e.ID] = e.Secrets
 		}
@@ -946,9 +1105,12 @@ func (m *Manager) Restore(ctx context.Context) error {
 		req := s.Request
 		req.Secrets = secrets[req.ID]
 		g, mf, err := m.validate(req, true)
-		e := &entry{Request: req, State: s.State, Error: s.Error}
+		e := &entry{Request: req, State: s.State, Error: s.Error, pin: s.pin}
 		if err == nil {
 			e.rendered, err = mf.Render(g, m.Platform)
+		}
+		if err == nil && e.Digest != "" && e.Image == e.rendered.Ref() {
+			e.rendered.Pin(e.Digest)
 		}
 		if err != nil {
 			log.Printf("managed: %s no longer renders: %v", req.ID, err)
@@ -1013,6 +1175,8 @@ type PolicyDoc struct {
 	Exec      bool     `json:"exec" yaml:"exec"`
 	Labels    []string `json:"labels" yaml:"labels,omitempty"`
 	MaxScopes int      `json:"max_scopes" yaml:"max_scopes"`
+	// PinDigests: managed creates must name their image by digest. Nil in a save keeps what the file has.
+	PinDigests *bool `json:"pin_digests,omitempty" yaml:"pin_digests"`
 	// Exceptions are shown, never edited here: SetPolicy keeps whatever the file has.
 	Exceptions []dockerguard.Exception `json:"exceptions,omitempty" yaml:"exceptions,omitempty"`
 }
@@ -1032,6 +1196,7 @@ func (m *Manager) Policy() (PolicyState, error) {
 	return PolicyState{Editable: m.PolicyEditable, Policy: PolicyDoc{
 		GamesRoot: p.GamesRoot, Names: p.Names, Images: p.Images, Networks: p.Networks, Ports: p.Ports,
 		HostIPs: p.HostIPs, Exec: p.Exec, Labels: p.Labels, MaxScopes: p.MaxScopes, Exceptions: p.Exceptions,
+		PinDigests: &p.PinDigests,
 	}}, nil
 }
 
@@ -1043,8 +1208,13 @@ func (m *Manager) SetPolicy(d PolicyDoc) error {
 	}
 	// An exception loosens the guard for one container, so only the file on the host can add or change one.
 	d.Exceptions = nil
-	if cur, err := m.policy(); err == nil {
+	cur, curErr := m.policy()
+	if curErr == nil {
 		d.Exceptions = cur.Exceptions
+	}
+	if d.PinDigests == nil { // not sent: keep the file's setting
+		keep := curErr == nil && cur.PinDigests
+		d.PinDigests = &keep
 	}
 	body, err := yaml.Marshal(d)
 	if err != nil {

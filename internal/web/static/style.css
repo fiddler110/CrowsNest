@@ -525,6 +525,10 @@ h1, h2, h3, p { margin: 0; }
 .fleet-title h3 { margin: 0; font-size: 1.05rem; }
 .fleet-sub { color: var(--muted); font-size: 0.82rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .fleet-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; }
+.fleet-image { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.5rem; margin: 0; color: var(--muted); font-size: 0.8rem; min-width: 0; }
+.fleet-image-tag { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 100%; }
+.fleet-digest { font: 0.78rem var(--mono); padding: 0.05rem 0.35rem; border: 1px solid var(--border); border-radius: 4px; color: var(--cyan); }
+.fleet-image-note { font-style: italic; }
 .fleet-actions .btn { padding: 0.3rem 0.7rem; font-size: 0.82rem; }
 .tag { font: 0.7rem var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 0.15rem 0.55rem; }
 

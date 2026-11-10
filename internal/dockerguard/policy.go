@@ -45,6 +45,11 @@ type Policy struct {
 	Labels []string `yaml:"labels"`
 	// MaxScopes bounds how many managed scopes load (default 32).
 	MaxScopes int `yaml:"max_scopes"`
+	// PinDigests makes every create from a managed scope name its image by
+	// digest (repo@sha256:...), so an upstream push to a tag cannot change what
+	// a dashboard game runs. Pulls by tag stay allowed (that is how a new digest
+	// is found). The operator's own GUARD_SCOPES are not affected.
+	PinDigests bool `yaml:"pin_digests"`
 	// Exceptions let one named container do what the envelope otherwise never
 	// allows (a LAN address, a pinned IPv4, a relaxed seccomp profile). Each is
 	// exact: one name, one image, the networks and addresses listed, the

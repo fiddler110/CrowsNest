@@ -72,15 +72,18 @@ func FuzzCheckBody(f *testing.F) {
 		`{"Image": "alpine", "HostConfig": {"Privileged": true, "Binds": ["/:/host"]}}`,
 		`{"Cmd": ["status"], "AttachStdout": true, "AttachStdin": true, "User": "", "Privileged": false}`,
 		`{"Detach": false, "Tty": false, "ConsoleSize": [24, 80]}`,
+		`{"Image": "thijsvanloef/palworld-server-docker:latest@DIGEST", "HostConfig": {"NetworkMode": "crowsnest-games-net"}}`,
+		`{"Image": "docker.io/thijsvanloef/palworld-server-docker@DIGEST", "HostConfig": {"NetworkMode": "crowsnest-games-net"}}`,
 		`{"Source": "/ok", "source": "/"}`, `{"a": {"b": {"c": [1, 2.5, -0, 1e3]}}}`, `null`, `[]`, `"x"`,
 	} {
-		for kind := uint8(0); kind < 5; kind++ {
+		for kind := uint8(0); kind < 6; kind++ {
 			f.Add([]byte(fill.Replace(s)), kind)
 		}
 	}
 	h := newHarness(f, scopesJSON)
+	pinned := newHarness(f, scopesJSON, pinPalworld) // palworld as a managed scope under pin_digests
 	check := func(kind uint8, body any) error {
-		switch kind % 5 {
+		switch kind % 6 {
 		case 0:
 			return h.g.checkCreate(query{pairs: [][2]string{{"name", "palworld"}}, vals: map[string][]string{"name": {"palworld"}}}, body)
 		case 1:
@@ -88,6 +91,8 @@ func FuzzCheckBody(f *testing.F) {
 		case 2:
 			tmp := valID[:12] + "_valheim"
 			return h.g.checkCreate(query{pairs: [][2]string{{"name", tmp}}, vals: map[string][]string{"name": {tmp}}}, body)
+		case 5:
+			return pinned.g.checkCreate(query{pairs: [][2]string{{"name", "palworld"}}, vals: map[string][]string{"name": {"palworld"}}}, body)
 		case 3:
 			_, err := h.g.checkPost("/containers/valheim/exec", query{vals: map[string][]string{}}, body, new(string))
 			return err

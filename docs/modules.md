@@ -144,6 +144,7 @@ ports: ["27000-28999/udp", "25565/tcp"]  # host ports and protocol
 host_ips: [10.0.0.2]                   # optional: limits the address ports are published on
 exec: false                            # may managed scopes use docker exec (save-on-stop hooks need it)
 labels: []                             # extra labels they may require (the watchtower opt-out is always fine)
+pin_digests: true                      # managed creates must name the image by digest (see "Image pinning" below)
 max_scopes: 32
 ```
 
@@ -212,7 +213,8 @@ Admin-only endpoints (the page that uses them is step 4):
 | `POST /api/managed/preview` | dry run: the rendered compose service, the guard scope, and whether it fits the policy (and why not) |
 | `POST /api/managed/games` | enable: `{id, module, display_name, options, secrets}` |
 | `PUT /api/managed/games/{id}` | change a **stopped** game's settings (`display_name`, `connect_address`, `options`, `secrets`); the container is recreated, the module cannot change, secrets left out keep their stored value |
-| `POST /api/managed/games/{id}/refresh` | pull the image again and recreate the container with the same settings |
+| `POST /api/managed/games/{id}/refresh` | pull the image tag again; only if it now points to another image, recreate the container on that digest (the game must be stopped) |
+| `POST /api/managed/games/{id}/rollback` | recreate a **stopped** game on its previous digest and swap the two; 409 when there is none, or while it is running, starting or stopping |
 | `DELETE /api/managed/games/{id}` | disable a **stopped** game: removes the container, scope and secrets; the data folder is kept |
 
 How enabling works: validate against the module (unknown options, secrets sent as plain options, missing required
@@ -228,10 +230,38 @@ so a game that did not finish installing is finished on the next start.
   is pointed at the stored value automatically. Modules receive them through a lookup, not the process environment.
 - The panel cannot widen what it may do: the guard re-checks every scope against the policy, so a panel that wrote an
   out-of-policy scope would simply not have it loaded.
-- Updates and edits recreate the container (the data folder is a bind mount, so nothing is lost). An unreachable
-  registry is tolerated on an edit if the image is already local, but not on a refresh. Pull-on-start for managed
+- Edits, rollbacks and updates that bring a new image recreate the container (the data folder is a bind mount, so nothing is lost). An unreachable
+  registry is tolerated on an edit or rollback if the image is already local, but not on a refresh. Pull-on-start for managed
   games is not wired: use refresh.
-- Not yet: the Games page (step 4).
+
+### Image pinning and rollback
+
+A module names its image by tag (`runtime.tag`, default `latest`), and a tag moves whenever upstream pushes. So a
+dashboard game is pulled by tag once, and its container is created from the exact image that tag resolved to:
+`image: repo@sha256:...`. Nothing changes until an admin presses **Update image**.
+
+- **Where the digest comes from.** After pulling `repo:tag`, the panel inspects the image (the guard already lets it
+  read scope images) and takes the `RepoDigests` entry for that repository. It is kept in `games.json` as `image`
+  (the `repo:tag` it was resolved from), `digest`, and `previous_digest` (what the digest was before the last change).
+  `GET /api/managed/games` lists the three, plus `refresh` (`updated` or `up_to_date`) once an Update image finishes.
+- **Update image** pulls the tag again. Same digest: the container is left alone and the page says it is already up to
+  date. New digest: the container is recreated on it and the old digest becomes `previous_digest`. A failed pull
+  leaves the old container untouched.
+- **Roll back** (shown when there is a previous digest) recreates the container on `previous_digest` and swaps the two,
+  so rolling back again returns to the newer image. The game must be stopped. A world saved by a newer server version
+  may not load in an older one: back up first. Rolling back needs the old image: it is pulled by digest if it was pruned.
+- **Edits** (Settings) recreate on the pinned digest; they only follow the tag when you change `image` or `tag`.
+- **Games installed before pinning** keep running as they are, by tag. Their first Update image (or an edit) resolves
+  and stores a digest; the image they ran until then becomes the rollback target if the update brings a new one.
+- An image with no registry digest (built locally) cannot be pinned: it keeps running by tag, which `pin_digests`
+  refuses.
+
+`pin_digests: true` in `policy.yaml` makes the guard enforce it: a create from a **managed** scope must name its image as
+`repo@sha256:<64 hex>` (no tag), otherwise it is refused with `image ... must be pinned by digest ... the policy sets
+pin_digests`. Pulls by tag stay allowed (that is how a new digest is found). The operator's own `GUARD_SCOPES` are not
+affected, and a scope cannot switch it off for itself (it is not a scope key). Scopes name repositories only, so
+`Policy.Admit` and the catalogue's verdicts do not change. Settings shows the setting; a dashboard save that does not
+send it keeps what the file has.
 
 ### Options that fill themselves in
 
@@ -245,8 +275,10 @@ under "More settings" with an "automatic" placeholder; typing a value there over
 
 Admins get a **Games** link in the header, opening `/games`. It lists the games enabled from the dashboard (installing, ready or
 failed, with the error), and has a form to add one: pick a module, an id, the module's options (secret options are
-password fields), then **Preview** to see whether it fits the policy before **Enable**. Per game: **Edit** (recreates
-the container; leaving a secret empty keeps it), **Update image**, and **Disable** (the data folder is kept). When an
+password fields), then **Preview** to see whether it fits the policy before **Enable**. Each game shows the tag it
+follows and the first 12 characters of the digest it runs. Per game: **Edit** (recreates the container; leaving a
+secret empty keeps it), **Update image** (says whether there was anything new), **Roll back** (when there is a
+previous image), and **Disable** (the data folder is kept). When an
 install finishes the page reloads so the game's card appears. It talks to `/api/managed/*`; without `managed.dir` the
 dialog says the feature is off.
 

@@ -20,12 +20,41 @@ let fitOK = false;
 let installId = null;
 let pollTimer = null;
 let seenInstalling = {};
+const pendingImage = {}; // game id -> "refresh" | "rollback", reported once the game settles
 
 const moduleById = (id) => modules.find((m) => m.id === id);
 const showError = (msg) => { $("form-error").textContent = msg; $("form-error").hidden = !msg; };
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^[^a-z]+/, "").slice(0, 31);
 
 // ---------- fleet ----------
+const shortDigest = (d) => (d || "").replace(/^sha256:/, "").slice(0, 12);
+
+// The image line of a card: the tag it follows and the exact image (digest) it runs.
+function imageLine(g) {
+  const p = el("p", "fleet-image");
+  if (g.image) p.append(el("span", "fleet-image-tag", g.image));
+  if (g.digest) {
+    const d = el("code", "fleet-digest", shortDigest(g.digest));
+    d.title = g.digest;
+    p.append(d);
+  } else if (g.state !== "installing") {
+    p.append(el("span", "fleet-image-note", "not pinned yet: Update image pins it"));
+  }
+  return p;
+}
+
+// reportImage tells the outcome of an Update image or Roll back once the game has settled.
+function reportImage(g) {
+  const kind = pendingImage[g.id];
+  if (!kind || g.state === "installing") return;
+  delete pendingImage[g.id];
+  const name = g.display_name || g.id;
+  if (g.state === "failed") { toast(`${name}: ${g.error || "the image change failed"}`, "error"); return; }
+  if (kind === "rollback") toast(`${name} rolled back to ${shortDigest(g.digest)}.`, "ok");
+  else if (g.refresh === "up_to_date") toast(`${name} is already up to date.`, "info");
+  else toast(`${name} updated${g.digest ? " to " + shortDigest(g.digest) : ""}.`, "ok");
+}
+
 function stateBadge(state) {
   const b = el("span", "status status-" + (state === "ready" ? "online" : state === "failed" ? "unknown" : "starting"));
   b.append(el("i", "beacon"), el("span", "status-text", state === "installing" ? "installing…" : state));
@@ -50,6 +79,7 @@ function renderFleet(configured) {
   games.forEach((g) => {
     const m = moduleById(g.module);
     const c = fleetCard(g.display_name || g.id, `${m ? m.name : g.module} · added here`, stateBadge(g.state));
+    c.append(imageLine(g));
     if (g.state === "failed" && g.error) c.append(el("p", "settings-error", g.error.slice(-300)));
     const row = el("div", "fleet-actions");
     const busy = g.state === "installing";
@@ -63,13 +93,33 @@ function renderFleet(configured) {
       const ok = await confirmAction({
         eyebrow: "// refit",
         title: `Update ${name}?`,
-        message: "This pulls the latest image and recreates the container, so a running server restarts and players are disconnected. The data folder is kept.",
+        message: `This pulls ${g.image || "the image"} again. If it points to a new image, the container is recreated on it (the game must be stopped; the data folder is kept) and the current image is kept for Roll back. If nothing changed, the container is left alone.`,
         confirmLabel: "Update image",
       });
       if (!ok) return;
       upd.disabled = true;
       const res = await callAPI(`/api/managed/games/${encodeURIComponent(g.id)}/refresh`, { method: "POST" });
-      if (!res.ok) toast(await errorText(res, "Update"), "error"); else toast(`${name}: pulling the latest image…`, "info");
+      if (!res.ok) toast(await errorText(res, "Update"), "error");
+      else { pendingImage[g.id] = "refresh"; toast(`${name}: checking for a new image…`, "info"); }
+      await loadGames();
+    });
+    const back = el("button", "btn btn-ghost", "Roll back");
+    back.type = "button"; back.disabled = busy;
+    back.hidden = !g.previous_digest;
+    back.addEventListener("click", async () => {
+      const name = g.display_name || g.id;
+      const ok = await confirmAction({
+        eyebrow: "// roll back",
+        title: `Roll ${name} back?`,
+        message: `The container is recreated on the image it ran before (${shortDigest(g.previous_digest)} instead of ${shortDigest(g.digest)}). The game must be stopped; the data folder is kept, but a world already saved by the newer version may not load in the older one. Rolling back again returns to the current image.`,
+        confirmLabel: "Roll back",
+      });
+      if (!ok) return;
+      back.disabled = true;
+      const res = await callAPI(`/api/managed/games/${encodeURIComponent(g.id)}/rollback`, { method: "POST" });
+      if (!res.ok) { toast(await errorText(res, "Roll back"), "error"); back.disabled = false; return; }
+      pendingImage[g.id] = "rollback";
+      toast(`${name}: rolling back…`, "info");
       await loadGames();
     });
     const del = el("button", "btn btn-danger", "Disable");
@@ -90,7 +140,7 @@ function renderFleet(configured) {
       toast(`${name} disabled.`, "ok");
       await loadGames();
     });
-    row.append(edit, upd, del);
+    row.append(edit, upd, back, del);
     c.append(row);
     root.append(c);
   });
@@ -115,6 +165,7 @@ async function loadGames() {
   // A game that was installing and is now ready or failed finishes the progress view.
   games.forEach((g) => {
     if (g.state === "installing") seenInstalling[g.id] = true;
+    reportImage(g);
   });
   renderFleet(configured);
   if (installId) updateProgress();
@@ -284,7 +335,7 @@ async function runPreview() {
   $("sum-status").className = "sum-status " + (p.fits ? "ok" : "no");
   $("sum-status").textContent = p.fits ? "✓ Allowed by the operator's policy" : "✗ Outside the policy: " + (p.reason || "not allowed");
   sumRow(dl, "Container", [p.container]);
-  sumRow(dl, "Image", [p.image]);
+  sumRow(dl, "Image", [p.image, p.pinning ? "pinned by digest when installed" : ""].filter(Boolean));
   sumRow(dl, "Ports", p.ports);
   sumRow(dl, "Data folder", p.folders);
   sumRow(dl, "Memory limit", p.memory ? [p.memory] : []);

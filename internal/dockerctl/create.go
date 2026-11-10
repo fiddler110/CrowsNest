@@ -179,7 +179,9 @@ func (c *Client) Remove(ctx context.Context, name string) error {
 // failures inside a 200 stream, so the stream is read for an error line.
 func (c *Client) Pull(ctx context.Context, image string) error {
 	repo, tag := image, "latest"
-	if i := strings.LastIndex(image, ":"); i > strings.LastIndex(image, "/") {
+	if r, d, ok := strings.Cut(image, "@"); ok {
+		repo, tag = r, d // by digest: the engine takes the digest as the tag parameter
+	} else if i := strings.LastIndex(image, ":"); i > strings.LastIndex(image, "/") {
 		repo, tag = image[:i], image[i+1:]
 	}
 	ctx, cancel := c.opCtx(ctx, 30*time.Minute)
@@ -200,4 +202,24 @@ func (c *Client) Pull(ctx context.Context, image string) error {
 		}
 	}
 	return sc.Err()
+}
+
+// ImageDigests is the RepoDigests of a local image ("repo@sha256:..." as the
+// engine writes them): what a pulled tag resolved to.
+func (c *Client) ImageDigests(ctx context.Context, image string) ([]string, error) {
+	if c.useCLI() {
+		return nil, fmt.Errorf("dockerctl: image inspect needs the Engine API, but this client is configured for the docker CLI")
+	}
+	ctx, cancel := c.opCtx(ctx, 30*time.Second)
+	defer cancel()
+	resp, err := c.get(ctx, "/images/"+image+"/json", nil) // the engine reads the repository's slashes as part of the name
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	var out struct{ RepoDigests []string }
+	if err := json.NewDecoder(io.LimitReader(resp.Body, 4<<20)).Decode(&out); err != nil {
+		return nil, fmt.Errorf("dockerctl: decode image inspect %s: %w", image, err)
+	}
+	return out.RepoDigests, nil
 }

@@ -444,6 +444,12 @@ func (g *Guard) checkCreate(q query, body any) error {
 	if repo := repoOrNone(image); repo == "" || !scope.Images[repo] {
 		return deny(403, "image %s is not allowed for %s", quote(image), quote(name))
 	}
+	if scope.pinDigest {
+		// repoOrNone accepted it, so it is a string that parses
+		if _, tag, digest, _ := parseRef(image.(string)); digest == "" || tag != "" {
+			return deny(403, "image %s for %s must be pinned by digest (repo@sha256:<64 hex>, no tag): the policy sets pin_digests", quote(image), quote(name))
+		}
+	}
 	host, err := checkObject(obj["HostConfig"], hostConfigRules(scope), "HostConfig")
 	if err != nil {
 		return err
