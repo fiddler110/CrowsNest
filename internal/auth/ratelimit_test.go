@@ -105,3 +105,18 @@ func TestParseTrustedProxies_Invalid(t *testing.T) {
 		t.Fatal("ParseTrustedProxies() error = nil, want error for an invalid CIDR")
 	}
 }
+
+func TestClientIP_SpoofedLeftmostXFFIgnored(t *testing.T) {
+	trusted, err := ParseTrustedProxies([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("ParseTrustedProxies() error = %v", err)
+	}
+	r := httptest.NewRequest(http.MethodGet, "/", nil)
+	r.RemoteAddr = "10.0.0.2:1234"
+	// The client sent 1.1.1.1; the proxy appended the real peer and a hop.
+	r.Header.Set("X-Forwarded-For", "1.1.1.1, 198.51.100.7, 10.0.0.3")
+
+	if got := ClientIP(r, trusted); got != "198.51.100.7" {
+		t.Fatalf("ClientIP() = %q, want 198.51.100.7 (right-most untrusted)", got)
+	}
+}

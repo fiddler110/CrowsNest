@@ -238,6 +238,7 @@ func serve() error {
 		mgr := &managed.Manager{
 			Dir: cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, Platform: modules.PlatformFrom(cfg.Platform),
 			Modules: mods, Config: cfg, Docker: docker, Wire: docker, Registry: registry,
+			Busy: func(id string) bool { return exclusivityMgr.Starting(id) || exclusivityMgr.Stopping(id) },
 		}
 		if err := mgr.Restore(ctx); err != nil {
 			return fmt.Errorf("managed games: %w", err)
@@ -349,7 +350,7 @@ func serve() error {
 	// stop already under way is not interrupted: it runs on the docker
 	// daemon, and the process only waits briefly for it.
 	waited := make(chan struct{})
-	go func() { exclusivityMgr.Wait(); close(waited) }()
+	go func() { exclusivityMgr.Wait(); backups.Wait(); close(waited) }()
 	select {
 	case <-waited:
 	case <-time.After(10 * time.Second):
