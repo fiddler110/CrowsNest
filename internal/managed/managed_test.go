@@ -162,6 +162,15 @@ func TestEnableAndDisable(t *testing.T) {
 		t.Error("a running game was disabled")
 	}
 	fd.running["minecraft"] = false
+	// A start still pulling has no running container yet: the start/stop manager says it is busy.
+	m.Busy = func(id string) bool { return id == "minecraft" }
+	if err := m.Disable("minecraft"); err == nil || fd.have["minecraft"] == false {
+		t.Errorf("disabled a game that is starting or stopping: err=%v", err)
+	}
+	if err := m.Update(Request{ID: "minecraft", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}}); err == nil {
+		t.Error("changed a game that is starting or stopping")
+	}
+	m.Busy = nil
 	if err := m.Disable("minecraft"); err != nil {
 		t.Fatal(err)
 	}
