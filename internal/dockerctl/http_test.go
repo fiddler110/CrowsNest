@@ -317,7 +317,7 @@ func TestHTTP_StatsSlowThenCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := Stats{CPUPercent: "40.00", MemUsed: "2GiB", MemTotal: "16GiB", MemPercent: "12.50"}
+	want := Stats{CPUPercent: "40.00", MemUsed: "2GiB", MemTotal: "16GiB", MemPercent: "12.50", MemUsedBytes: 2 << 30}
 	if s != want {
 		t.Fatalf("slow Stats = %+v, want %+v", s, want)
 	}
@@ -326,7 +326,7 @@ func TestHTTP_StatsSlowThenCached(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want = Stats{CPUPercent: "10.00", MemUsed: "2GiB", MemTotal: "16GiB", MemPercent: "12.50"}
+	want = Stats{CPUPercent: "10.00", MemUsed: "2GiB", MemTotal: "16GiB", MemPercent: "12.50", MemUsedBytes: 2 << 30}
 	if s != want {
 		t.Fatalf("cached Stats = %+v, want %+v", s, want)
 	}

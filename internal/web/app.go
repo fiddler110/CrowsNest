@@ -25,6 +25,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/hoststats"
+	"github.com/fiddler110/crowsnest/internal/memadmit"
 	"github.com/fiddler110/crowsnest/internal/memo"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
@@ -706,6 +707,12 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
 		return
 	}
+	var mem *memadmit.Error
+	if errors.As(err, &mem) {
+		log.Printf("audit: %s start %s refused: %v", actor(r), d.ID, err)
+		writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": mem.Error()})
+		return
+	}
 	var cooldown *exclusivity.CooldownError
 	if errors.As(err, &cooldown) {
 		w.Header().Set("Retry-After", strconv.Itoa(int(cooldown.Remaining.Seconds())+1))
@@ -761,6 +768,11 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		var busy *exclusivity.BusyError
 		if errors.As(err, &busy) {
 			writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
+			return
+		}
+		var mem *memadmit.Error
+		if errors.As(err, &mem) {
+			writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": mem.Error()})
 			return
 		}
 		var cooldown *exclusivity.CooldownError
@@ -846,7 +858,8 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 // details (docker command lines, compose paths, stderr) stay in the log.
 func publicError(err error) string {
 	var busy *exclusivity.BusyError
-	if errors.As(err, &busy) {
+	var mem *memadmit.Error
+	if errors.As(err, &busy) || errors.As(err, &mem) {
 		return err.Error()
 	}
 	return "the request could not be completed; see the CrowsNest log for details"

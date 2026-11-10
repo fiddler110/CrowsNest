@@ -220,6 +220,10 @@ func serve() error {
 	backups := &backup.Manager{Docker: docker, History: activity, BaseContext: ctx}
 	exclusivityMgr.Backups = backups
 	exclusivityMgr.MaxActiveFunc = func() int { return settingsStore.Get().MaxActiveGames }
+	if budget := newMemoryBudget(cfg, registry); budget != nil {
+		exclusivityMgr.Memory = budget
+		go sampleMemory(ctx, budget, docker, registry)
+	}
 	exclusivityMgr.AutoUpdate = func() bool { return settingsStore.Get().AutoUpdate }
 	// Background starts (compose pull/up) belong to the process, not to the
 	// HTTP request that asked for them; shutdown cancels them.

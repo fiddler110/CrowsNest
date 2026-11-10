@@ -549,10 +549,11 @@ func (c *Client) Stats(ctx context.Context, name string) (Stats, error) {
 		memPct = float64(used) / float64(sr.MemoryStats.Limit) * 100
 	}
 	return Stats{
-		CPUPercent: fmt.Sprintf("%.2f", cpu),
-		MemUsed:    bytesSize(float64(used)),
-		MemTotal:   bytesSize(float64(sr.MemoryStats.Limit)),
-		MemPercent: fmt.Sprintf("%.2f", memPct),
+		CPUPercent:   fmt.Sprintf("%.2f", cpu),
+		MemUsed:      bytesSize(float64(used)),
+		MemTotal:     bytesSize(float64(sr.MemoryStats.Limit)),
+		MemPercent:   fmt.Sprintf("%.2f", memPct),
+		MemUsedBytes: used,
 	}, nil
 }
 

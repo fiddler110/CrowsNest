@@ -12,6 +12,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/memadmit"
 )
 
 // newRegistry builds a registry of docker-ps-status-checked GameDefs, one
@@ -859,5 +860,77 @@ func TestPublicFailure(t *testing.T) {
 	cd := &CooldownError{Game: "a", Remaining: time.Minute}
 	if got := publicFailure("", cd); got != cd.Error() {
 		t.Fatalf("cooldown text changed: %q", got)
+	}
+}
+
+func newBudget(avail uint64, need map[string]uint64) *memadmit.Budget {
+	b := memadmit.New("")
+	b.Available = func() uint64 { return avail }
+	b.Declared = func(id string) uint64 { return need[id] }
+	return b
+}
+
+func TestRequestStart_MemoryAdmission(t *testing.T) {
+	const gib = 1 << 30
+	docker := newStaticFakeDocker(t, []string{"a", "b"}, nil)
+	reg := newRegistry(t, docker, "a", "b")
+
+	m := newTestManager(t, reg, docker)
+	m.Memory = newBudget(6*gib, map[string]uint64{"a": 8 * gib, "b": 2 * gib})
+	var mem *memadmit.Error
+	if err := m.RequestStart(context.Background(), "a"); !errors.As(err, &mem) || mem.Need != 8*gib {
+		t.Fatalf("RequestStart(a) = %v, want a memory refusal needing 8 GiB", err)
+	}
+	if m.Starting("a") {
+		t.Fatal("a refused start must not be left in flight")
+	}
+	if err := m.RequestStart(context.Background(), "b"); err != nil {
+		t.Fatalf("RequestStart(b) = %v, want it admitted", err)
+	}
+	m.Wait()
+}
+
+func TestRequestStart_MemoryUnknownIsAdmitted(t *testing.T) {
+	docker := newStaticFakeDocker(t, []string{"a"}, nil)
+	m := newTestManager(t, newRegistry(t, docker, "a"), docker)
+	m.Memory = newBudget(0, map[string]uint64{"a": 99 << 30}) // host memory unreadable
+	if err := m.RequestStart(context.Background(), "a"); err != nil {
+		t.Fatalf("unreadable host memory must not block a start: %v", err)
+	}
+	m.Wait()
+}
+
+func TestConfirmSwitch_MemoryCountsWhatTheSourceFrees(t *testing.T) {
+	const gib = 1 << 30
+	docker := newStatefulFakeDocker(t, []string{"palworld"}, []string{"valheim"})
+	reg := newRegistry(t, docker, "valheim", "palworld")
+	mgr := newTestManager(t, reg, docker)
+	mgr.StopPollInterval, mgr.StopPollTimeout = time.Millisecond, time.Second
+
+	// 3 GiB free + 4 GiB freed by valheim covers palworld's 6. Host memory
+	// really does rise once valheim is down, which the fake mimics.
+	b := newBudget(3*gib, map[string]uint64{"valheim": 4 * gib, "palworld": 6 * gib})
+	b.Available = func() uint64 {
+		if active, _ := mgr.ActiveGames(context.Background()); len(active) == 0 {
+			return 7 * gib
+		}
+		return 3 * gib
+	}
+	mgr.Memory = b
+	// Without the freed memory the switch would be refused up front; with it, it must go through.
+	if err := mgr.ConfirmSwitch(context.Background(), "valheim", "palworld"); err != nil {
+		t.Fatalf("ConfirmSwitch() = %v", err)
+	}
+
+	// A target bigger than free plus freed is refused before anything stops.
+	docker2 := newStatefulFakeDocker(t, []string{"palworld"}, []string{"valheim"})
+	m2 := newTestManager(t, newRegistry(t, docker2, "valheim", "palworld"), docker2)
+	m2.Memory = newBudget(1*gib, map[string]uint64{"valheim": 2 * gib, "palworld": 6 * gib})
+	var mem *memadmit.Error
+	if err := m2.ConfirmSwitch(context.Background(), "valheim", "palworld"); !errors.As(err, &mem) {
+		t.Fatalf("ConfirmSwitch() = %v, want a memory refusal", err)
+	}
+	if id, ok, _ := m2.ActiveGame(context.Background()); !ok || id != "valheim" {
+		t.Fatalf("the source must keep running after a refused switch, active = %q", id)
 	}
 }

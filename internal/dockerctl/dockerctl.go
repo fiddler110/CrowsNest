@@ -93,6 +93,8 @@ type Stats struct {
 	MemUsed    string
 	MemTotal   string
 	MemPercent string
+	// MemUsedBytes is MemUsed unrounded; zero from the CLI fallback.
+	MemUsedBytes uint64
 }
 
 // GPUStats is a host-level (not per-container) GPU utilization/memory

@@ -273,6 +273,14 @@ func (m *Manifest) validate() error {
 	if m.Runtime.RestartCooldown < 0 {
 		return fmt.Errorf("module %q: restart_cooldown must not be negative", m.ID)
 	}
+	for field, v := range map[string]string{"runtime.ram": m.Runtime.RAM, "runtime.memory": m.Runtime.Memory} {
+		if v == "" {
+			continue
+		}
+		if _, err := SizeBytes(field, v); err != nil {
+			return fmt.Errorf("module %q: %w", m.ID, err)
+		}
+	}
 	declared := map[string]bool{}
 	for _, o := range m.Options {
 		declared[o.Key] = true
@@ -425,6 +433,7 @@ func (m *Manifest) Wire() WireFunc {
 		if m.Runtime.RestartCooldown > 0 {
 			def.RestartCooldown = m.Runtime.RestartCooldown
 		}
+		def.RAMEstimate = ramEstimate(m, env.Config.Options)
 		if len(m.Startup) > 0 || m.StartupProgress != nil {
 			sm := &games.StartupMatcher{}
 			if sp := m.StartupProgress; sp != nil {
@@ -528,4 +537,27 @@ func (o *options) missingRequired() []string {
 		}
 	}
 	return out
+}
+
+// ramEstimate is the game's declared memory need in bytes: the instance's ram
+// option, else runtime.ram, else the runtime.memory limit; zero when none is
+// set or the instance's value does not parse (the loader logs that).
+func ramEstimate(m *Manifest, given map[string]string) uint64 {
+	v := given["ram"]
+	field := "ram option"
+	if v == "" {
+		v, field = m.Runtime.RAM, "runtime.ram"
+	}
+	if v == "" {
+		v, field = m.Runtime.Memory, "runtime.memory"
+	}
+	if v == "" {
+		return 0
+	}
+	n, err := SizeBytes(field, v)
+	if err != nil {
+		log.Printf("%s: %v; memory admission skips this game", m.ID, err)
+		return 0
+	}
+	return uint64(n)
 }

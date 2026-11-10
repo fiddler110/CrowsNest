@@ -25,6 +25,12 @@ type Runtime struct {
 	Tag       string        `yaml:"tag"`   // default "latest"
 	StopGrace time.Duration `yaml:"stop_grace"`
 	Memory    string        `yaml:"memory"` // compose mem_limit, e.g. 10g
+	// RAM is the memory the game typically uses, e.g. 6g. It is only a
+	// planning figure: a start is refused when the host has less free than
+	// this (see internal/memadmit), until the game has run and its measured
+	// peak takes over. Unset, memory is used; with neither there is no check.
+	// An instance may override it with the reserved option ram.
+	RAM string `yaml:"ram"`
 	// DataDir is the folder under platform.games_root holding this game's
 	// data. An instance may override it with the reserved option data_dir.
 	DataDir string        `yaml:"data_dir"`
@@ -485,6 +491,15 @@ func expandCompose(s string, lookup func(string) (string, bool)) string {
 		}
 	}
 	return out.String()
+}
+
+// SizeBytes parses sizes like 512m or 10g (k, m, g; no suffix is bytes).
+func SizeBytes(field, s string) (int64, error) {
+	n, err := parseSize(s)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q must look like 512m or 10g", field, s)
+	}
+	return n, nil
 }
 
 func parseSize(s string) (int64, error) {

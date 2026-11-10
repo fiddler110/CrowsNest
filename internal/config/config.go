@@ -143,6 +143,11 @@ type ServerConfig struct {
 	// environment variable (e.g. from .env) when that is set.
 	MaxActiveGames int `yaml:"max_active_games"`
 
+	// MemoryReserveMB is memory kept free for the host: a game is only
+	// started when the host's available memory less this covers what the
+	// game needs. Zero means 1024; negative turns the memory check off.
+	MemoryReserveMB int `yaml:"memory_reserve_mb"`
+
 	// AutoUpdate pulls the latest image for a game every time it is started
 	// (`docker compose pull`), so restarts pick up new server versions.
 	// Default false. Changeable at runtime from the dashboard.

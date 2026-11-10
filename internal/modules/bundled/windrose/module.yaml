@@ -26,6 +26,7 @@ connect:
   - {label: Server password, option: server_password}
 
 runtime:
+  ram: 8g                # typical use; admission swaps in the measured peak after a run
   image: indifferentbroccoli/windrose-server-docker
   stop_grace: 30s
   data_dir: Windrose

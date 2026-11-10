@@ -207,7 +207,7 @@ const (
 
 var (
 	idRe    = regexp.MustCompile(`^[a-z][a-z0-9-]{1,30}$`)
-	reserve = map[string]bool{"image": true, "tag": true, "ports": true, "data_dir": true}
+	reserve = map[string]bool{"image": true, "tag": true, "ports": true, "data_dir": true, "ram": true}
 )
 
 // Catalogue lists the modules that can be enabled from the dashboard: those
@@ -335,6 +335,11 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		}
 		if err := plainValue(k, v); err != nil {
 			return g, nil, err
+		}
+		if k == "ram" && v != "" {
+			if _, err := modules.SizeBytes("ram", v); err != nil {
+				return g, nil, err
+			}
 		}
 		opts[k] = v
 	}

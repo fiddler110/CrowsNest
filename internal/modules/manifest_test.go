@@ -65,6 +65,7 @@ func TestParseRejects(t *testing.T) {
 		"lm-incomplete": "api_version: 1\nid: a\nname: A\nplayers: {type: log_markers}\n",
 		"lm-nogroup":    "api_version: 1\nid: a\nname: A\nstatus: {ready_log: ok}\nplayers: {type: log_markers, join: x, leave: 'y(.)'}\n",
 		"negative":      "api_version: 1\nid: a\nname: A\nruntime: {restart_cooldown: -1s}\n",
+		"ram-bad":       "api_version: 1\nid: a\nname: A\nruntime: {ram: lots}\n",
 		"accent-name":   "api_version: 1\nid: a\nname: A\naccent: blue\n",
 		"accent-short":  "api_version: 1\nid: a\nname: A\naccent: '#abc'\n",
 	}

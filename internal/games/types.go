@@ -161,6 +161,11 @@ type GameDef struct {
 	// crash if brought back up seconds after a shutdown.
 	RestartCooldown time.Duration
 
+	// RAMEstimate is the memory in bytes the game is declared to need, from
+	// its module (runtime.ram) or the instance's ram option. Zero means
+	// undeclared. Memory admission prefers the measured peak once known.
+	RAMEstimate uint64
+
 	Status       StatusChecker
 	Players      PlayerCounter
 	Startup      *StartupMatcher

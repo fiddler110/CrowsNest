@@ -255,6 +255,7 @@ function buildForm(values = {}) {
   [
     ["data_dir", "Data folder name", "automatic (one folder per game)"],
     ["ports", "Published ports (host:container/proto, comma-separated)", "automatic (the game's defaults)"],
+    ["ram", "Memory the game needs (for example 6g)", "automatic (the module's figure, then the measured peak)"],
   ].forEach(([key, label, hint]) => {
     if (have.has(key)) return;
     addTo($("options-more"), { key, label, auto: true });
@@ -278,7 +279,7 @@ function collect() {
     options: {}, secrets: {},
   };
   if (m.needs_image && form.elements.image.value.trim()) req.options.image = form.elements.image.value.trim();
-  [...(m.options || []), { key: "data_dir" }, { key: "ports" }].forEach((o) => {
+  [...(m.options || []), { key: "data_dir" }, { key: "ports" }, { key: "ram" }].forEach((o) => {
     const f = form.elements["opt:" + o.key];
     if (!f) return;
     const v = f.value.trim();

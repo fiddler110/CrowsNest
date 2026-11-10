@@ -10,6 +10,7 @@ connect:
   - {label: Join password, option: server_pass}
 
 runtime:
+  ram: 3g                # typical use; admission swaps in the measured peak after a run
   image: lloesche/valheim-server
   stop_grace: 2m            # saves the world on SIGTERM
   data_dir: Valheim

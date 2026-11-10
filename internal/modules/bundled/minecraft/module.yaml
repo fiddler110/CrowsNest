@@ -13,6 +13,7 @@ description: "Java edition server (itzg/minecraft-server): vanilla, Paper, Fabri
 # Set rcon_addr (host:port, e.g. minecraft:25575) and rcon_password_env to use it.
 
 runtime:
+  ram: 3g                # typical use; admission swaps in the measured peak after a run
   image: itzg/minecraft-server
   stop_grace: 60s           # the image saves the world on SIGTERM
   data_dir: Minecraft

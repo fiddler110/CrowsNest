@@ -82,6 +82,16 @@ Copy `internal/modules/bundled/minecraft/module.yaml` (log-based) or `source` (R
 error, so a typo cannot silently disable a setting. Add a fixture of real log lines and test it the way
 `internal/modules/minecraft_test.go` does.
 
+## Memory admission
+
+Besides `max_active_games`, a start is refused when the host does not have the memory for the game.
+
+- A module declares what the game typically uses in `runtime.ram` (for example `ram: 8g`). Without it, `runtime.memory` (the container limit) is used; with neither, the game is never refused for memory.
+- An instance can override the figure with the reserved option `ram` (in `options:` of a `config.yaml` game, or under *More settings* when adding a game from the dashboard).
+- Once a game has run, its measured peak (sampled every 30 seconds, kept in `memory-peaks.json` next to `settings.json`) replaces the declared figure.
+- A start is admitted when the host's available memory, less `server.memory_reserve_mb` (default 1024) and less what other starting games are still to take, covers the figure. A switch counts the memory the stopping game gives back, and is refused before anything is stopped.
+- Set `server.memory_reserve_mb: -1` to turn the check off. If host memory can't be read, the check is skipped.
+
 ## Rendering containers from a module (`crowsnest render`)
 
 A module's `runtime:` section describes its container: image, published ports, data folders, stop grace, memory

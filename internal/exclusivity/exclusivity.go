@@ -16,6 +16,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/memadmit"
 )
 
 const (
@@ -70,6 +71,14 @@ func (e *ConflictError) Error() string {
 	return fmt.Sprintf("exclusivity: %s is already active", e.Active)
 }
 
+// MemoryAdmitter decides whether the host has the memory for a start; satisfied
+// by *memadmit.Budget. claimed is what other starting games are still to take,
+// freed what a game being stopped for this start gives back.
+type MemoryAdmitter interface {
+	Need(id string) (bytes uint64, measured bool)
+	Admit(id string, claimed, freed uint64) error
+}
+
 // CooldownError means a start was refused because id was stopped too
 // recently. Handlers surface this as HTTP 429.
 type CooldownError struct {
@@ -105,7 +114,8 @@ type StartResult struct {
 func publicFailure(prefix string, err error) string {
 	var cd *CooldownError
 	var busy *BusyError
-	if errors.As(err, &cd) || errors.As(err, &busy) {
+	var mem *memadmit.Error
+	if errors.As(err, &cd) || errors.As(err, &busy) || errors.As(err, &mem) {
 		return prefix + err.Error()
 	}
 	return prefix + "see the CrowsNest log for details"
@@ -169,6 +179,10 @@ type Manager struct {
 	// MaxActiveFunc, when set, is consulted instead of MaxActive each time
 	// the limit is checked, so it can change at runtime.
 	MaxActiveFunc func() int
+
+	// Memory, when set, refuses a start the host has no memory for, on top
+	// of the active-game limit. Optional: nil means only the limit applies.
+	Memory MemoryAdmitter
 
 	// AutoUpdate, when set and true, makes every start pull the game's
 	// latest image first (`compose pull`) so a restart picks up new server
@@ -420,8 +434,33 @@ func (m *Manager) startLocked(ctx context.Context, id string, announce bool, swi
 			return &CooldownError{Game: id, Remaining: rem}
 		}
 	}
+	if err := m.admitMemory(id, ""); err != nil {
+		return err
+	}
 	m.launchStart(target, actorFrom(ctx), announce)
 	return nil
+}
+
+// admitMemory asks the memory budget whether id fits. Other games whose start
+// is in flight count as still to take their memory; stopping is the game a
+// switch is stopping, whose memory is about to be free.
+func (m *Manager) admitMemory(id, stopping string) error {
+	if m.Memory == nil {
+		return nil
+	}
+	var claimed, freed uint64
+	m.stateMu.Lock()
+	for other := range m.pending {
+		if other != id {
+			n, _ := m.Memory.Need(other)
+			claimed += n
+		}
+	}
+	m.stateMu.Unlock()
+	if stopping != "" {
+		freed, _ = m.Memory.Need(stopping)
+	}
+	return m.Memory.Admit(id, claimed, freed)
 }
 
 // cooldownRemaining is how much of d's RestartCooldown is left, measured
@@ -705,6 +744,10 @@ func (m *Manager) beginSwitch(from, to string) (*switchOp, error) {
 		if rem := m.cooldownRemaining(context.Background(), toDef); rem > 0 {
 			return nil, &CooldownError{Game: to, Remaining: rem}
 		}
+	}
+	// Likewise for memory: the target must fit once the source is down.
+	if err := m.admitMemory(to, from); err != nil {
+		return nil, err
 	}
 	m.stateMu.Lock()
 	m.incoming[to] = true

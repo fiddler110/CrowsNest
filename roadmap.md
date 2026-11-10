@@ -75,10 +75,12 @@ derived from it.
   `policy.yaml` envelope, privilege approval (`crowsnest module apply`) and a
   lock file; Go fuzz targets for the guard's path/body parsing; pin game
   images by digest or version range. Needs its own security review.
-- [ ] **Phase 4: state hub.** (done: one poller per game on an adaptive
+- [x] **Phase 4: state hub.** (done: one poller per game on an adaptive
   cadence in `internal/statehub`, feeding the dashboard, playerwatch and both
-  auto-stop loops, and one SSE stream to browsers, `/api/events`. Remaining:
-  memory-budget admission.) One poller per game on an adaptive cadence, one
+  auto-stop loops, and one SSE stream to browsers, `/api/events`; memory-budget admission (done
+  2026-11-10): modules declare `runtime.ram`, the measured peak replaces it,
+  and a start needs host free RAM less `server.memory_reserve_mb`;
+  `max_active_games` stays as an optional cap.) One poller per game on an adaptive cadence, one
   SSE stream to browsers, memory-budget admission instead of
   `max_active_games` as a RAM proxy.
 - [ ] **Phase 5: modules in the UI.** (done: the Games page enables, edits,
