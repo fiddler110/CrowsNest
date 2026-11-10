@@ -19,13 +19,23 @@ func (m *Manager) Allowed() ([]string, error) {
 	return dockerguard.ReadAllowed(m.path(allowedFile))
 }
 
-// SetAllowed switches a bundled module on or off. What it can widen is bounded:
-// the guard only adds ports that a bundled module declares, so the file cannot
-// open anything the modules do not already name. Switching off is refused while
-// a game from the module exists, because the guard would drop that game.
+// gated is a module installed from a URL or by hand, whose ports the guard cannot know. Its switch only lets the dashboard
+// offer it; the guard ignores the id, so its image and ports must still be in
+// policy.yaml. That is deliberate: the panel can write module files, so the
+// guard must not take ports or images from them.
+func (m *Manager) gated(id string) bool {
+	_, bundled := modules.Bundled().Manifest(id)
+	return !bundled
+}
+
+// SetAllowed switches a module on or off. For a bundled module with ports, what
+// it can widen is bounded: the guard only adds ports that a bundled module
+// declares, so the file cannot open anything the modules do not already name.
+// Switching off is refused while a game from the module exists, because the
+// guard would drop that game.
 func (m *Manager) SetAllowed(id string, on bool) error {
-	if len(modules.PolicyDefaults(m.Platform).ModulePorts[id]) == 0 {
-		return fmt.Errorf("%q is not a bundled module with ports, so its ports can't be allowed here: add them to ports in policy.yaml", id)
+	if _, ok := m.Modules.Manifest(id); !ok {
+		return fmt.Errorf("there is no module %q", id)
 	}
 	if _, err := m.filePolicy(); err != nil {
 		return fmt.Errorf("the policy cannot be read: %w", err)

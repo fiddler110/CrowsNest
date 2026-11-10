@@ -175,6 +175,10 @@ max_scopes: 32
   that game. `ports` in `policy.yaml` is only for ports beyond those: a game installed from a URL, or a different host port. An admin with no
   stored password (Google sign-in only) sees a banner on every page and is refused until they set one in Settings,
   Users: the password is only used to confirm this, so a hijacked session alone cannot widen the guard.
+- **A module installed from a URL has a switch too, but a weaker one.** The panel can write module files and the
+  lock file, so the guard never takes a port or an image from them. The switch only makes the dashboard offer the
+  game; the card shows the `images:` and `ports:` lines to paste into `policy.yaml`, and until they are there the
+  plan says the game falls outside the policy. Install as many as you like and switch them on when you want them.
 - Point `games_root` at a folder that holds only game data, such as `<your data mount>/crowsnest/games`, not at a
   mount shared with other services: every dashboard-added game's folder is `<games_root>/<id>`, and the policy
   lets the panel bind anything inside `games_root`. Create it once, owned by you, before the first game.

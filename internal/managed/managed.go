@@ -192,9 +192,13 @@ type ModuleInfo struct {
 	// Allowed is whether the operator switched this module on. Bundled is whether
 	// the guard knows its ports (so a switch can allow them); a module installed
 	// from a URL has no switch, its ports go in policy.yaml.
-	Allowed   bool `json:"allowed"`
-	Bundled   bool `json:"bundled"`
-	HasBackup bool `json:"has_backup,omitempty"`
+	Allowed bool `json:"allowed"`
+	Bundled bool `json:"bundled"`
+	// Gated: the switch only lets the dashboard offer the module; its image and
+	// ports still have to be in policy.yaml. PolicyLines are those lines, ready to paste.
+	Gated       bool   `json:"gated,omitempty"`
+	PolicyLines string `json:"policy_lines,omitempty"`
+	HasBackup   bool   `json:"has_backup,omitempty"`
 	// ConnectHint is the address players most likely use (published host address
 	// and first port), offered as the default connect address.
 	ConnectHint string `json:"connect_hint,omitempty"`
@@ -244,16 +248,45 @@ func (m *Manager) Catalogue() []ModuleInfo {
 		}
 		mi.Bundled = len(defs.ModulePorts[mf.ID]) > 0
 		mi.Allowed = slices.Contains(allowed, mf.ID)
+		if m.gated(mf.ID) {
+			mi.Gated = true
+			mi.PolicyLines = policyLines(mf)
+		}
 		if len(mf.Runtime.Ports) > 0 && m.Platform.HostIP != "" && m.Platform.HostIP != "0.0.0.0" {
 			mi.ConnectHint = fmt.Sprintf("%s:%d", m.Platform.HostIP, mf.Runtime.Ports[0].Port)
 		}
 		for _, o := range mf.Options {
 			mi.Options = append(mi.Options, OptionInfo{Key: o.Key, Label: o.Label, Default: o.Default, Required: (o.Required || o.ManagedRequired) && o.Derive == "", Secret: o.Secret, Auto: o.Derive != ""})
 		}
-		m.probeFit(&mi, mf)
+		if mi.Gated && !mi.Allowed {
+			no := false
+			mi.Fits, mi.Reason = &no, notOnMsg(mf.Name)
+		} else {
+			m.probeFit(&mi, mf)
+		}
 		out = append(out, mi)
 	}
 	return out
+}
+
+func notOnMsg(name string) string {
+	return name + " is installed but not switched on yet. Switch it on below (your password is asked)."
+}
+
+// policyLines is what policy.yaml needs for a module the guard cannot read the needs of itself.
+func policyLines(mf *modules.Manifest) string {
+	var b strings.Builder
+	if mf.Runtime.Image != "" {
+		fmt.Fprintf(&b, "images: [\"@modules\", %q]\n", mf.Runtime.Image)
+	}
+	var ports []string
+	for _, p := range mf.Runtime.Ports {
+		ports = append(ports, strconv.Quote(modules.PortSpec(p)))
+	}
+	if len(ports) > 0 {
+		fmt.Fprintf(&b, "ports: [%s]\n", strings.Join(ports, ", "))
+	}
+	return b.String()
 }
 
 // probeFit dry-runs the module with its defaults (placeholders for what has
@@ -329,6 +362,11 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	mf, ok := m.Modules.Manifest(r.Module)
 	if !ok {
 		return g, nil, fmt.Errorf("module %q is not installed", r.Module)
+	}
+	if !existing && !r.probe && m.gated(mf.ID) {
+		if allowed, _ := m.Allowed(); !slices.Contains(allowed, mf.ID) {
+			return g, nil, errors.New(notOnMsg(mf.Name))
+		}
 	}
 	if !existing {
 		for _, c := range m.Config.Games {

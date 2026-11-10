@@ -1016,3 +1016,51 @@ func TestSecondGameGetsNextFreePort(t *testing.T) {
 		t.Errorf("with the range full: %v", err)
 	}
 }
+
+// A module installed from outside is offered only once switched on, and the
+// guard never takes its image or ports from it: the policy still has to.
+func TestInstalledModuleNeedsItsSwitchAndThePolicy(t *testing.T) {
+	m, _ := newManager(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "mygame"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile("../../docs/examples/mygame/module.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mygame", "module.yaml"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Modules.LoadDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	find := func() ModuleInfo {
+		for _, mi := range m.Catalogue() {
+			if mi.ID == "mygame" {
+				return mi
+			}
+		}
+		t.Fatal("mygame is not in the catalogue")
+		return ModuleInfo{}
+	}
+	mi := find()
+	if !mi.Gated || mi.Allowed || mi.Fits == nil || *mi.Fits || !strings.Contains(mi.PolicyLines, "example/mygame-server") || !strings.Contains(mi.PolicyLines, "7777/udp") {
+		t.Errorf("before the switch: %+v", mi)
+	}
+	req := Request{ID: "mygame", Module: "mygame", Options: map[string]string{}}
+	if _, err := m.Preview(req); err == nil || !strings.Contains(err.Error(), "not switched on") {
+		t.Errorf("a game from an off module: %v", err)
+	}
+	if err := m.SetAllowed("mygame", true); err != nil {
+		t.Fatal(err)
+	}
+	// On, but the policy does not name its image or ports yet: the plan says so rather than the guard accepting it.
+	plan, err := m.Preview(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Fits {
+		t.Errorf("the guard would accept an image and port the policy never listed: %+v", plan)
+	}
+}

@@ -215,7 +215,7 @@ function allowBar(m) {
     });
     bar.append(ul);
   }
-  if (!m.bundled) {
+  if (!m.bundled && !m.gated) {
     if (m.ports && m.ports.length) bar.append(el("p", "allow-note", "Its ports are allowed in policy.yaml on the host."));
     return bar;
   }
@@ -239,8 +239,15 @@ function allowBar(m) {
   no.type = "button";
   const err = el("p", "settings-error");
   err.hidden = true;
-  ask.append(el("p", "allow-note", "Allowing a game lets the guard accept its ports. Enter your password to confirm."), pw, ok, no, err);
+  ask.append(el("p", "allow-note", m.gated ? "Switching it on lets the dashboard offer this game. Enter your password to confirm." : "Allowing a game lets the guard accept its ports. Enter your password to confirm."), pw, ok, no, err);
   bar.append(ask);
+  if (m.gated) {
+    const d = el("details", "allow-policy");
+    d.append(el("summary", "", "Also needed in policy.yaml"));
+    d.append(el("p", "allow-note", "This module was installed, so the guard does not take its image or ports from it. Add these on the host:"));
+    d.append(el("pre", "", m.policy_lines || "(nothing: it needs no image or ports)"));
+    bar.append(d);
+  }
   const send = async (allowed, password) => {
     const res = await callAPI(`/api/managed/modules/${encodeURIComponent(m.id)}/allow`, { method: "PUT", body: JSON.stringify({ allowed, password }) });
     if (!res.ok) return errorText(res);
