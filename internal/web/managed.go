@@ -215,6 +215,7 @@ func (a *App) handleManagedRollback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, id, "rolling back to the previous image")
+	a.pokeGame(id) // re-observe; an id the hub lacks prompts a registry reconcile
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": managed.StateInstalling})
 }
 
