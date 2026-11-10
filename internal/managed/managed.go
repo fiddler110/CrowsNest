@@ -456,7 +456,7 @@ func (m *Manager) policy() (*dockerguard.Policy, error) {
 	if m.PolicyFile == "" {
 		return nil, errors.New("no policy file is configured: managed games need an operator policy")
 	}
-	return dockerguard.LoadPolicy(m.PolicyFile)
+	return dockerguard.LoadPolicyWith(m.PolicyFile, modules.PolicyDefaults(m.Platform))
 }
 
 // renderAndFit renders the game and checks it against the policy.
@@ -1183,7 +1183,7 @@ func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, err
 	if policyFile == "" {
 		return nil, errors.New("exec rules for dashboard games need managed.policy_file")
 	}
-	pol, err := dockerguard.LoadPolicy(policyFile)
+	pol, err := dockerguard.LoadPolicy(policyFile) // only names are read here, so nothing is resolved
 	if err != nil {
 		return nil, fmt.Errorf("exec rules: %w", err)
 	}
@@ -1276,6 +1276,9 @@ func narrowOnly(cur *dockerguard.Policy, d PolicyDoc) error {
 		{"networks", d.Networks, cur.Networks}, {"ports", d.Ports, cur.Ports},
 		{"labels", d.Labels, cur.Labels},
 	} {
+		if len(l.now) == 0 && len(l.was) > 0 && l.name != "ports" && l.name != "labels" {
+			return fmt.Errorf("%s: a list cannot be emptied here, because an empty one means the defaults (%s)", l.name, hint)
+		}
 		if err := subset(l.name, l.now, l.was); err != nil {
 			return err
 		}

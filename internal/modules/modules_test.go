@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -135,5 +136,18 @@ func TestRAMEstimate(t *testing.T) {
 	}
 	if got := ramEstimate(m, map[string]string{"ram": "x"}); got != 0 {
 		t.Fatalf("a bad instance value skips the check, got %d", got)
+	}
+}
+
+func TestPolicyDefaults(t *testing.T) {
+	d := PolicyDefaults(Platform{})
+	if d.Network != DefaultNetwork {
+		t.Errorf("network %q", d.Network)
+	}
+	if !slices.Contains(d.Images, "lloesche/valheim-server") {
+		t.Errorf("the valheim module's image is missing: %v", d.Images)
+	}
+	if d := PolicyDefaults(Platform{Network: "mine"}); d.Network != "mine" {
+		t.Errorf("configured network ignored: %q", d.Network)
 	}
 }

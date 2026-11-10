@@ -20,6 +20,8 @@ type Sources struct {
 	Base        string
 	ManagedFile string
 	PolicyFile  string
+	// Defaults are what a policy that leaves out images or networks gets.
+	Defaults Defaults
 }
 
 // Result is one load of the sources.
@@ -52,7 +54,7 @@ func (s Sources) Load() (*Result, error) {
 	if s.PolicyFile == "" {
 		return nil, errors.New("GUARD_SCOPES_FILE needs GUARD_POLICY: managed scopes are only loaded inside an operator policy")
 	}
-	pol, err := LoadPolicy(s.PolicyFile)
+	pol, err := LoadPolicyWith(s.PolicyFile, s.Defaults)
 	if err != nil {
 		return nil, err
 	}

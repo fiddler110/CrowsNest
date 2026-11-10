@@ -541,6 +541,15 @@ func TestPolicyEditing(t *testing.T) {
 	if err := m.SetPolicy(bad); err == nil {
 		t.Error(`names: ["*"] was accepted`)
 	}
+	// an empty images or networks list means "the defaults", which would widen a listed policy
+	for _, clear := range []func(*PolicyDoc){func(d *PolicyDoc) { d.Images = nil }, func(d *PolicyDoc) { d.Networks = nil }, func(d *PolicyDoc) { d.Names = nil }} {
+		now, _ := m.Policy()
+		cleared := now.Policy
+		clear(&cleared)
+		if err := m.SetPolicy(cleared); err == nil || !strings.Contains(err.Error(), "emptied") {
+			t.Errorf("a list was emptied from the dashboard: %v", err)
+		}
+	}
 	empty := st.Policy
 	empty.Ports = nil
 	if err := m.SetPolicy(empty); err == nil {

@@ -100,7 +100,9 @@ derived from it.
   1. [x] **Ownership instead of a names list.** Dashboard games carry `crowsnest.managed=true`; with no `names` in
      the policy the guard only acts on labelled containers (lists, inspect, start/stop/remove, create).
      A policy that still lists `names` behaves as before.
-  2. [ ] Images and the games network come from the enabled modules and `platform.games_network`, not the policy.
+  2. [x] Images and the games network come from the bundled modules and `platform.games_network`, not the policy
+     (`images` and `networks` are optional; `"@modules"` adds the module images to an explicit list; the dashboard
+     editor cannot empty a list). A module installed from a URL still needs its image listed.
   3. [ ] A per-module **Allow** switch on the Games page (admin password again, audit-logged), and each game's
      published ports shown with the module's reason. Host-port changes warn on a clash; one optional extra range.
   4. [ ] Host address as three plain choices (this machine, my network, a specific address); max active games as a

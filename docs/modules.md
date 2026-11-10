@@ -148,12 +148,14 @@ scopes in force exactly as they were; a tighter policy drops managed scopes that
 is enough to start (`GUARD_SCOPES_FILE` with no `GUARD_SCOPES` is fine); with a managed file but no policy it refuses.
 
 ```yaml
-# policy.yaml: images, networks and ports are required, so no limit is ever implied
+# policy.yaml: games_root and ports are required, so no limit is ever implied
 games_root: /srv/games                 # managed binds must be exact paths inside this folder
 # names: [valheim, "gs-*"]            # optional: leave it out and any name works, because the guard only manages
                                        # containers the dashboard made (label crowsnest.managed=true)
-images: [lloesche/valheim-server, "docker.io/itzg/*"]   # "*" alone = any image; prefixes are fully qualified
-networks: [crowsnest-games-net]
+# images: ["@modules"]                 # optional. Left out, it is the images the bundled modules declare. Add your own
+                                       # beside it: ["@modules", "ghcr.io/you/mygame"]. A list without "@modules" is
+                                       # exactly that list. "*" alone = any image; prefixes are fully qualified
+# networks: [crowsnest-games-net]      # optional. Left out, it is platform.games_network from config.yaml
 ports: ["27000-28999/udp", "25565/tcp"]  # host ports and protocol
 host_ips: [10.0.0.2]                   # optional: limits the address ports are published on
 exec: false                            # may managed scopes use docker exec (save-on-stop hooks need it)
@@ -178,6 +180,11 @@ max_scopes: 32
 - A managed scope can never carry volumes, capabilities, aliases, host networking, or exec unless the policy allows
   it. Security options, extra networks and fixed addresses are only for a game the policy names in an
   [exception](#exceptions-one-game-beyond-the-envelope).
+- Images and the games network need no entry. The guard allows the images the bundled modules were built for, and
+  only the games network, so you don't keep a list in step with the modules. A module installed from a URL is not
+  bundled: add its image to `images` (with `"@modules"` if you also want the bundled ones). The guard and the
+  dashboard's preview resolve these the same way. The dashboard's policy editor cannot empty `images`, `networks`
+  or `names`, because an empty list means the defaults.
 - Official Docker Hub images are fully qualified in a scope (`itzg/minecraft-server` is `docker.io/itzg/minecraft-server`),
   so policy prefixes are written that way.
 - `Policy.Admit` is the same check the dashboard will use to preview "does this fit?" before enabling a game.

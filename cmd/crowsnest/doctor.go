@@ -183,7 +183,7 @@ func doctorManaged(r *doctorReport, cfg *config.Config) {
 	} else {
 		r.add(docOK, "managed.dir is writable", "")
 	}
-	pol, err := dockerguard.LoadPolicy(cfg.Managed.PolicyFile)
+	pol, err := dockerguard.LoadPolicyWith(cfg.Managed.PolicyFile, modules.PolicyDefaults(modules.PlatformFrom(cfg.Platform)))
 	if err != nil {
 		r.add(docFail, "policy file: "+err.Error(), "copy policy.yaml.example, edit it, and mount it at managed.policy_file")
 		return

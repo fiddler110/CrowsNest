@@ -12,7 +12,9 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/dockerguard"
+	"github.com/fiddler110/crowsnest/internal/modules"
 )
 
 // runGuard serves the scoped Docker API guard: crowsnest's docker_host points
@@ -25,7 +27,7 @@ func runGuard(args []string) error {
 	withExec := fs.Bool("exec", os.Getenv("GUARD_EXEC") == "1", "also run the exec allowlist (execguard) in front of the guard, in this process (or GUARD_EXEC=1)")
 	_ = fs.Parse(args)
 
-	src := dockerguard.Sources{Base: os.Getenv("GUARD_SCOPES"), ManagedFile: os.Getenv("GUARD_SCOPES_FILE"), PolicyFile: os.Getenv("GUARD_POLICY")}
+	src := dockerguard.Sources{Base: os.Getenv("GUARD_SCOPES"), ManagedFile: os.Getenv("GUARD_SCOPES_FILE"), PolicyFile: os.Getenv("GUARD_POLICY"), Defaults: policyDefaults()}
 	res, err := src.Load()
 	if err != nil {
 		return fmt.Errorf("crowsnest guard: refusing to start, bad scope configuration: %w", err)
@@ -114,4 +116,16 @@ func sortedKeys(m map[string]bool) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// policyDefaults is what a policy that leaves out images or networks gets: the
+// images of the bundled modules and the games network from config.yaml. The
+// config is optional for the guard (it is only mounted for the exec allowlist),
+// so without one the network is the default, crowsnest-games-net.
+func policyDefaults() dockerguard.Defaults {
+	var p modules.Platform
+	if cfg, err := config.Load(configPath()); err == nil {
+		p = modules.PlatformFrom(cfg.Platform)
+	}
+	return modules.PolicyDefaults(p)
 }

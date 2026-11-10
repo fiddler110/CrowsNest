@@ -30,10 +30,13 @@ type Policy struct {
 	// it is set, only those names are allowed (and the label is not required).
 	Names []string `yaml:"names"`
 	// Images are the repositories a managed scope may run (an entry ending in *
-	// is a prefix, "*" alone is any image). Required, so "any image" is always
-	// a decision written down.
+	// is a prefix, "*" alone is any image). The entry "@modules" stands for the
+	// images the bundled modules declare. Left out, it is just "@modules", so
+	// only the images the modules were built for are allowed, and "any image"
+	// is always a decision written down.
 	Images []string `yaml:"images"`
-	// Networks the managed containers may join. Required.
+	// Networks the managed containers may join. Left out, it is the games
+	// network of the app's own config (platform.games_network).
 	Networks []string `yaml:"networks"`
 	// Ports are the host ports (and protocol) a managed scope may publish, as
 	// "27000-28999/udp" or "25565/tcp". Required.
@@ -119,6 +122,63 @@ type portRange struct {
 
 const watchtowerLabel = "com.centurylinklabs.watchtower.enable"
 
+// ModulesImages, as an entry in a policy's images, stands for the repositories
+// the bundled modules declare.
+const ModulesImages = "@modules"
+
+// Defaults are what a policy that leaves out images or networks gets: the
+// repositories the bundled modules declare and the app's games network.
+type Defaults struct {
+	Images  []string
+	Network string
+}
+
+// Resolve fills in what the policy left out and expands "@modules". The guard
+// and the panel both call it with the same Defaults, so a game the panel says
+// fits is a game the guard admits.
+func (p *Policy) Resolve(d Defaults) error {
+	if len(p.Images) == 0 {
+		p.Images = []string{ModulesImages}
+	}
+	var imgs []string
+	for _, e := range p.Images {
+		if e != ModulesImages {
+			imgs = append(imgs, e)
+			continue
+		}
+		for _, r := range d.Images {
+			repo, tag, digest, err := parseRef(r)
+			if err != nil || tag != "" || digest != "" {
+				return fmt.Errorf("policy: a module declares the image %q, which is not a repository without a tag", r)
+			}
+			imgs = append(imgs, repo)
+		}
+	}
+	if len(imgs) == 0 {
+		return errors.New("policy: no images are allowed: list some, or use @modules once a bundled module declares one")
+	}
+	p.Images = dedupe(imgs)
+	if len(p.Networks) == 0 {
+		if d.Network == "" || !identRe.MatchString(d.Network) {
+			return errors.New("policy: no networks are allowed: list the games network")
+		}
+		p.Networks = []string{d.Network}
+	}
+	return nil
+}
+
+func dedupe(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // LoadPolicy reads and validates a policy file.
 func LoadPolicy(file string) (*Policy, error) {
 	b, err := os.ReadFile(file) // #nosec G304 -- operator-supplied path
@@ -126,6 +186,18 @@ func LoadPolicy(file string) (*Policy, error) {
 		return nil, err
 	}
 	return ParsePolicy(b)
+}
+
+// LoadPolicyWith is LoadPolicy followed by Resolve.
+func LoadPolicyWith(file string, d Defaults) (*Policy, error) {
+	p, err := LoadPolicy(file)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.Resolve(d); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // ParsePolicy validates policy YAML. Unknown keys are errors.
@@ -142,7 +214,7 @@ func ParsePolicy(b []byte) (*Policy, error) {
 	for _, f := range []struct {
 		name string
 		n    int
-	}{{"images", len(p.Images)}, {"networks", len(p.Networks)}, {"ports", len(p.Ports)}} {
+	}{{"ports", len(p.Ports)}} {
 		if f.n == 0 {
 			return nil, fmt.Errorf("policy: %s must list at least one entry (it is a limit, so it is never implied)", f.name)
 		}
@@ -159,7 +231,7 @@ func ParsePolicy(b []byte) (*Policy, error) {
 	}
 	for i, img := range p.Images {
 		switch {
-		case img == "*":
+		case img == "*" || img == ModulesImages:
 		case strings.HasSuffix(img, "*"):
 			// the scopes hold fully qualified repositories, so a prefix must be one too
 			if pre := strings.TrimSuffix(img, "*"); !strings.HasSuffix(pre, "/") || !strings.Contains(strings.TrimSuffix(pre, "/"), ".") || strings.ContainsAny(pre, " :@") {
