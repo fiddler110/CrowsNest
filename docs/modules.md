@@ -74,6 +74,9 @@ Bots are never counted. Without `rcon_addr` the game still starts and stops, but
 A module may also carry a `backup:` block (`exec`, `list_dir`, `before_stop`, same meaning as the config.yaml block).
 It applies to games enabled from the dashboard only; games in `config.yaml` keep their own.
 
+An optional `accent: "#rrggbb"` sets the colour of the game's dashboard card. Without one the card uses the
+default theme colour.
+
 Copy `internal/modules/bundled/minecraft/module.yaml` (log-based) or `source` (RCON-based) into
 `<modules_dir>/<id>/module.yaml`, change the regexes, and add the game to `config.yaml`. Unknown keys are an
 error, so a typo cannot silently disable a setting. Add a fixture of real log lines and test it the way

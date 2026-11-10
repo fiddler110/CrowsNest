@@ -74,7 +74,7 @@
         <button class="btn btn-primary start-btn" type="button"><svg class="icon"><use href="#i-play"/></svg>Start</button>
         <button class="btn btn-danger stop-btn" type="button"><svg class="icon"><use href="#i-stop"/></svg>Stop</button>
         <div class="tabs" role="tablist" aria-label="{{.DisplayName}} panels">
-          <button class="tab" type="button" role="tab" data-tab="logs" id="tab-{{.ID}}-logs" aria-controls="panel-{{.ID}}-logs" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>Logs</button>
+          {{if $.IsAdmin}}<button class="tab" type="button" role="tab" data-tab="logs" id="tab-{{.ID}}-logs" aria-controls="panel-{{.ID}}-logs" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-terminal"/></svg>Logs</button>{{end}}
           <button class="tab" type="button" role="tab" data-tab="stats" id="tab-{{.ID}}-stats" aria-controls="panel-{{.ID}}-stats" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>Stats</button>
           {{if .HasInfo}}<button class="tab" type="button" role="tab" data-tab="info" id="tab-{{.ID}}-info" aria-controls="panel-{{.ID}}-info" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>Info</button>{{end}}
           {{if .HasBackup}}<button class="tab" type="button" role="tab" data-tab="backups" id="tab-{{.ID}}-backups" aria-controls="panel-{{.ID}}-backups" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>Backups</button>{{end}}
@@ -85,9 +85,11 @@
       </div>
 
       <div class="card-side">
+      {{if $.IsAdmin}}
       <div class="log-panel" role="tabpanel" data-panel="logs" id="panel-{{.ID}}-logs" aria-labelledby="tab-{{.ID}}-logs" tabindex="0" hidden>
         <div class="log-output" role="log"></div>
       </div>
+      {{end}}
       {{if .HasInfo}}
       <div class="info-panel" role="tabpanel" data-panel="info" id="panel-{{.ID}}-info" aria-labelledby="tab-{{.ID}}-info" tabindex="0" hidden>
         <p class="info-empty" hidden>No info right now. The server may still be starting.</p>

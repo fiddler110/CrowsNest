@@ -69,6 +69,17 @@ func TestDashboard_InfoTabOnlyWithInfoProvider(t *testing.T) {
 	}
 }
 
+func TestDashboard_LogsTabAdminOnly(t *testing.T) {
+	h := pagesHarness(t)
+	if card := cardOf(t, h.get(t, "/"), "rich"); !strings.Contains(card, `data-tab="logs"`) || !strings.Contains(card, `data-panel="logs"`) {
+		t.Error("admin card has no Logs tab")
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	if card := cardOf(t, h.get(t, "/"), "rich"); strings.Contains(card, `data-tab="logs"`) || strings.Contains(card, `data-panel="logs"`) {
+		t.Error("player card shows a Logs tab")
+	}
+}
+
 var (
 	idAttr      = regexp.MustCompile(`\sid="([^"]+)"`)
 	unversioned = regexp.MustCompile(`"/static/[^"?]*"`)

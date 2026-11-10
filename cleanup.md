@@ -6,7 +6,7 @@ are stable so commits and agents can refer to them.
 
 ## B. Bugs
 
-- [ ] **B1. The "add a game" form hides itself.** `games.html` uses `id="setup"` on both
+- [x] **B1. The "add a game" form hides itself.** `games.html` uses `id="setup"` on both
   the `<form>` (line 62) and the host-steps `<section>` inside it (line 91).
   `renderSetup()` in `games.js` sets `$("setup").hidden`, which matches the form, so
   every module without host steps (and every preview error, `games.js:271`) hides the
@@ -24,7 +24,7 @@ are stable so commits and agents can refer to them.
   session only closes on a panel stop. Crashes, external stops and players who leave
   while CrowsNest is down leave sessions open forever. Record leaves for the last known
   names when a game is confirmed not online.
-- [ ] **B5. Danger console actions with no fields run without confirmation.** The
+- [x] **B5. Danger console actions with no fields run without confirmation.** The
   confirm only happens on form submit (`app.js:843`).
 
 ## S. Security
@@ -52,7 +52,7 @@ are stable so commits and agents can refer to them.
 - [x] **S7 (low). The guard checks a container by name but forwards that name, not the
   resolved ID**, so the engine resolves it again. Rewrite the target to the full ID.
   Fuzz targets for the guard's path and body parsing are already on the roadmap.
-- [ ] **S8 (low). Players can read every game's full live log**, including anything an
+- [x] **S8 (low). Players can read every game's full live log**, including anything an
   image prints at boot. **Needs a decision:** make logs admin-only, or add a per-module
   redaction pattern.
 
@@ -68,13 +68,13 @@ are stable so commits and agents can refer to them.
   **Deferred to Phase 4:** the cost is one `docker inspect` per poller interval, and an
   interim cache would be thrown away by the hub.
 - [x] **J3. Shutdown doesn't wait for backups** (`backups.Wait()` is never called).
-- [ ] **J4. CI only syntax-checks `app.js` and `login.js`** (`ci.yml:42`). `games.js` and
+- [x] **J4. CI only syntax-checks `app.js` and `login.js`** (`ci.yml:42`). `games.js` and
   `settings.js` are skipped, and nothing checks templates for duplicate ids (that check
   would have caught B1).
 
 ## P. Performance
 
-- [ ] **P1. Static assets are uncached and uncompressed.** The embedded FS has no
+- [x] **P1. Static assets are uncached and uncompressed.** The embedded FS has no
   modification times, so there is no ETag or Last-Modified, and there is no
   Cache-Control or gzip. About 190 KB is re-downloaded per page load. Hash the asset
   URLs, cache them for a long time, and gzip.
@@ -84,42 +84,48 @@ are stable so commits and agents can refer to them.
 - [x] **P3. Playtime is recomputed from the full history** under the store lock on
   every `/api/activity` call. Keep it incrementally, or cache it until the next
   `Record`.
-- [ ] **P4. The dashboard polls four endpoints on separate timers.** Fold `/api/health`
+- [x] **P4. The dashboard polls four endpoints on separate timers.** Fold `/api/health`
   into `/api/games`. Use one SSE stream with Phase 4.
-- [ ] **P5. The console output box grows forever**, and each line rewrites all of its
+- [x] **P5. The console output box grows forever**, and each line rewrites all of its
   text (`app.js:803`). Cap it like the log panel.
 
 ## M. Menus and features: implementation
 
-- [ ] **M1. The top bar differs on every page.** The dashboard has Games, Settings and
+- [x] **M1. The top bar differs on every page.** The dashboard has Games, Settings and
   Log out. Settings and Games have no Log out. No page marks the current one. The SVG
   sprite and header are copied into three templates. Use one shared nav partial with
   the current page marked and Log out everywhere.
-- [ ] **M2. Card tabs show features a game lacks.** The Info tab is on every card
+- [x] **M2. Card tabs show features a game lacks.** The Info tab is on every card
   (`dashboard.html:110`). Add a `HasInfo` flag like Backups and Console. Stats keeps
   polling while the game is offline.
-- [ ] **M3. Wrong icons.** Backups uses the Info icon and Console uses the Logs icon.
-- [ ] **M4. Duplicated JS helpers.** `toast` and `callAPI` are copied three times, 401
+- [x] **M3. Wrong icons.** Backups uses the Info icon and Console uses the Logs icon.
+- [x] **M4. Duplicated JS helpers.** `toast` and `callAPI` are copied three times, 401
   handling is inconsistent, and every 403 says "reload the page" even when the cause is
   the player role. Use one shared `api.js`.
-- [ ] **M5. Mixed confirmations.** Disable, Delete user and danger console actions use
+- [x] **M5. Mixed confirmations.** Disable, Delete user and danger console actions use
   `confirm()`, while the switch prompt is a themed dialog. Make one themed confirm
   dialog. "Update image" (which recreates the container) has no confirmation.
-- [ ] **M6. The toast has one slot, no close button, and no success/error style.** When
+- [x] **M6. The toast has one slot, no close button, and no success/error style.** When
   a log stream ends because the container stopped, the panel says nothing.
-- [ ] **M7. Unclear empty states.** The empty dashboard says "add to config.yaml"; it
+- [x] **M7. Unclear empty states.** The empty dashboard says "add to config.yaml"; it
   should link admins to `/games`. The overnight hours don't say which timezone they use
   (`server.tz`).
 
 ## L. Look and feel
 
-- [ ] **L1. Accent colours are hardcoded for three games** (`style.css:227`). Let
+- [x] **L1. Accent colours are hardcoded for three games** (`style.css:227`). Let
   `module.yaml` declare an `accent` and pass it to the card as `--vessel`.
-- [ ] **L2. The fleet banner only names the first active game** when more than one is
+- [x] **L2. The fleet banner only names the first active game** when more than one is
   running.
-- [ ] **L3. Card panels stack.** Logs, Stats, Info, Backups and Console can all be open
+- [x] **L3. Card panels stack.** Logs, Stats, Info, Backups and Console can all be open
   at once. Use a real tab group: one panel open, arrow-key navigation, `role="tablist"`.
-- [ ] **L4. Text inputs remove the focus outline** (`outline: none`). Give them a
+- [x] **L4. Text inputs remove the focus outline** (`outline: none`). Give them a
   `:focus-visible` ring like the buttons.
-- [ ] **L5. The Settings modules pane duplicates the catalogue verdicts.** Link each
+- [x] **L5. The Settings modules pane duplicates the catalogue verdicts.** Link each
   entry to its card on the Games page instead.
+
+## Follow-ups
+
+- The Games page catalogue doesn't show module accents yet; it needs an `Accent` field on
+  `managed.ModuleInfo`.
+- J2 is waiting on the Phase 4 state hub.

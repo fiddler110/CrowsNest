@@ -125,7 +125,8 @@ writable by uid 1000). Delete the file to go back to the `config.yaml` values.
 ### Roles
 
 Two roles: **admin** can do everything; **player** can start, stop and switch
-games and see everything on the dashboard, but can't open Settings or touch
+games and see status, players, stats and activity on the dashboard, but can't
+open Settings or the Games page, read container logs, use the console or touch
 backups. A role is set per user in the users file (`<NAME>_ROLE=admin|player`),
 usually through `docker compose exec crowsnest crowsnest set-role <user> <admin|player>`.
 A password account with no role is an admin, so existing accounts behave as
