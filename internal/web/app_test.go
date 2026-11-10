@@ -1249,6 +1249,18 @@ func TestManagedAllowNeedsThePasswordAgain(t *testing.T) {
 	if c := do(`{"allowed":false}`); c != http.StatusNoContent || fm.allowed[1] != "minecraft=false" {
 		t.Errorf("turn off: %d %v", c, fm.allowed)
 	}
+	// A Google-only admin has no password to confirm with, so they set one first.
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
+	h.App.Auth.Users = h.App.Auth.Sessions.Users
+	n := len(fm.allowed)
+	if c := do(`{"allowed":true,"password":"anything"}`); c != http.StatusForbidden || len(fm.allowed) != n {
+		t.Errorf("no stored password: %d, want 403", c)
+	}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/games", nil))
+	if !strings.Contains(rec.Body.String(), "has no password yet") {
+		t.Error("the games page lacks the set-a-password banner")
+	}
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer, Hash: hash}}
 	if c := do(`{"allowed":true,"password":"s3cret-pw"}`); c != http.StatusForbidden {
 		t.Errorf("player: %d, want 403", c)

@@ -58,7 +58,7 @@ func (a *App) handleGamesPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	data := dashboardData{Page: "games", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
+	data := dashboardData{Page: "games", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken, NeedsPassword: !a.Auth.HasPassword(session.Username)}
 	render(w, a.Templates.Games, data, "games page")
 }
 
@@ -69,7 +69,7 @@ func (a *App) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	data := dashboardData{Page: "settings", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
+	data := dashboardData{Page: "settings", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken, NeedsPassword: !a.Auth.HasPassword(session.Username)}
 	render(w, a.Templates.Settings, data, "settings page")
 }
 
@@ -274,8 +274,11 @@ func (a *App) handleManagedAllow(w http.ResponseWriter, r *http.Request) {
 	session, _ := auth.FromContext(r.Context())
 	// Turning a module off only narrows things; asking for the password again is for widening.
 	if body.Allowed {
-		ok, _, limited := a.Auth.ConfirmPassword(r, session.Username, body.Password)
+		ok, have, limited := a.Auth.ConfirmPassword(r, session.Username, body.Password)
 		switch {
+		case !have:
+			http.Error(w, "set a password for your account first (Settings, Users): widening the guard asks for it, even if you sign in with Google", http.StatusForbidden)
+			return
 		case limited:
 			http.Error(w, "too many attempts, try again later", http.StatusTooManyRequests)
 			return

@@ -47,6 +47,7 @@
     <button id="logout-btn" class="btn btn-ghost" type="button"><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg><span class="btn-label">Log out</span></button>
   </nav>
 </header>
+{{if .NeedsPassword}}<p class="banner banner-pw" role="status"><svg class="icon" aria-hidden="true"><use href="#i-alert"/></svg><span>Your account has no password yet. Allowing a game asks for one, even if you sign in with Google. <a href="/settings#users">Set one in Settings</a>.</span></p>{{end}}
 {{end}}
 
 {{define "chrome"}}

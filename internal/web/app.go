@@ -352,16 +352,20 @@ type dashboardData struct {
 	IsAdmin   bool
 	CSRFToken string
 	Games     []dashboardGame
+	// NeedsPassword: an admin with no stored password sees a banner, because
+	// widening the guard asks for one.
+	NeedsPassword bool
 }
 
 func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	session, _ := auth.FromContext(r.Context())
 	defs := a.Registry.All()
 	data := dashboardData{
-		Page:      "dashboard",
-		Username:  session.Username,
-		IsAdmin:   a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
-		CSRFToken: session.CSRFToken,
+		Page:          "dashboard",
+		Username:      session.Username,
+		IsAdmin:       a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
+		NeedsPassword: a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin && !a.Auth.HasPassword(session.Username),
+		CSRFToken:     session.CSRFToken,
 	}
 	// First paint must not wait on game probes (a booting game's API can
 	// take seconds to time out): use the hub's latest observation if any,

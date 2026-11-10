@@ -160,20 +160,29 @@ func (s *Service) ServeLogout(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+// HasPassword reports whether the user has a stored password.
+func (s *Service) HasPassword(username string) bool {
+	if s.Store != nil {
+		r, _ := s.Store.Lookup(username)
+		return r.Hash != ""
+	}
+	return s.Users[username].Hash != ""
+}
+
 // ConfirmPassword is for a sensitive action by someone already signed in: it
 // checks the password again. have is false when the user has no stored
-// password (a Google-only user), in which case there is nothing to ask for
-// and the session is the only proof. A wrong answer counts against the same
+// password (a Google-only user): there is nothing to check, and the caller
+// refuses the action until one is set. A wrong answer counts against the same
 // limiter as sign-in, keyed by address.
 func (s *Service) ConfirmPassword(r *http.Request, username, password string) (ok, have bool, limited bool) {
+	if !s.HasPassword(username) {
+		return false, false, false
+	}
 	var record UserRecord
 	if s.Store != nil {
 		record, _ = s.Store.Lookup(username)
 	} else {
 		record = s.Users[username]
-	}
-	if record.Hash == "" {
-		return true, false, false
 	}
 	if s.LoginLimiter != nil && !s.LoginLimiter.Allow(ClientIP(r, s.TrustedProxies)) {
 		return false, true, true

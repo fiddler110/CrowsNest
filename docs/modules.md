@@ -169,8 +169,9 @@ max_scopes: 32
   the module's reason for each) to what the guard accepts. It is stored in `allowed.json` beside the managed
   scopes file; the guard only adds ports a *bundled* module declares, so the file cannot open anything else. A
   game can't be switched off while one of its servers still exists, since the guard would drop it. `ports` in
-  `policy.yaml` is only for ports beyond those: a game installed from a URL, or a different host port. A user
-  with no stored password (Google sign-in only) is not asked for one, because their session is the proof.
+  `policy.yaml` is only for ports beyond those: a game installed from a URL, or a different host port. An admin with no
+  stored password (Google sign-in only) sees a banner on every page and is refused until they set one in Settings,
+  Users: the password is only used to confirm this, so a hijacked session alone cannot widen the guard.
 - Point `games_root` at a folder that holds only game data, such as `<your data mount>/crowsnest/games`, not at a
   mount shared with other services: every dashboard-added game's folder is `<games_root>/<id>`, and the policy
   lets the panel bind anything inside `games_root`. Create it once, owned by you, before the first game.
