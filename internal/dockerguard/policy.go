@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -39,7 +40,8 @@ type Policy struct {
 	// network of the app's own config (platform.games_network).
 	Networks []string `yaml:"networks"`
 	// Ports are the host ports (and protocol) a managed scope may publish, as
-	// "27000-28999/udp" or "25565/tcp". Required.
+	// "27000-28999/udp" or "25565/tcp". Optional: the ports of each module the
+	// operator allowed are added to it, so this is only for ports beyond those.
 	Ports []string `yaml:"ports"`
 	// HostIPs, if set, limits the address a port may be published on.
 	HostIPs []string `yaml:"host_ips"`
@@ -131,6 +133,13 @@ const ModulesImages = "@modules"
 type Defaults struct {
 	Images  []string
 	Network string
+	// ModulePorts are the published ports each bundled module declares
+	// ("25565/tcp"), by module id. Allowed is the set of module ids the
+	// operator switched on (the allowed file); each one adds its ports to the
+	// policy's own. An id that is not a bundled module adds nothing, so what
+	// the panel can widen is bounded by what the bundled modules declare.
+	ModulePorts map[string][]string
+	Allowed     []string
 }
 
 // Resolve fills in what the policy left out and expands "@modules". The guard
@@ -163,6 +172,18 @@ func (p *Policy) Resolve(d Defaults) error {
 			return errors.New("policy: no networks are allowed: list the games network")
 		}
 		p.Networks = []string{d.Network}
+	}
+	for _, id := range d.Allowed {
+		for _, s := range d.ModulePorts[id] {
+			pr, err := parsePortRange(s)
+			if err != nil {
+				return fmt.Errorf("policy: module %s declares a bad port: %w", id, err)
+			}
+			if !slices.Contains(p.Ports, s) {
+				p.Ports = append(p.Ports, s)
+				p.ports = append(p.ports, pr)
+			}
+		}
 	}
 	return nil
 }
@@ -210,14 +231,6 @@ func ParsePolicy(b []byte) (*Policy, error) {
 	}
 	if !strings.HasPrefix(p.GamesRoot, "/") || path.Clean(p.GamesRoot) != p.GamesRoot || p.GamesRoot == "/" || strings.ContainsFunc(p.GamesRoot, badBindRune) {
 		return nil, fmt.Errorf("policy: games_root must be an absolute, normalised path other than /, not %q", p.GamesRoot)
-	}
-	for _, f := range []struct {
-		name string
-		n    int
-	}{{"ports", len(p.Ports)}} {
-		if f.n == 0 {
-			return nil, fmt.Errorf("policy: %s must list at least one entry (it is a limit, so it is never implied)", f.name)
-		}
 	}
 	for _, n := range p.Names {
 		if n == "*" || !identRe.MatchString(strings.TrimSuffix(n, "*")) {

@@ -173,6 +173,12 @@ type OptionInfo struct {
 	Auto     bool   `json:"auto,omitempty"` // filled in from the game itself when left empty
 }
 
+// PortNote is one published port and the module's reason for it.
+type PortNote struct {
+	Port string `json:"port"` // "25565/tcp"
+	Why  string `json:"why,omitempty"`
+}
+
 type ModuleInfo struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
@@ -180,7 +186,14 @@ type ModuleInfo struct {
 	Description string   `json:"description,omitempty"`
 	Image       string   `json:"image,omitempty"`
 	Ports       []string `json:"ports,omitempty"` // "25565/tcp"
-	HasBackup   bool     `json:"has_backup,omitempty"`
+	// PortNotes says what each published port is for, as the module declares it.
+	PortNotes []PortNote `json:"port_notes,omitempty"`
+	// Allowed is whether the operator switched this module on. Bundled is whether
+	// the guard knows its ports (so a switch can allow them); a module installed
+	// from a URL has no switch, its ports go in policy.yaml.
+	Allowed   bool `json:"allowed"`
+	Bundled   bool `json:"bundled"`
+	HasBackup bool `json:"has_backup,omitempty"`
 	// ConnectHint is the address players most likely use (published host address
 	// and first port), offered as the default connect address.
 	ConnectHint string `json:"connect_hint,omitempty"`
@@ -214,6 +227,8 @@ var (
 // that describe a container (a runtime section).
 func (m *Manager) Catalogue() []ModuleInfo {
 	var out []ModuleInfo
+	defs := modules.PolicyDefaults(m.Platform)
+	allowed, _ := dockerguard.ReadAllowed(m.path(allowedFile))
 	for _, mf := range m.Modules.Manifests() {
 		if len(mf.Runtime.Ports) == 0 && mf.Runtime.Image == "" && len(mf.Runtime.Data) == 0 {
 			continue
@@ -223,8 +238,11 @@ func (m *Manager) Catalogue() []ModuleInfo {
 			NeedsException: len(rt.SecOpts) > 0 || len(rt.Networks) > 0 || rt.GamesIPv4Option != "",
 			Description:    mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil}
 		for _, p := range mf.Runtime.Ports {
-			mi.Ports = append(mi.Ports, fmt.Sprintf("%d/%s", p.Port, p.Proto))
+			mi.Ports = append(mi.Ports, modules.PortSpec(p))
+			mi.PortNotes = append(mi.PortNotes, PortNote{Port: modules.PortSpec(p), Why: p.Why})
 		}
+		mi.Bundled = len(defs.ModulePorts[mf.ID]) > 0
+		mi.Allowed = slices.Contains(allowed, mf.ID)
 		if len(mf.Runtime.Ports) > 0 && m.Platform.HostIP != "" && m.Platform.HostIP != "0.0.0.0" {
 			mi.ConnectHint = fmt.Sprintf("%s:%d", m.Platform.HostIP, mf.Runtime.Ports[0].Port)
 		}
@@ -452,11 +470,28 @@ func (m *Manager) bindClash(id string, rd *modules.Rendered) error {
 	return nil
 }
 
+// policy is the policy in force: the file plus the ports of the modules switched on.
 func (m *Manager) policy() (*dockerguard.Policy, error) {
+	return m.loadPolicy(true)
+}
+
+// filePolicy is what policy.yaml itself says, without the allowed modules' ports.
+func (m *Manager) filePolicy() (*dockerguard.Policy, error) {
+	return m.loadPolicy(false)
+}
+
+func (m *Manager) loadPolicy(withAllowed bool) (*dockerguard.Policy, error) {
 	if m.PolicyFile == "" {
 		return nil, errors.New("no policy file is configured: managed games need an operator policy")
 	}
-	return dockerguard.LoadPolicyWith(m.PolicyFile, modules.PolicyDefaults(m.Platform))
+	d := modules.PolicyDefaults(m.Platform)
+	if withAllowed {
+		var err error
+		if d.Allowed, err = dockerguard.ReadAllowed(m.path(allowedFile)); err != nil {
+			return nil, err
+		}
+	}
+	return dockerguard.LoadPolicyWith(m.PolicyFile, d)
 }
 
 // renderAndFit renders the game and checks it against the policy.
@@ -1237,7 +1272,7 @@ type PolicyState struct {
 
 // Policy reads the policy in force.
 func (m *Manager) Policy() (PolicyState, error) {
-	p, err := m.policy()
+	p, err := m.filePolicy()
 	if err != nil {
 		return PolicyState{}, err
 	}
@@ -1315,7 +1350,7 @@ func (m *Manager) SetPolicy(d PolicyDoc) error {
 	}
 	// An exception loosens the guard for one container, so only the file on the host can add or change one.
 	d.Exceptions = nil
-	cur, curErr := m.policy()
+	cur, curErr := m.filePolicy()
 	if curErr == nil {
 		d.Exceptions = cur.Exceptions
 	}

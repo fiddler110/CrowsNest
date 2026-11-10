@@ -540,6 +540,16 @@ h1, h2, h3, p { margin: 0; }
 .pick:hover:not(:disabled) { border-color: var(--border-strong); }
 .pick[aria-checked="true"] { border-color: var(--gold); box-shadow: 0 0 0 1px var(--gold) inset; }
 .pick:disabled { opacity: 0.45; cursor: not-allowed; }
+.pick-wrap { display: flex; flex-direction: column; gap: 0.5rem; }
+.pick-wrap > .pick { flex: 1; }
+.allow-bar { display: flex; flex-direction: column; gap: 0.4rem; padding: 0 0.2rem; }
+.port-notes { list-style: none; margin: 0; padding: 0; font-size: 0.8rem; color: var(--muted); }
+.port-notes code { font: 0.78rem var(--mono); color: var(--text); }
+.allow-switch { display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; cursor: pointer; }
+.allow-note { margin: 0; font-size: 0.78rem; color: var(--muted); }
+.allow-ask { display: flex; flex-wrap: wrap; gap: 0.4rem; align-items: center; }
+.allow-ask .allow-note { flex-basis: 100%; }
+.allow-ask input { flex: 1; min-width: 9rem; }
 .pick-name { font-weight: 600; font-size: 1.05rem; }
 .pick-desc { color: var(--muted); font-size: 0.85rem; }
 .pick-meta { font: 0.74rem var(--mono); color: var(--muted); }

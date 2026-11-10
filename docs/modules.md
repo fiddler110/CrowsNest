@@ -148,7 +148,7 @@ scopes in force exactly as they were; a tighter policy drops managed scopes that
 is enough to start (`GUARD_SCOPES_FILE` with no `GUARD_SCOPES` is fine); with a managed file but no policy it refuses.
 
 ```yaml
-# policy.yaml: games_root and ports are required, so no limit is ever implied
+# policy.yaml: only games_root is required. Everything else has a safe default.
 games_root: /srv/games                 # managed binds must be exact paths inside this folder
 # names: [valheim, "gs-*"]            # optional: leave it out and any name works, because the guard only manages
                                        # containers the dashboard made (label crowsnest.managed=true)
@@ -156,7 +156,7 @@ games_root: /srv/games                 # managed binds must be exact paths insid
                                        # beside it: ["@modules", "ghcr.io/you/mygame"]. A list without "@modules" is
                                        # exactly that list. "*" alone = any image; prefixes are fully qualified
 # networks: [crowsnest-games-net]      # optional. Left out, it is platform.games_network from config.yaml
-ports: ["27000-28999/udp", "25565/tcp"]  # host ports and protocol
+# ports: ["27000-28999/udp"]          # optional: extra host ports, beyond the games you switch on (see below)
 host_ips: [10.0.0.2]                   # optional: limits the address ports are published on
 exec: false                            # may managed scopes use docker exec (save-on-stop hooks need it)
 labels: []                             # extra labels they may require (the watchtower opt-out is always fine)
@@ -164,6 +164,13 @@ pin_digests: true                      # managed creates must name the image by 
 max_scopes: 32
 ```
 
+- **Ports come from the games you allow.** On the Games page each bundled game has a switch. Turning it on asks
+  for your password, is written to the history, and adds that game's published ports (shown under the card with
+  the module's reason for each) to what the guard accepts. It is stored in `allowed.json` beside the managed
+  scopes file; the guard only adds ports a *bundled* module declares, so the file cannot open anything else. A
+  game can't be switched off while one of its servers still exists, since the guard would drop it. `ports` in
+  `policy.yaml` is only for ports beyond those: a game installed from a URL, or a different host port. A user
+  with no stored password (Google sign-in only) is not asked for one, because their session is the proof.
 - Point `games_root` at a folder that holds only game data, such as `<your data mount>/crowsnest/games`, not at a
   mount shared with other services: every dashboard-added game's folder is `<games_root>/<id>`, and the policy
   lets the panel bind anything inside `games_root`. Create it once, owned by you, before the first game.

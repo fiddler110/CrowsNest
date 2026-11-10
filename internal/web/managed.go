@@ -24,6 +24,7 @@ type ManagedGames interface {
 	Disable(id string) error
 	Policy() (managed.PolicyState, error)
 	SetPolicy(managed.PolicyDoc) error
+	SetAllowed(id string, on bool) error
 }
 
 const maxManagedBody = 32 << 10
@@ -250,4 +251,49 @@ func (a *App) handleManagedSetPolicy(w http.ResponseWriter, r *http.Request) {
 	a.record(r, "policy", "changed the policy")
 	st, _ := a.Managed.Policy()
 	writeJSON(w, http.StatusOK, st)
+}
+
+// handleManagedAllow switches a bundled module on or off. It widens what the
+// guard accepts (that module's ports), so the admin proves who they are again
+// with their password, and the change goes in the history.
+func (a *App) handleManagedAllow(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	var body struct {
+		Allowed  bool   `json:"allowed"`
+		Password string `json:"password"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	session, _ := auth.FromContext(r.Context())
+	// Turning a module off only narrows things; asking for the password again is for widening.
+	if body.Allowed {
+		ok, _, limited := a.Auth.ConfirmPassword(r, session.Username, body.Password)
+		switch {
+		case limited:
+			http.Error(w, "too many attempts, try again later", http.StatusTooManyRequests)
+			return
+		case !ok:
+			a.record(r, r.PathValue("id"), "refused to allow a module: wrong password")
+			http.Error(w, "that password is not right", http.StatusForbidden)
+			return
+		}
+	}
+	id := r.PathValue("id")
+	if err := a.Managed.SetAllowed(id, body.Allowed); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	verb := "turned off"
+	if body.Allowed {
+		verb = "allowed"
+	}
+	a.record(r, id, verb+" the "+id+" module (its ports in the policy)")
+	w.WriteHeader(http.StatusNoContent)
 }

@@ -18,7 +18,7 @@ runtime:
   stop_grace: 60s           # the image saves the world on SIGTERM
   data_dir: Minecraft
   ports:
-    - {port: 25565, proto: tcp}   # RCON (25575) stays on the games network, unpublished
+    - {port: 25565, proto: tcp, why: "Java Edition players connect here"}   # RCON (25575) stays on the games network, unpublished
   data:
     - {path: /data}
   env:

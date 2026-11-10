@@ -79,6 +79,9 @@ type ServiceNet struct {
 type RuntimePort struct {
 	Port  int    `yaml:"port"`
 	Proto string `yaml:"proto"` // udp (default) or tcp
+	// Why says in a few words what players or the game use this port for. The
+	// Games page shows it beside the port.
+	Why string `yaml:"why,omitempty"`
 }
 
 // DataMount is a bind mount of <games_root>/<data_dir>/<Sub> at Path.

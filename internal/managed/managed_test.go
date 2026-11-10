@@ -937,3 +937,44 @@ func TestPolicyEditsNeverWiden(t *testing.T) {
 		t.Errorf("an unchanged save was refused: %v", err)
 	}
 }
+
+func TestAllowingAModuleAddsItsPortsAndTurnOffIsGuarded(t *testing.T) {
+	m, _ := newManager(t)
+	if err := m.SetAllowed("not-a-module", true); err == nil {
+		t.Error("an unknown module was allowed")
+	}
+	if err := m.SetAllowed("minecraft", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetAllowed("minecraft", true); err != nil {
+		t.Errorf("allowing twice: %v", err)
+	}
+	if got, _ := m.Allowed(); len(got) != 1 || got[0] != "minecraft" {
+		t.Fatalf("allowed %v", got)
+	}
+	var mc ModuleInfo
+	for _, mi := range m.Catalogue() {
+		if mi.ID == "minecraft" {
+			mc = mi
+		}
+	}
+	if !mc.Allowed || !mc.Bundled || len(mc.PortNotes) == 0 || mc.PortNotes[0].Why == "" {
+		t.Errorf("catalogue entry: %+v", mc)
+	}
+	// The policy view shows only what the file says, so a save never writes the module's ports into it.
+	st, err := m.Policy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(st.Policy.Ports, "25565/tcp") != slices.Contains(strings.Fields(strings.NewReplacer(`"`, " ", `[`, " ", `]`, " ", `,`, " ").Replace(policy)), "25565/tcp") {
+		t.Errorf("policy view ports %v include the allowed module's ports", st.Policy.Ports)
+	}
+	m.entries = append(m.entries, &entry{Request: Request{ID: "mc1", Module: "minecraft"}})
+	if err := m.SetAllowed("minecraft", false); err == nil || !strings.Contains(err.Error(), "mc1") {
+		t.Errorf("turned off with a game still there: %v", err)
+	}
+	m.entries = nil
+	if err := m.SetAllowed("minecraft", false); err != nil {
+		t.Fatal(err)
+	}
+}

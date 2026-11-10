@@ -1,6 +1,7 @@
 package dockerguard
 
 import (
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -51,5 +52,41 @@ func TestResolveModulesTokenAndExplicitLists(t *testing.T) {
 	p, _ = ParsePolicy([]byte(bareYAML))
 	if err := p.Resolve(Defaults{Images: d.Images}); err == nil {
 		t.Error("no network anywhere was accepted")
+	}
+}
+
+// An allowed module adds its bundled ports to the policy; an unknown id adds nothing.
+func TestResolveAddsPortsOfAllowedModules(t *testing.T) {
+	d := Defaults{Images: []string{"lloesche/valheim-server"}, Network: "n",
+		ModulePorts: map[string][]string{"valheim": {"2456/udp", "2457/udp"}, "minecraft": {"25565/tcp"}},
+		Allowed:     []string{"valheim", "not-a-module"}}
+	p, err := ParsePolicy([]byte("games_root: /srv/games\n"))
+	if err != nil {
+		t.Fatalf("a policy with no ports was refused: %v", err)
+	}
+	if err := p.Resolve(d); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.Ports, []string{"2456/udp", "2457/udp"}) {
+		t.Errorf("ports %v, want only valheim's", p.Ports)
+	}
+}
+
+func TestAllowedFileIsReadStrictly(t *testing.T) {
+	dir := t.TempDir()
+	f := dir + "/allowed.json"
+	if got, err := ReadAllowed(f); err != nil || got != nil {
+		t.Errorf("missing file: %v %v", got, err)
+	}
+	for body, ok := range map[string]bool{`{"modules":["valheim"]}`: true, ``: true, `{"modules":"all"}`: false, `{"everything":true}`: false, `nope`: false} {
+		if err := os.WriteFile(f, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := ReadAllowed(f); (err == nil) != ok {
+			t.Errorf("%q: err %v, want ok=%v", body, err, ok)
+		}
+	}
+	if AllowedPath("/x/managed/scopes.json") != "/x/managed/allowed.json" || AllowedPath("") != "" {
+		t.Error("AllowedPath")
 	}
 }

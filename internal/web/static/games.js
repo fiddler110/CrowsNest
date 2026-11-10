@@ -192,13 +192,83 @@ function renderCatalogue() {
     const meta = [m.image, (m.ports || []).join(", ")].filter(Boolean).join(" · ");
     if (meta) b.append(el("span", "pick-meta", meta));
     if (m.fits !== undefined && m.fits !== null) {
-      b.append(el("span", "pick-badge " + (m.fits ? "ok" : "no"), m.fits ? "Allowed by policy" : m.needs_exception ? "Needs a policy exception" : "Not allowed by policy"));
+      b.append(el("span", "pick-badge " + (m.fits ? "ok" : "no"), m.fits ? "Allowed by policy" : m.needs_exception ? "Needs a policy exception" : m.bundled && !m.allowed ? "Switch it on below to use it" : "Not allowed by policy"));
     }
     if (m.fits && m.fit_id) b.append(el("span", "pick-meta", `Use an id the policy allows, such as ${m.fit_id}.`));
     if (blocked && m.reason) b.append(el("span", "pick-reason", m.reason));
     b.addEventListener("click", () => choose(m.id));
-    root.append(b);
+    const wrap = el("div", "pick-wrap");
+    wrap.append(b, allowBar(m));
+    root.append(wrap);
   });
+}
+
+// Under each card: the ports the game publishes and why, and the switch that lets the guard accept them.
+function allowBar(m) {
+  const bar = el("div", "allow-bar");
+  if ((m.port_notes || []).length) {
+    const ul = el("ul", "port-notes");
+    m.port_notes.forEach((p) => {
+      const li = el("li");
+      li.append(el("code", "", p.port), document.createTextNode(p.why ? " " + p.why : ""));
+      ul.append(li);
+    });
+    bar.append(ul);
+  }
+  if (!m.bundled) {
+    if (m.ports && m.ports.length) bar.append(el("p", "allow-note", "Its ports are allowed in policy.yaml on the host."));
+    return bar;
+  }
+  const label = el("label", "allow-switch");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = !!m.allowed;
+  box.setAttribute("role", "switch");
+  label.append(box, el("span", "", m.allowed ? "Allowed" : "Not allowed yet"));
+  bar.append(label);
+  const ask = el("form", "allow-ask");
+  ask.hidden = true;
+  ask.autocomplete = "off";
+  const pw = document.createElement("input");
+  pw.type = "password";
+  pw.placeholder = "Your password";
+  pw.autocomplete = "current-password";
+  const ok = el("button", "btn btn-primary", "Allow");
+  ok.type = "submit";
+  const no = el("button", "btn btn-ghost", "Cancel");
+  no.type = "button";
+  const err = el("p", "settings-error");
+  err.hidden = true;
+  ask.append(el("p", "allow-note", "Allowing a game lets the guard accept its ports. Enter your password to confirm."), pw, ok, no, err);
+  bar.append(ask);
+  const send = async (allowed, password) => {
+    const res = await callAPI(`/api/managed/modules/${encodeURIComponent(m.id)}/allow`, { method: "PUT", body: JSON.stringify({ allowed, password }) });
+    if (!res.ok) return errorText(res);
+    return "";
+  };
+  box.addEventListener("change", async () => {
+    err.hidden = true;
+    if (box.checked) { ask.hidden = false; pw.focus(); return; }
+    ask.hidden = true;
+    const msg = await send(false, "");
+    if (msg) { box.checked = true; toast(msg, "error"); return; }
+    await reloadModules();
+  });
+  no.addEventListener("click", () => { ask.hidden = true; box.checked = false; pw.value = ""; });
+  ask.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = await send(true, pw.value);
+    pw.value = "";
+    if (msg) { err.textContent = msg; err.hidden = false; return; }
+    toast(`${m.name || m.id} allowed.`, "ok");
+    await reloadModules();
+  });
+  return bar;
+}
+
+async function reloadModules() {
+  const res = await callAPI("/api/managed/modules");
+  if (res.ok) { modules = await res.json(); renderCatalogue(); if (selected && !editing) schedulePreview(); }
 }
 
 function choose(id) {

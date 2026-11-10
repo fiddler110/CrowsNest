@@ -103,8 +103,9 @@ derived from it.
   2. [x] Images and the games network come from the bundled modules and `platform.games_network`, not the policy
      (`images` and `networks` are optional; `"@modules"` adds the module images to an explicit list; the dashboard
      editor cannot empty a list). A module installed from a URL still needs its image listed.
-  3. [ ] A per-module **Allow** switch on the Games page (admin password again, audit-logged), and each game's
-     published ports shown with the module's reason. Host-port changes warn on a clash; one optional extra range.
+  3. [x] A per-module **Allow** switch on the Games page (admin password again, audit-logged), and each game's
+     published ports shown with the module's reason (`why:` on a module port). `ports` in the policy is optional.
+     Not done: a clash warning on host-port changes (a changed host port still needs a `ports` entry).
   4. [ ] Host address as three plain choices (this machine, my network, a specific address); max active games as a
      number field with arrows, starting at 1.
 

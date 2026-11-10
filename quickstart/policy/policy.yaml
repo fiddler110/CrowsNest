@@ -1,13 +1,14 @@
 # The limits the dashboard works inside. The guard enforces them; the panel cannot change them.
 # Widen them here, on the host, deliberately. See ../../docs/modules.md ("The policy envelope").
 games_root: /srv/games                  # game data may only be bound from inside this folder (a host path)
-ports: ["25000-28999/udp", "25565/tcp", "2456-2458/udp", "8211/udp"]   # host ports games may publish
+# ports: []                            # optional: ports beyond those of the games you switch on (Games page)
 host_ips: []
 exec: false                             # true lets games run the backup command declared in their module
 pin_digests: true                       # run images by digest so an upstream push changes nothing until you update
 max_scopes: 16
 
 # Not listed, so these are the defaults:
+#   ports:    the published ports of each game you switch on under "Add a game" (a password is asked)
 #   images:   the images the bundled modules declare (written "@modules"). To add your own, list it too:
 #             images: ["@modules", "ghcr.io/you/mygame"]
 #   networks: the games network from config.yaml (platform.games_network)

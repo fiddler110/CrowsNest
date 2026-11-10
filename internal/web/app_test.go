@@ -1163,7 +1163,10 @@ func TestConsole_ActionsRawToggleAndAudit(t *testing.T) {
 	}
 }
 
-type fakeManaged struct{ enabled []managed.Request }
+type fakeManaged struct {
+	enabled []managed.Request
+	allowed []string
+}
 
 func (f *fakeManaged) Catalogue() []managed.ModuleInfo {
 	return []managed.ModuleInfo{{ID: "minecraft"}}
@@ -1180,6 +1183,10 @@ func (f *fakeManaged) Policy() (managed.PolicyState, error) {
 	return managed.PolicyState{Policy: managed.PolicyDoc{Names: []string{"x"}}}, nil
 }
 func (f *fakeManaged) SetPolicy(managed.PolicyDoc) error { return nil }
+func (f *fakeManaged) SetAllowed(id string, on bool) error {
+	f.allowed = append(f.allowed, fmt.Sprintf("%s=%v", id, on))
+	return nil
+}
 
 func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\nexit 0\n")
@@ -1211,6 +1218,40 @@ func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 		if c := do(p[0], p[1], []byte(`{}`)); c != http.StatusForbidden {
 			t.Errorf("player %s %s = %d, want 403", p[0], p[1], c)
 		}
+	}
+}
+
+func TestManagedAllowNeedsThePasswordAgain(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	hash, err := auth.HashPassword("s3cret-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin, Hash: hash}}
+	h.App.Auth.Users = h.App.Auth.Sessions.Users
+	fm := &fakeManaged{}
+	h.App.Managed = fm
+	do := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("PUT", "/api/managed/modules/minecraft/allow", []byte(body)))
+		return rec.Code
+	}
+	if c := do(`{"allowed":true}`); c != http.StatusForbidden || len(fm.allowed) != 0 {
+		t.Errorf("no password: %d %v, want 403 and nothing changed", c, fm.allowed)
+	}
+	if c := do(`{"allowed":true,"password":"wrong-pw-1"}`); c != http.StatusForbidden || len(fm.allowed) != 0 {
+		t.Errorf("wrong password: %d %v, want 403", c, fm.allowed)
+	}
+	if c := do(`{"allowed":true,"password":"s3cret-pw"}`); c != http.StatusNoContent || len(fm.allowed) != 1 || fm.allowed[0] != "minecraft=true" {
+		t.Errorf("right password: %d %v", c, fm.allowed)
+	}
+	// Narrowing needs no password.
+	if c := do(`{"allowed":false}`); c != http.StatusNoContent || fm.allowed[1] != "minecraft=false" {
+		t.Errorf("turn off: %d %v", c, fm.allowed)
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer, Hash: hash}}
+	if c := do(`{"allowed":true,"password":"s3cret-pw"}`); c != http.StatusForbidden {
+		t.Errorf("player: %d, want 403", c)
 	}
 }
 

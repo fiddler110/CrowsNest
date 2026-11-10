@@ -21,7 +21,7 @@ runtime:
   memory: 10g               # the README asks for 16GB+; cap it so a leak kills Palworld, not the host
   data_dir: Palworld
   ports:
-    - {port: 8211, proto: udp}   # the REST API (8212) is deliberately not published
+    - {port: 8211, proto: udp, why: "players connect here"}   # the REST API (8212) is deliberately not published
   data:
     - {path: /palworld}
   env:
