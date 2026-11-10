@@ -495,11 +495,17 @@ func TestPolicyEditing(t *testing.T) {
 		t.Fatal("a read-only policy was rewritten")
 	}
 	m.PolicyEditable = true
-	st.Policy.Names = append(st.Policy.Names, "pal-*")
-	if err := m.SetPolicy(st.Policy); err != nil {
+	wide := st.Policy
+	wide.Names = append(slices.Clone(wide.Names), "pal-*")
+	if err := m.SetPolicy(wide); err == nil {
+		t.Fatal("the dashboard widened the policy")
+	}
+	narrow := st.Policy
+	narrow.Names = st.Policy.Names[:1]
+	if err := m.SetPolicy(narrow); err != nil {
 		t.Fatal(err)
 	}
-	if again, _ := m.Policy(); !slices.Contains(again.Policy.Names, "pal-*") {
+	if again, _ := m.Policy(); len(again.Policy.Names) != 1 {
 		t.Errorf("edit not saved: %+v", again.Policy)
 	}
 	bad := st.Policy
@@ -512,7 +518,7 @@ func TestPolicyEditing(t *testing.T) {
 	if err := m.SetPolicy(empty); err == nil {
 		t.Error("an empty ports list was accepted")
 	}
-	if kept, _ := m.Policy(); !slices.Contains(kept.Policy.Names, "pal-*") || len(kept.Policy.Ports) == 0 {
+	if kept, _ := m.Policy(); len(kept.Policy.Names) != 1 || len(kept.Policy.Ports) == 0 {
 		t.Errorf("a refused edit changed the file: %+v", kept.Policy)
 	}
 }
@@ -635,13 +641,13 @@ func TestPolicyExceptionsSurviveDashboardEdits(t *testing.T) {
 	if len(st.Policy.Exceptions) != 1 {
 		t.Fatalf("exception not shown: %+v", st.Policy)
 	}
-	st.Policy.Names = append(st.Policy.Names, "pal-*")
+	st.Policy.Names = st.Policy.Names[:1]
 	st.Policy.Exceptions = append(st.Policy.Exceptions, dockerguard.Exception{Name: "sneaky", Image: "evil/miner", SecOpts: []string{"seccomp=unconfined"}})
 	if err := m.SetPolicy(st.Policy); err != nil {
 		t.Fatal(err)
 	}
 	again, _ := m.Policy()
-	if len(again.Policy.Exceptions) != 1 || again.Policy.Exceptions[0].Name != "windrose" || !slices.Contains(again.Policy.Names, "pal-*") {
+	if len(again.Policy.Exceptions) != 1 || again.Policy.Exceptions[0].Name != "windrose" || len(again.Policy.Names) != 1 {
 		t.Errorf("after save: %+v", again.Policy)
 	}
 }
@@ -856,5 +862,41 @@ func TestGameCannotReadThePanelEnvironment(t *testing.T) {
 	}
 	if v, ok := lookup("CROWSNEST_TEST_PANEL_SECRET"); ok || v != "" {
 		t.Errorf("container env lookup read the panel's environment: %q", v)
+	}
+}
+
+// The dashboard may tighten the policy and never loosen it, whatever the
+// field, so a compromised panel cannot widen its own limits.
+func TestPolicyEditsNeverWiden(t *testing.T) {
+	m, _ := newManager(t)
+	m.PolicyEditable = true
+	st, _ := m.Policy()
+	base := st.Policy
+	widen := map[string]func(d *PolicyDoc){
+		"games_root": func(d *PolicyDoc) { d.GamesRoot = "/" },
+		"names":      func(d *PolicyDoc) { d.Names = append(slices.Clone(d.Names), "other-*") },
+		"images":     func(d *PolicyDoc) { d.Images = append(slices.Clone(d.Images), "evil/*") },
+		"networks":   func(d *PolicyDoc) { d.Networks = append(slices.Clone(d.Networks), "host") },
+		"ports":      func(d *PolicyDoc) { d.Ports = append(slices.Clone(d.Ports), "1-65535/tcp") },
+		"labels":     func(d *PolicyDoc) { d.Labels = append(slices.Clone(d.Labels), "x=y") },
+		"exec":       func(d *PolicyDoc) { d.Exec = true },
+		"max_scopes": func(d *PolicyDoc) { d.MaxScopes = 1000 },
+	}
+	for name, f := range widen {
+		d := base
+		f(&d)
+		if name == "exec" && base.Exec {
+			continue // already on: nothing to widen
+		}
+		if err := m.SetPolicy(d); err == nil {
+			t.Errorf("%s: a widening edit was saved", name)
+		}
+	}
+	if kept, _ := m.Policy(); !slices.Equal(kept.Policy.Names, base.Names) || kept.Policy.MaxScopes != base.MaxScopes {
+		t.Errorf("a refused edit changed the file: %+v", kept.Policy)
+	}
+	same := base // saving what is already there is fine
+	if err := m.SetPolicy(same); err != nil {
+		t.Errorf("an unchanged save was refused: %v", err)
 	}
 }

@@ -249,6 +249,9 @@ func serve() error {
 	}
 
 	if cfg.Managed.Dir != "" {
+		if cfg.Managed.PolicyEditable {
+			log.Printf("warning: managed.policy_editable is on: the panel can rewrite %s (it may only tighten it, but it can still remove limits it was given)", cfg.Managed.PolicyFile)
+		}
 		mgr := &managed.Manager{
 			Dir: cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, PolicyEditable: cfg.Managed.PolicyEditable, Platform: modules.PlatformFrom(cfg.Platform),
 			Modules: mods, Config: cfg, Docker: docker, Wire: docker, Registry: registry,

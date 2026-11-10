@@ -294,6 +294,11 @@ writable into the panel and set `managed.policy_editable: true`. Saves are valid
 guard, written atomically, and applied by the guard within seconds (a managed game that no longer fits is dropped).
 Keep the guard's own mount read-only.
 
+Even then the dashboard can only **tighten** the policy: every list entry must already be in the file (compared
+exactly), `max_scopes` can only fall, and `exec` and `pin_digests` can only turn toward the stricter setting. Widening,
+including exceptions, is done in `policy.yaml` on the host. Enabling the option logs a warning at startup, because a
+compromised panel could still remove limits (for example every entry of a list but one).
+
 ### Deploying it (tested shape)
 
 Verified end to end on a real Docker daemon with the production chain (panel → execguard → guard → docker.sock), the

@@ -255,7 +255,7 @@ func TestPolicyKeepsPinDigests(t *testing.T) {
 	}
 	doc := st.Policy
 	doc.PinDigests = nil // an older form that does not know the setting
-	doc.Names = append(doc.Names, "pal-*")
+	doc.Names = doc.Names[:1]
 	if err := m.SetPolicy(doc); err != nil {
 		t.Fatal(err)
 	}
@@ -264,11 +264,11 @@ func TestPolicyKeepsPinDigests(t *testing.T) {
 	}
 	off := false
 	doc.PinDigests = &off
-	if err := m.SetPolicy(doc); err != nil {
-		t.Fatal(err)
+	if err := m.SetPolicy(doc); err == nil {
+		t.Error("the dashboard turned pin_digests off")
 	}
-	if again, _ := m.Policy(); *again.Policy.PinDigests {
-		t.Error("turning pin_digests off did not stick")
+	if again, _ := m.Policy(); !*again.Policy.PinDigests {
+		t.Error("a refused edit changed pin_digests")
 	}
 }
 

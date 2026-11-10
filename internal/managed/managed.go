@@ -22,6 +22,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
@@ -1231,6 +1232,62 @@ func (m *Manager) Policy() (PolicyState, error) {
 	}}, nil
 }
 
+// narrowOnly refuses an edit that would let the panel do more than the file
+// on the host already allows. A panel that can rewrite its own policy could
+// otherwise widen it as far as it likes, so the dashboard may only tighten:
+// every list entry must already be in the file (compared exactly, since two
+// patterns cannot be compared by what they match), numbers may only fall and
+// switches may only turn toward the stricter setting. Widening is done in
+// policy.yaml on the host.
+func narrowOnly(cur *dockerguard.Policy, d PolicyDoc) error {
+	const hint = "the dashboard can only tighten the policy; widen it in policy.yaml on the host"
+	subset := func(name string, now, was []string) error {
+		for _, e := range now {
+			if !slices.Contains(was, e) {
+				return fmt.Errorf("%s: %q is not in the current policy (%s)", name, e, hint)
+			}
+		}
+		return nil
+	}
+	if d.GamesRoot != cur.GamesRoot {
+		return fmt.Errorf("games_root cannot be changed here (%s)", hint)
+	}
+	for _, l := range []struct {
+		name     string
+		now, was []string
+	}{
+		{"names", d.Names, cur.Names}, {"images", d.Images, cur.Images},
+		{"networks", d.Networks, cur.Networks}, {"ports", d.Ports, cur.Ports},
+		{"labels", d.Labels, cur.Labels},
+	} {
+		if err := subset(l.name, l.now, l.was); err != nil {
+			return err
+		}
+	}
+	if len(cur.HostIPs) > 0 { // an empty list is unrestricted, so only a listed one is a limit to keep
+		if len(d.HostIPs) == 0 {
+			return fmt.Errorf("host_ips: clearing the list removes the limit (%s)", hint)
+		}
+		if err := subset("host_ips", d.HostIPs, cur.HostIPs); err != nil {
+			return err
+		}
+	}
+	if d.Exec && !cur.Exec {
+		return fmt.Errorf("exec cannot be turned on here (%s)", hint)
+	}
+	if cur.PinDigests && d.PinDigests != nil && !*d.PinDigests {
+		return fmt.Errorf("pin_digests cannot be turned off here (%s)", hint)
+	}
+	max := cur.MaxScopes
+	if max <= 0 {
+		max = 32 // the guard's default
+	}
+	if d.MaxScopes > max {
+		return fmt.Errorf("max_scopes cannot be raised above %d here (%s)", max, hint)
+	}
+	return nil
+}
+
 // SetPolicy validates and rewrites policy.yaml. The guard reads the same file and applies it within
 // seconds; a managed game that no longer fits is dropped by the guard, not here.
 func (m *Manager) SetPolicy(d PolicyDoc) error {
@@ -1246,6 +1303,12 @@ func (m *Manager) SetPolicy(d PolicyDoc) error {
 	if d.PinDigests == nil { // not sent: keep the file's setting
 		keep := curErr == nil && cur.PinDigests
 		d.PinDigests = &keep
+	}
+	if curErr != nil {
+		return fmt.Errorf("the current policy cannot be read, so it cannot be narrowed: %w", curErr)
+	}
+	if err := narrowOnly(cur, d); err != nil {
+		return err
 	}
 	body, err := yaml.Marshal(d)
 	if err != nil {

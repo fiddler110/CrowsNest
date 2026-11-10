@@ -197,7 +197,7 @@ loaders.policy = () => {
     pf.elements.exec.checked = !!p.exec;
     pf.elements.pin_digests.checked = !!p.pin_digests;
     $("policy-note").textContent = state.editable
-      ? "What the panel may create when you add a game. Saved changes apply within a few seconds, and a game that no longer fits is dropped by the guard."
+      ? "What the panel may create when you add a game. You can tighten it here: remove entries or lower a limit. Saved changes apply within a few seconds, and a game that no longer fits is dropped by the guard. Adding entries or turning a limit off is done in policy.yaml on the host."
       : "What the panel may create when you add a game. It is read-only here on purpose: it lives in policy.yaml on the host, so a compromised panel cannot widen its own limits.";
     setEditing(false);
     const ex = p.exceptions || [];
