@@ -38,6 +38,8 @@ type App struct {
 	Exclusivity *exclusivity.Manager
 	Auth        *auth.Service
 	// Google, when set, adds "Sign in with Google" (see auth.GoogleLogin).
+	// Setup, when set, offers first-run setup while there are no users.
+	Setup  *auth.Setup
 	Google *auth.GoogleLogin
 	// Settings backs the dashboard's settings dialog (/api/settings).
 	Settings *settings.Store
@@ -160,6 +162,8 @@ const maxSwitchBodyBytes = 4096
 // Routes registers the dashboard, login/logout, and game-control API on
 // mux.
 func (a *App) Routes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /setup", a.handleSetupPage)
+	mux.HandleFunc("POST /setup", a.handleSetup)
 	mux.HandleFunc("GET /login", a.handleLoginPage)
 	mux.HandleFunc("POST /login", a.Auth.ServeLogin)
 	mux.HandleFunc("POST /logout", a.Auth.ServeLogout)
@@ -301,6 +305,10 @@ var loginErrors = map[string]string{
 }
 
 func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	if a.setupNeeded() {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
 	page := loginPage{PasswordLogin: !a.Auth.DisablePasswordLogin, Error: loginErrors[r.URL.Query().Get("error")]}
 	if a.Google != nil {
 		page.GoogleStartURL = a.Google.StartURL()

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -149,8 +150,13 @@ func serve() error {
 		return fmt.Errorf("load users: %w", err)
 	}
 	go userStore.Watch(ctx, 3*time.Second)
+	setup := &auth.Setup{Store: userStore, CodeFile: filepath.Join(filepath.Dir(cfg.Server.SessionSecretFile), "setup-token")}
 	if users := userStore.Snapshot(); len(users) == 0 {
-		log.Printf("warning: no users configured yet in %s — run `crowsnest set-password <username>` to create one", cfg.UsersFile)
+		if code, _, err := setup.Code(); err != nil {
+			log.Printf("warning: no users configured yet in %s and no setup code could be made (%v) — run `crowsnest set-password <username>` to create one", cfg.UsersFile, err)
+		} else {
+			log.Printf("setup: no users yet. Open /setup in a browser and enter the setup code %s (also saved in %s), or run `crowsnest set-password <username>`", code, setup.CodeFile)
+		}
 	} else if !hasAdmin(users) {
 		log.Printf("warning: no admin in %s; a Google-only user with no role is a player — run `crowsnest set-role <username> admin`", cfg.UsersFile)
 	}
@@ -243,6 +249,7 @@ func serve() error {
 		Docker:      docker,
 		Exclusivity: exclusivityMgr,
 		Auth:        authSvc,
+		Setup:       setup,
 		Google:      google,
 		Settings:    settingsStore,
 		TimeZone:    cfg.Server.TZ,

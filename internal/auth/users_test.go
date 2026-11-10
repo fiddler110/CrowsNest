@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -198,5 +199,22 @@ func TestCreateAndDeleteUser(t *testing.T) {
 	}
 	if err := DeleteUser(path, "alice"); err == nil {
 		t.Error("deleting a missing user succeeded")
+	}
+}
+
+func TestCreateFirstAdmin(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users.env")
+	if err := CreateFirstAdmin(path, "Boss", "hash", ""); err != nil {
+		t.Fatal(err)
+	}
+	users, _ := LoadUsers(path)
+	if r := users["boss"]; r.Role != RoleAdmin || r.Hash != "hash" {
+		t.Fatalf("first admin = %+v", r)
+	}
+	if err := CreateFirstAdmin(path, "other", "hash", ""); !errors.Is(err, ErrSetupDone) {
+		t.Fatalf("second first-admin = %v, want ErrSetupDone", err)
+	}
+	if err := CreateFirstAdmin(filepath.Join(t.TempDir(), "u.env"), "x", "", ""); err == nil {
+		t.Fatal("a user with neither password nor Google email must be refused")
 	}
 }

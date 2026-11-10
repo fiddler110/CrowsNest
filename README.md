@@ -62,8 +62,10 @@ they're pushed, signed with cosign and shipped with an SBOM. See
 2. Start just the controller: `docker compose up -d crowsnest`. CrowsNest
    starts/stops the game containers itself via the Docker socket — you don't
    run `--profile <game> up` by hand.
-3. Create at least one login: `docker compose exec crowsnest crowsnest set-password <username>`.
-4. Open `http://<host>:5000`.
+3. Open `http://<host>:5000`. With no users yet it shows the **first-run setup** page: read the setup code from
+   `docker compose logs crowsnest` (it is also saved as `setup-token` next to the session secret), then choose the
+   admin username and passphrase. The page closes as soon as the first account exists, and there are no default
+   credentials. Prefer the command line? `docker compose exec crowsnest crowsnest set-password <username>` works too.
 
 ### One server at a time
 

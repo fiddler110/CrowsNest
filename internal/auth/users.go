@@ -309,3 +309,30 @@ func SetGoogleEmail(path, username, email string) error {
 	existing[key] = rec
 	return writeUsers(path, existing)
 }
+
+// ErrSetupDone is returned by CreateFirstAdmin once the file has any user.
+var ErrSetupDone = errors.New("auth: setup is already done")
+
+// CreateFirstAdmin adds the first user, an admin, and fails with ErrSetupDone
+// if any user exists. The check and the write share one lock, so two setup
+// requests cannot both win.
+func CreateFirstAdmin(path, username, hash, googleEmail string) error {
+	username = strings.ToLower(username)
+	if err := ValidateUsername(username); err != nil {
+		return err
+	}
+	googleEmail = strings.ToLower(googleEmail)
+	if hash == "" && googleEmail == "" {
+		return fmt.Errorf("auth: a user needs a password or a Google email")
+	}
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return ErrSetupDone
+	}
+	return writeUsers(path, Users{username: {Hash: hash, Role: RoleAdmin, GoogleEmail: googleEmail}})
+}

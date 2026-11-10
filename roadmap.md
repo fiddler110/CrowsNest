@@ -102,9 +102,11 @@ request, user create/update/delete (`/api/users`), per-user session
 revocation, and global runtime settings (idle, night, max games, auto-update,
 raw console) in `settings.json`. Expansion, tied to the phase it depends on:
 
-- [ ] **First-run setup in the UI** (no `admin:admin`: CrowsNest is internet
-  facing). Independent of the module work; can ship any time. Includes
-  retiring the unused password hashes in `users.env`.
+- [x] **First-run setup in the UI (done 2026-11-10).** With no users the
+  login page redirects to `/setup`, which creates the first admin from a
+  one-time setup code printed in the log and kept in `setup-token` (so only
+  someone with host access can claim the panel). It closes for good once a
+  user exists. Remaining: retiring the unused password hashes in `users.env`.
 - [ ] **Per-game settings** (idle timeout, restart cooldown, max players,
   night opt-out per game, instead of global only). Comes from manifest
   `params` and `runtime`: Phase 1-2, form in Phase 5.

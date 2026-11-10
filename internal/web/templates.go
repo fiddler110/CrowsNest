@@ -28,6 +28,7 @@ var staticFS embed.FS
 type Templates struct {
 	Dashboard *template.Template
 	Login     *template.Template
+	Setup     *template.Template
 	Games     *template.Template
 	Settings  *template.Template
 }
@@ -56,7 +57,7 @@ func LoadTemplates() (*Templates, error) {
 	for _, p := range []struct {
 		dst  **template.Template
 		file string
-	}{{&t.Dashboard, "dashboard.html"}, {&t.Login, "login.html"}, {&t.Games, "games.html"}, {&t.Settings, "settings.html"}} {
+	}{{&t.Dashboard, "dashboard.html"}, {&t.Login, "login.html"}, {&t.Setup, "setup.html"}, {&t.Games, "games.html"}, {&t.Settings, "settings.html"}} {
 		if *p.dst, err = parse(p.file); err != nil {
 			return nil, err
 		}
