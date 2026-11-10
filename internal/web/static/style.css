@@ -472,3 +472,4 @@ h1, h2, h3, p { margin: 0; }
   .game-card:has(.card-side > :not([hidden])), .game-card:has(.log-panel:not([hidden])) { grid-template-columns: 1fr; }
   .card-side > :first-child { margin-top: 0.9rem; }
 }
+.user-role { color: var(--muted); font-size: 0.85rem; margin-right: auto; }

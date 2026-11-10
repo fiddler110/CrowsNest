@@ -91,6 +91,10 @@ type Info struct {
 	Module string `json:"module"`
 	State  string `json:"state"` // installing, ready, failed
 	Error  string `json:"error,omitempty"`
+	// What the edit form pre-fills. Secret values are never listed.
+	DisplayName    string            `json:"display_name,omitempty"`
+	ConnectAddress string            `json:"connect_address,omitempty"`
+	Options        map[string]string `json:"options,omitempty"`
 }
 
 // Plan is the dry-run of a Request.
@@ -565,7 +569,12 @@ func (m *Manager) List() []Info {
 	defer m.mu.Unlock()
 	out := make([]Info, 0, len(m.entries))
 	for _, e := range m.entries {
-		out = append(out, Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error})
+		opts := make(map[string]string, len(e.Options))
+		for k, v := range e.Options {
+			opts[k] = v
+		}
+		out = append(out, Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error,
+			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Options: opts})
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out

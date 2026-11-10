@@ -2,6 +2,7 @@ package managed
 
 import (
 	"context"
+	"encoding/json"
 	"net"
 	"net/http"
 	"os"
@@ -381,5 +382,22 @@ func TestExecRulesComeFromModules(t *testing.T) {
 	}
 	if len(rules) != 2 {
 		t.Errorf("rules = %+v", rules)
+	}
+}
+
+func TestListCarriesEditFieldsButNoSecrets(t *testing.T) {
+	m, _ := newManager(t)
+	req := Request{ID: "minecraft", Module: "minecraft", DisplayName: "Minecraft", ConnectAddress: "10.0.0.2:25565",
+		Options: map[string]string{"eula": "TRUE", "motd": "hi"}, Secrets: map[string]string{"rcon_password": "hunter2"}}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	got := m.List()[0]
+	if got.DisplayName != "Minecraft" || got.ConnectAddress != "10.0.0.2:25565" || got.Options["motd"] != "hi" {
+		t.Errorf("edit fields missing: %+v", got)
+	}
+	if b, _ := json.Marshal(got); strings.Contains(string(b), "hunter2") {
+		t.Errorf("a secret leaked into the list: %s", b)
 	}
 }

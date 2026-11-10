@@ -34,6 +34,7 @@
   <div class="user-bar">
     <span class="user-chip"><svg class="icon"><use href="#i-user"/></svg><b>{{.Username}}</b></span>
     {{if .IsAdmin}}<button id="users-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-user"/></svg>Users</button>{{end}}
+    {{if .IsAdmin}}<button id="games-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-play"/></svg>Games</button>{{end}}
     {{if .IsAdmin}}<button id="settings-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-gear"/></svg>Settings</button>{{end}}
     <button id="logout-btn" class="btn btn-ghost" type="button"><svg class="icon"><use href="#i-logout"/></svg>Log out</button>
   </div>
@@ -252,6 +253,39 @@
         <button id="user-form-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
         <button id="users-close" class="btn btn-ghost" type="button">Close</button>
         <button class="btn btn-primary" type="submit" id="user-form-submit">Add user</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<div id="games-dialog" class="dialog" role="dialog" aria-modal="true" aria-labelledby="games-title" hidden>
+  <div class="dialog-box users-box">
+    <p class="eyebrow">// shipyard</p>
+    <h3 id="games-title">Games</h3>
+    <p class="settings-help">Add a game from a module. The operator's policy decides what is allowed; the preview shows whether a game fits before anything is created. The first image download can take a couple of minutes.</p>
+    <p id="games-off" class="settings-help" hidden>Enabling games from the dashboard is not configured (managed.dir in config.yaml).</p>
+    <ul id="games-list" class="users-list"></ul>
+
+    <form id="game-form" class="user-form" autocomplete="off">
+      <h4 id="game-form-title">Add a game</h4>
+      <label class="setting-field">Module
+        <select name="module" id="game-module" required></select></label>
+      <label class="setting-field">ID (lowercase letters, digits, dashes)
+        <input type="text" name="id" maxlength="31" pattern="[a-z][a-z0-9\-]{1,30}" autocapitalize="none" spellcheck="false" required></label>
+      <label class="setting-field">Display name
+        <input type="text" name="display_name" maxlength="64"></label>
+      <label class="setting-field">Address players connect to (optional)
+        <input type="text" name="connect_address" maxlength="128" spellcheck="false"></label>
+      <label class="setting-field" id="game-image-field" hidden>Image (this module has none of its own)
+        <input type="text" name="image" spellcheck="false" autocapitalize="none"></label>
+      <div id="game-options"></div>
+      <div id="game-plan" class="settings-help" aria-live="polite"></div>
+      <p id="games-error" class="settings-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="game-form-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
+        <button id="games-close" class="btn btn-ghost" type="button">Close</button>
+        <button id="game-preview" class="btn btn-ghost" type="button">Preview</button>
+        <button class="btn btn-primary" type="submit" id="game-form-submit">Enable</button>
       </div>
     </form>
   </div>

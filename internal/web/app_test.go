@@ -949,12 +949,18 @@ func TestRoles_PlayersCannotTouchSettingsButCanControlGames(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "settings-btn") {
 		t.Error("dashboard shows the settings button to a player")
 	}
+	if strings.Contains(rec.Body.String(), "games-btn") {
+		t.Error("dashboard shows the Games button to a player")
+	}
 
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
 	rec = httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req("GET", "/", nil))
 	if !strings.Contains(rec.Body.String(), "settings-btn") {
 		t.Error("dashboard hides the settings button from an admin")
+	}
+	if !strings.Contains(rec.Body.String(), "games-btn") {
+		t.Error("dashboard hides the Games button from an admin")
 	}
 }
 

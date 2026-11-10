@@ -196,6 +196,15 @@ so a game that did not finish installing is finished on the next start.
   games is not wired: use refresh.
 - Not yet: the Games page (step 4).
 
+### The Games dialog
+
+Admins get a **Games** button in the header. It lists the games enabled from the dashboard (installing, ready or
+failed, with the error), and has a form to add one: pick a module, an id, the module's options (secret options are
+password fields), then **Preview** to see whether it fits the policy before **Enable**. Per game: **Edit** (recreates
+the container; leaving a secret empty keeps it), **Update image**, and **Disable** (the data folder is kept). When an
+install finishes the page reloads so the game's card appears. It talks to `/api/managed/*`; without `managed.dir` the
+dialog says the feature is off.
+
 ### Deploying it (tested shape)
 
 Verified end to end on a real Docker daemon with the production chain (panel → execguard → guard → docker.sock), the
