@@ -56,7 +56,7 @@ func runExecGuard(args []string) error {
 		if mods, err = modules.ForConfig(cfg, log.Printf); err != nil {
 			return fmt.Errorf("load modules: %w", err)
 		}
-		more, err := managed.ExecRules(cfg.Managed.Dir, mods)
+		more, err := managed.ExecRules(cfg.Managed.Dir, cfg.Managed.PolicyFile, mods)
 		if err != nil {
 			return err
 		}
@@ -74,7 +74,7 @@ func runExecGuard(args []string) error {
 	defer stop()
 	if mods != nil {
 		static := execRules(cfg)
-		go watchManagedRules(ctx, g, static, cfg.Managed.Dir, mods)
+		go watchManagedRules(ctx, g, static, cfg.Managed.Dir, cfg.Managed.PolicyFile, mods)
 	}
 	go func() {
 		<-ctx.Done()
@@ -90,7 +90,7 @@ func runExecGuard(args []string) error {
 
 // watchManagedRules re-reads the managed games every few seconds and swaps the
 // allowlist when it changes. A read that fails keeps the rules in force.
-func watchManagedRules(ctx context.Context, g *execguard.Guard, static []execguard.Rule, dir string, mods *modules.Set) {
+func watchManagedRules(ctx context.Context, g *execguard.Guard, static []execguard.Rule, dir, policyFile string, mods *modules.Set) {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	last := len(static)
@@ -101,7 +101,7 @@ func watchManagedRules(ctx context.Context, g *execguard.Guard, static []execgua
 			return
 		case <-t.C:
 		}
-		more, err := managed.ExecRules(dir, mods)
+		more, err := managed.ExecRules(dir, policyFile, mods)
 		if err != nil {
 			log.Printf("execguard: keeping the current allowlist: %v", err)
 			continue

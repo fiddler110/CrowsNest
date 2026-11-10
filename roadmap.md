@@ -64,10 +64,12 @@ derived from it.
   the host can grant one), and the lock file moves to Phase 5 with remote module
   sources; dedicated security review 2026-11-10: managed binds may not nest in
   one another or in a base bind, and a game reads only `TZ` and its own
-  `<ID>_<OPTION>` names from the panel's environment. Known residuals:
-  `policy_editable: true` lets the panel rewrite policy.yaml; execguard trusts
-  the panel's games.json for which container gets a module's fixed backup
-  command; the /api/events cap of 32 is shared by all users.) Generate guard scopes, execguard rules and
+  `<ID>_<OPTION>` names from the panel's environment. The residuals
+  it listed are closed: with `policy_editable: true` the dashboard may only
+  tighten policy.yaml (and a startup warning says it is on); execguard issues a
+  dashboard game's backup rule only for a container name the policy allows
+  (execguard now mounts the policy directory); /api/events also has a
+  per-user cap of 4.) Generate guard scopes, execguard rules and
   compose fragments from manifests; per-module secrets (the panel stops
   reading every game's `.env` values); guard reads a scopes file and reloads;
   `policy.yaml` envelope, privilege approval (`crowsnest module apply`) and a

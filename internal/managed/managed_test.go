@@ -398,7 +398,7 @@ func TestExecRulesComeFromModules(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitState(t, m, "minecraft", StateReady)
-	rules, err := ExecRules(m.Dir, m.Modules)
+	rules, err := ExecRules(m.Dir, m.PolicyFile, m.Modules)
 	if err != nil || len(rules) != 2 || rules[0].Container != "minecraft" || rules[0].Cmd[0] != "/bin/sh" {
 		t.Fatalf("rules = %+v, %v", rules, err)
 	}
@@ -411,7 +411,7 @@ func TestExecRulesComeFromModules(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(m.Dir, "games.json"), []byte(tampered), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rules, _ = ExecRules(m.Dir, m.Modules)
+	rules, _ = ExecRules(m.Dir, m.PolicyFile, m.Modules)
 	for _, r := range rules {
 		if r.Container != "minecraft" || r.Cmd[0] == "rm" {
 			t.Errorf("unexpected rule %+v", r)
@@ -419,6 +419,34 @@ func TestExecRulesComeFromModules(t *testing.T) {
 	}
 	if len(rules) != 2 {
 		t.Errorf("rules = %+v", rules)
+	}
+}
+
+// A games.json entry named after a container the policy keeps out of the
+// panel's reach gets no rule, even with a real module and a valid id.
+func TestExecRulesStayInsideThePolicy(t *testing.T) {
+	m, _ := newManager(t)
+	tampered := `{"games":[{"id":"caddy","module":"minecraft"},{"id":"minecraft","module":"minecraft"}]}`
+	if err := os.WriteFile(filepath.Join(m.Dir, "games.json"), []byte(tampered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ExecRules(m.Dir, m.PolicyFile, m.Modules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rules {
+		if r.Container == "caddy" {
+			t.Errorf("rule for a container outside the policy: %+v", r)
+		}
+	}
+	if len(rules) != 2 {
+		t.Errorf("rules = %+v, want the minecraft pair only", rules)
+	}
+	if _, err := ExecRules(m.Dir, "", m.Modules); err == nil {
+		t.Error("no policy file was accepted")
+	}
+	if _, err := ExecRules(m.Dir, filepath.Join(m.Dir, "missing.yaml"), m.Modules); err == nil {
+		t.Error("an unreadable policy was accepted")
 	}
 }
 

@@ -240,6 +240,10 @@ func parsePortRange(s string) (portRange, error) {
 	return portRange{l, h, proto}, nil
 }
 
+// NameAllowed reports whether name is a container the policy lets the panel
+// manage, the same test the guard applies to a managed scope.
+func (p *Policy) NameAllowed(name string) bool { return matchName(p.Names, name) }
+
 func matchName(list []string, name string) bool {
 	for _, e := range list {
 		if e == "*" || e == name {

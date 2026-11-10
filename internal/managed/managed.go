@@ -1170,7 +1170,18 @@ func (m *Manager) Restore(ctx context.Context) error {
 // each, its module's backup command (and listing) in the container named after
 // the game. The commands come from the installed modules, never from the saved
 // state, so what the panel writes there can choose a game but not a command.
-func ExecRules(dir string, mods *modules.Set) ([]execguard.Rule, error) {
+// It also cannot choose a container the policy keeps out of its reach: a game
+// whose id is not a name the policy lets the panel manage gets no rule, so a
+// tampered games.json cannot aim a backup command at an unrelated container.
+// The policy file is required; unreadable, no rules are issued.
+func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, error) {
+	if policyFile == "" {
+		return nil, errors.New("exec rules for dashboard games need managed.policy_file")
+	}
+	pol, err := dockerguard.LoadPolicy(policyFile)
+	if err != nil {
+		return nil, fmt.Errorf("exec rules: %w", err)
+	}
 	b, err := os.ReadFile(filepath.Join(dir, "games.json")) // #nosec G304 -- dir is the operator-set managed.dir; the file name is fixed
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -1185,7 +1196,7 @@ func ExecRules(dir string, mods *modules.Set) ([]execguard.Rule, error) {
 	var rules []execguard.Rule
 	for _, g := range st.Games {
 		mf, ok := mods.Manifest(g.Module)
-		if !ok || mf.Backup == nil || !idRe.MatchString(g.ID) {
+		if !ok || mf.Backup == nil || !idRe.MatchString(g.ID) || !pol.NameAllowed(g.ID) {
 			continue
 		}
 		rules = append(rules, execguard.Rule{Container: g.ID, Cmd: mf.Backup.Exec})

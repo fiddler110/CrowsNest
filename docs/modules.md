@@ -317,6 +317,7 @@ crowsnest-execguard:
   volumes:
     - ./config.yaml:/app/config.yaml:ro                                 # already there
     - ${USERDIR}/crowsnest/config/managed:/app/data/managed:ro          # same path as managed.dir in config.yaml
+    - ./policy:/etc/crowsnest/policy:ro                                 # same path as managed.policy_file: limits which containers get a rule
 crowsnest:                                # the panel
   volumes:
     - ${USERDIR}/crowsnest/config:/app/data                            # already there: managed/ lives inside it
@@ -339,8 +340,11 @@ managed: {dir: /app/data/managed, policy_file: /etc/crowsnest/policy/policy.yaml
   read at start. For dashboard-enabled games it is built from each module's `backup:` block (command, `list_dir`,
   `before_stop`) and **reloaded every 2 seconds** from the managed dir, so enabling a game adds its backup command
   and disabling removes it, with no restart. The command always comes from the installed module, never from the
-  saved state, so a panel that rewrote `games.json` could pick a game but not a command. Execguard therefore needs
-  `config.yaml` (for `managed.dir`) and the managed dir mounted read-only. `valheim`, `palworld` and `minecraft`
+  saved state, so a panel that rewrote `games.json` could pick a game but not a command. A game also gets a rule only
+  if its id is a container name the policy's `names` allows, so a rewritten `games.json` cannot aim a module's
+  backup command at an unrelated container either. Execguard therefore needs `config.yaml` (for `managed.dir` and
+  `managed.policy_file`), the managed dir and the policy directory mounted read-only; with the policy unreadable it
+  issues no dashboard-game rules. `valheim`, `palworld` and `minecraft`
   ship a backup; a module without one has none.
 
 ## Where this is heading: enable games from the dashboard
