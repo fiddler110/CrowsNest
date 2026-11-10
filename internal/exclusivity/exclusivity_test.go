@@ -417,8 +417,8 @@ esac
 	}
 	m.Wait()
 	r, ok := m.LastStart("a")
-	if !ok || !strings.Contains(r.Err, "boom") {
-		t.Fatalf("LastStart(a) = %+v, %v, want the docker error recorded", r, ok)
+	if !ok || r.Err == "" || strings.Contains(r.Err, "boom") || !strings.Contains(r.Detail, "boom") {
+		t.Fatalf("LastStart(a) = %+v, %v, want a public Err and the raw docker error in Detail", r, ok)
 	}
 	if m.Starting("a") {
 		t.Fatal("Starting(a) still true after the start failed")
@@ -609,8 +609,8 @@ esac
 	}
 	m.Wait()
 	got := n.messages()
-	if len(got) != 1 || !strings.Contains(got[0], "failed to start") || !strings.Contains(got[0], "boom: no such image") {
-		t.Fatalf("messages = %q, want one failure message with the error tail", got)
+	if len(got) != 1 || !strings.Contains(got[0], "failed to start") || strings.Contains(got[0], "boom") || strings.Contains(got[0], "noise") {
+		t.Fatalf("messages = %q, want one failure message without raw docker output", got)
 	}
 	if strings.Contains(got[0], "\n") || len(got[0]) > 400 {
 		t.Fatalf("failure message not trimmed to one short line (len %d): %q", len(got[0]), got[0])
@@ -664,7 +664,7 @@ esac
 	}
 	m.Wait()
 	res, ok := m.LastStart("a")
-	if !ok || !strings.HasPrefix(res.Err, "stop failed:") {
+	if !ok || !strings.HasPrefix(res.Err, "stop failed:") || strings.Contains(res.Err, "boom") || !strings.Contains(res.Detail, "boom") {
 		t.Fatalf("LastStart(a) = %+v, %v; want a recorded stop failure", res, ok)
 	}
 }
@@ -822,5 +822,42 @@ func TestStop_BacksUpBeforeStopWhenConfigured(t *testing.T) {
 	}
 	if len(fb.calls) != 1 || fb.calls[0] != "a:" {
 		t.Fatalf("backup calls = %v, want only a (before_stop)", fb.calls)
+	}
+}
+
+// A switch to a target still in its restart cooldown must be refused up
+// front; stopping `from` first would leave nothing running.
+func TestRequestSwitch_TargetInCooldownStopsNothing(t *testing.T) {
+	docker := newStaticFakeDocker(t, []string{"a", "b"}, []string{"a"})
+	reg := newRegistry(t, docker, "a", "b")
+	def, _ := reg.Get("b")
+	def.RestartCooldown = time.Hour
+	adef, _ := reg.Get("a")
+	reg, err := games.NewRegistry([]games.GameDef{adef, def})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(t, reg, docker)
+	m.lastStop["b"] = time.Now()
+
+	var cd *CooldownError
+	if err := m.RequestSwitch(context.Background(), "a", "b"); !errors.As(err, &cd) {
+		t.Fatalf("RequestSwitch = %v, want *CooldownError", err)
+	}
+	if m.Stopping("a") {
+		t.Fatal("source was stopped despite the refused switch")
+	}
+	if _, reserved := m.incoming["b"]; reserved {
+		t.Fatal("target left reserved after refusal")
+	}
+}
+
+func TestPublicFailure(t *testing.T) {
+	if got := publicFailure("stop failed: ", errors.New("secret path /x")); strings.Contains(got, "secret") || !strings.HasPrefix(got, "stop failed: ") {
+		t.Fatalf("publicFailure leaked or lost prefix: %q", got)
+	}
+	cd := &CooldownError{Game: "a", Remaining: time.Minute}
+	if got := publicFailure("", cd); got != cd.Error() {
+		t.Fatalf("cooldown text changed: %q", got)
 	}
 }

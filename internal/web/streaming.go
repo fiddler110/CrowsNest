@@ -208,7 +208,13 @@ func streamLines(r *http.Request, sw *sse.Writer, rc interface{ Read([]byte) (in
 		scanner := bufio.NewScanner(rc)
 		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			lines <- strings.TrimSuffix(scanner.Text(), "\r")
+			// Select on ctx so a departed consumer can't strand this
+			// goroutine (and its 1MB buffer) on the send.
+			select {
+			case lines <- strings.TrimSuffix(scanner.Text(), "\r"):
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 
