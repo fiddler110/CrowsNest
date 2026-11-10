@@ -566,3 +566,6 @@ a.btn { text-decoration: none; }
 .pane-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 1.4rem; }
 .settings-pane .users-list { margin-top: 1.2rem; }
 @media (max-width: 760px) { .settings-shell { grid-template-columns: 1fr; } .settings-nav { position: static; flex-direction: row; flex-wrap: wrap; } .settings-nav .eyebrow { display: none; } }
+.field textarea { padding: 0.55rem 0.7rem; font: 0.82rem var(--mono); color: inherit; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; resize: vertical; }
+.field textarea:focus { border-color: var(--cyan); outline: none; }
+.field input:disabled, .field textarea:disabled { opacity: 0.75; cursor: default; }
