@@ -35,6 +35,36 @@ type Runtime struct {
 	// and every secret option, become a compose variable
 	// ${<ID>_<OPTION>:-<default>} so the value lives in .env.
 	Env []string `yaml:"env"`
+
+	// SecOpts are security options the container needs (the Windrose image's
+	// Wine runtime needs seccomp=unconfined). They are never a default: the
+	// operator's policy must carry an exception naming this game before the
+	// guard lets the game be created.
+	SecOpts []string `yaml:"secopts"`
+	// Networks are extra networks the game joins, each named by an option of
+	// the instance (so the operator's LAN network and address are typed in the
+	// form, not written into the module). A network whose option is empty is
+	// skipped. Same rule as SecOpts: only under a policy exception.
+	Networks []RuntimeNetwork `yaml:"networks"`
+	// GamesIPv4Option names the option holding a fixed address on the games
+	// network itself. Policy exception only, like the rest.
+	GamesIPv4Option string `yaml:"games_ipv4_option"`
+}
+
+// RuntimeNetwork is an extra network, taken from the instance's options.
+type RuntimeNetwork struct {
+	NameOption string `yaml:"name_option"`
+	IPv4Option string `yaml:"ipv4_option"`
+	GwPriority int    `yaml:"gw_priority"` // the highest gets the default route
+}
+
+// NetEndpoint is one network a rendered game joins.
+type NetEndpoint = dockerctl.NetEndpoint
+
+// ServiceNet is a compose network entry that carries more than the name.
+type ServiceNet struct {
+	IPv4Address string `yaml:"ipv4_address,omitempty"`
+	GwPriority  int    `yaml:"gw_priority,omitempty"`
 }
 
 // RuntimePort is one published port. The host port equals the container port
@@ -74,7 +104,8 @@ type Service struct {
 	Restart       string            `yaml:"restart"`
 	Labels        map[string]string `yaml:"labels"`
 	StopGrace     string            `yaml:"stop_grace_period,omitempty"`
-	Networks      []string          `yaml:"networks"`
+	Networks      any               `yaml:"networks"` // []string, or name -> ServiceNet when an address is pinned
+	SecurityOpt   []string          `yaml:"security_opt,omitempty"`
 	MemLimit      string            `yaml:"mem_limit,omitempty"`
 	Ports         []string          `yaml:"ports,omitempty"`
 	Environment   []string          `yaml:"environment"`
@@ -97,6 +128,10 @@ type GuardScope struct {
 	Ports    []GuardPort       `json:"ports"`
 	Labels   map[string]string `json:"labels"`
 	Exec     bool              `json:"exec"`
+	// SecOpts and IPv4 are only ever set for a game the operator's policy names
+	// in an exception; the guard refuses the scope otherwise.
+	SecOpts []string            `json:"secopts,omitempty"`
+	IPv4    map[string][]string `json:"ipv4,omitempty"`
 }
 
 // Rendered is everything one game instance needs on the host.
@@ -111,6 +146,8 @@ type Rendered struct {
 	// What the dashboard needs to create the container itself: literal bind
 	// mounts (host:container), memory and stop grace.
 	binds     []string
+	nets      []NetEndpoint
+	secopts   []string
 	memory    string
 	stopGrace time.Duration
 	ports     []renderPort
@@ -178,6 +215,58 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		Name: g.ID, Images: []string{image}, Networks: []string{network},
 		Ports: []GuardPort{}, Binds: []string{}, Labels: svc.Labels, Exec: true,
 	}
+	// optVal is an instance's option, or the module's default for it.
+	optVal := func(key string) string {
+		if key == "" {
+			return ""
+		}
+		if v, set := g.Options[key]; set {
+			return strings.TrimSpace(v)
+		}
+		for _, o := range m.Options {
+			if o.Key == key {
+				return o.Default
+			}
+		}
+		return ""
+	}
+	nets := []NetEndpoint{{Name: network, IPv4: optVal(rt.GamesIPv4Option)}}
+	for _, rn := range rt.Networks {
+		name := optVal(rn.NameOption)
+		if name == "" || name == network {
+			continue
+		}
+		nets = append(nets, NetEndpoint{Name: name, IPv4: optVal(rn.IPv4Option), GwPriority: rn.GwPriority})
+	}
+	for _, n := range nets {
+		if n.IPv4 != "" || n.GwPriority != 0 || len(nets) > 1 {
+			cfg := map[string]ServiceNet{}
+			for _, e := range nets {
+				cfg[e.Name] = ServiceNet{IPv4Address: e.IPv4, GwPriority: e.GwPriority}
+			}
+			svc.Networks = cfg
+			break
+		}
+	}
+	for _, n := range nets[1:] {
+		scope.Networks = append(scope.Networks, n.Name)
+	}
+	for _, n := range nets {
+		if n.IPv4 != "" {
+			if scope.IPv4 == nil {
+				scope.IPv4 = map[string][]string{}
+			}
+			scope.IPv4[n.Name] = append(scope.IPv4[n.Name], n.IPv4)
+		}
+	}
+	for _, o := range rt.SecOpts {
+		svc.SecurityOpt = append(svc.SecurityOpt, o)
+		scope.SecOpts = append(scope.SecOpts, o)
+		if strings.Contains(o, "=") { // the guard lists both spellings of a security option
+			scope.SecOpts = append(scope.SecOpts, strings.Replace(o, "=", ":", 1))
+		}
+	}
+	r.nets, r.secopts = nets, svc.SecurityOpt
 
 	ports, err := m.ports(g)
 	if err != nil {
@@ -331,7 +420,7 @@ func ScopesJSON(rs []*Rendered) ([]byte, error) {
 func (r *Rendered) Spec(lookup func(name string) (string, bool)) (dockerctl.CreateSpec, error) {
 	spec := dockerctl.CreateSpec{
 		Name: r.Service.ContainerName, Image: r.Service.Image, Labels: r.Service.Labels,
-		Network: r.Service.Networks[0], StopTimeout: int(r.stopGrace.Seconds()), Binds: r.binds,
+		Network: r.nets[0].Name, Networks: r.nets, SecOpts: r.secopts, StopTimeout: int(r.stopGrace.Seconds()), Binds: r.binds,
 	}
 	if spec.Name == "" {
 		spec.Name = r.ID

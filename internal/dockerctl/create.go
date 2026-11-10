@@ -23,8 +23,9 @@ type PortBinding struct {
 
 // CreateSpec is everything the dashboard asks the engine to create for a
 // game: deliberately only the fields the guard's policy envelope can admit.
-// There is no way to ask for privileges, host networking, capabilities or
-// fixed addresses.
+// There is no way to ask for host networking or capabilities. Extra networks,
+// pinned addresses and security options are for the one game a policy
+// exception names; the guard refuses them for anything else.
 type CreateSpec struct {
 	Name        string
 	Image       string // repository:tag
@@ -35,6 +36,18 @@ type CreateSpec struct {
 	MemoryBytes int64 // 0 = unlimited
 	Ports       []PortBinding
 	Binds       []string // host:container
+	// Networks, when more than one or when an address is pinned, replaces
+	// Network. The first is the games network; the one with the highest
+	// GwPriority carries the default route.
+	Networks []NetEndpoint
+	SecOpts  []string
+}
+
+// NetEndpoint is one network to join.
+type NetEndpoint struct {
+	Name       string
+	IPv4       string
+	GwPriority int
 }
 
 func (s CreateSpec) body() ([]byte, error) {
@@ -54,10 +67,32 @@ func (s CreateSpec) body() ([]byte, error) {
 	if s.MemoryBytes > 0 {
 		host["Memory"] = s.MemoryBytes
 	}
+	if len(s.SecOpts) > 0 {
+		host["SecurityOpt"] = s.SecOpts
+	}
+	endpoints := map[string]any{s.Network: map[string]any{}}
+	if len(s.Networks) > 0 {
+		endpoints = map[string]any{}
+		best, mode := -1<<31, s.Network
+		for _, n := range s.Networks {
+			ep := map[string]any{}
+			if n.IPv4 != "" {
+				ep["IPAMConfig"] = map[string]any{"IPv4Address": n.IPv4}
+			}
+			if n.GwPriority != 0 {
+				ep["GwPriority"] = n.GwPriority
+			}
+			endpoints[n.Name] = ep
+			if n.GwPriority > best {
+				best, mode = n.GwPriority, n.Name
+			}
+		}
+		host["NetworkMode"] = mode
+	}
 	body := map[string]any{
 		"Image": s.Image, "Env": s.Env, "Labels": s.Labels, "ExposedPorts": exposed,
 		"HostConfig":       host,
-		"NetworkingConfig": map[string]any{"EndpointsConfig": map[string]any{s.Network: map[string]any{}}},
+		"NetworkingConfig": map[string]any{"EndpointsConfig": endpoints},
 	}
 	if s.StopTimeout > 0 {
 		body["StopTimeout"] = s.StopTimeout

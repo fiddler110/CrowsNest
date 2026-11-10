@@ -253,6 +253,23 @@ func (m *Manifest) validate() error {
 	if m.Runtime.RestartCooldown < 0 {
 		return fmt.Errorf("module %q: restart_cooldown must not be negative", m.ID)
 	}
+	declared := map[string]bool{}
+	for _, o := range m.Options {
+		declared[o.Key] = true
+	}
+	for _, n := range m.Runtime.Networks {
+		if !declared[n.NameOption] || (n.IPv4Option != "" && !declared[n.IPv4Option]) {
+			return fmt.Errorf("module %q: runtime.networks must name declared options", m.ID)
+		}
+	}
+	if o := m.Runtime.GamesIPv4Option; o != "" && !declared[o] {
+		return fmt.Errorf("module %q: runtime.games_ipv4_option %q is not a declared option", m.ID, o)
+	}
+	for _, o := range m.Runtime.SecOpts {
+		if o == "" || strings.ContainsAny(o, " ,") {
+			return fmt.Errorf("module %q: bad runtime.secopts entry %q", m.ID, o)
+		}
+	}
 	if !supportedPlayers[m.Players.Type] {
 		return fmt.Errorf("module %q: players.type %q is not supported yet", m.ID, m.Players.Type)
 	}

@@ -525,3 +525,172 @@ func TestJoinPasswordShownOnTheCard(t *testing.T) {
 		}
 	}
 }
+
+const windrosePolicy = policy + `
+exceptions:
+  - name: windrose
+    image: indifferentbroccoli/windrose-server-docker
+    networks:
+      dockervlan: [10.0.1.16]
+      crowsnest-games-net: [192.168.0.50]
+    secopts: [seccomp=unconfined]
+`
+
+var windroseReq = Request{ID: "windrose", Module: "windrose",
+	Options: map[string]string{"lan_ipv4": "10.0.1.16", "games_ipv4": "192.168.0.50", "data_dir": "Windrose"},
+	Secrets: map[string]string{"invite_code": "abc123", "server_password": "pw"}}
+
+// Windrose fits only because the operator's policy names it, and what it gets is exactly that.
+func TestWindroseNeedsAPolicyException(t *testing.T) {
+	m, fd := newManager(t)
+	m.Config = &config.Config{}
+	plan, err := m.Preview(windroseReq)
+	if err != nil || plan.Fits || !strings.Contains(plan.Reason, "windrose") {
+		t.Fatalf("without an exception it must not fit, and say why: %+v %v", plan, err)
+	}
+	if err := m.Enable(windroseReq); err == nil {
+		t.Fatal("enabled without an exception")
+	}
+
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if plan, err = m.Preview(windroseReq); err != nil || !plan.Fits {
+		t.Fatalf("with the exception it must fit: %+v %v", plan, err)
+	}
+	// other addresses are not covered
+	other := windroseReq
+	other.Options = map[string]string{"lan_ipv4": "10.0.1.99", "data_dir": "Windrose"}
+	if plan, _ = m.Preview(other); plan.Fits || !strings.Contains(plan.Reason, "10.0.1.99") || !strings.Contains(plan.Reason, "10.0.1.16") {
+		t.Fatalf("a different address must be refused and the allowed one named: %+v", plan)
+	}
+	if err := m.Enable(windroseReq); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "windrose", StateReady)
+	spec := fd.created[0]
+	if !slices.Contains(spec.SecOpts, "seccomp=unconfined") {
+		t.Errorf("secopts = %v", spec.SecOpts)
+	}
+	got := map[string]string{}
+	for _, n := range spec.Networks {
+		got[n.Name] = n.IPv4
+	}
+	if got["dockervlan"] != "10.0.1.16" || got["crowsnest-games-net"] != "192.168.0.50" || len(got) != 2 {
+		t.Errorf("networks = %+v", spec.Networks)
+	}
+	env := strings.Join(spec.Env, "|")
+	if !strings.Contains(env, "INVITE_CODE=abc123") || !strings.Contains(env, "P2P_PROXY_ADDRESS=10.0.1.16") {
+		t.Errorf("env = %s", env)
+	}
+	if spec.Binds[0] != "/srv/games/Windrose/Config:/home/steam/server-files" {
+		t.Errorf("binds = %v", spec.Binds)
+	}
+}
+
+// The dashboard shows exceptions and keeps them when it saves the rest of the policy, but cannot make one.
+func TestPolicyExceptionsSurviveDashboardEdits(t *testing.T) {
+	m, _ := newManager(t)
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.PolicyEditable = true
+	st, _ := m.Policy()
+	if len(st.Policy.Exceptions) != 1 {
+		t.Fatalf("exception not shown: %+v", st.Policy)
+	}
+	st.Policy.Names = append(st.Policy.Names, "pal-*")
+	st.Policy.Exceptions = append(st.Policy.Exceptions, dockerguard.Exception{Name: "sneaky", Image: "evil/miner", SecOpts: []string{"seccomp=unconfined"}})
+	if err := m.SetPolicy(st.Policy); err != nil {
+		t.Fatal(err)
+	}
+	again, _ := m.Policy()
+	if len(again.Policy.Exceptions) != 1 || again.Policy.Exceptions[0].Name != "windrose" || !slices.Contains(again.Policy.Names, "pal-*") {
+		t.Errorf("after save: %+v", again.Policy)
+	}
+}
+
+// The guard itself lets the excepted create through, and refuses the same spec for any other secopt.
+func TestWindroseCreateThroughRealGuard(t *testing.T) {
+	m, _ := newManager(t)
+	m.Config = &config.Config{}
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	g, mf, err := m.validate(windroseReq, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rd, err := m.renderAndFit(g, mf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spec, err := rd.Spec(func(string) (string, bool) { return "", false })
+	if err != nil {
+		t.Fatal(err)
+	}
+	js, _ := modules.ScopesJSON([]*modules.Rendered{rd})
+	scopes, err := dockerguard.LoadScopes(string(js))
+	if err != nil {
+		t.Fatalf("%v\n%s", err, js)
+	}
+
+	sock := filepath.Join(t.TempDir(), "engine.sock")
+	l, _ := net.Listen("unix", sock)
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.URL.Path == "/containers/create" {
+			w.WriteHeader(201)
+			_, _ = w.Write([]byte(`{"Id":"abc","Warnings":[]}`))
+			return
+		}
+		_, _ = w.Write([]byte(`{"status":"done"}` + "\n"))
+	})}
+	go srv.Serve(l)
+	defer srv.Close()
+	guard := dockerguard.New(sock, scopes)
+	gl, _ := net.Listen("tcp", "127.0.0.1:0")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go guard.ServeContext(ctx, gl)
+	client := &dockerctl.Client{Host: "tcp://" + gl.Addr().String()}
+
+	if err := client.Create(ctx, spec); err != nil {
+		t.Fatalf("the excepted create was refused by the guard: %v", err)
+	}
+	bad := spec
+	bad.SecOpts = []string{"apparmor=unconfined"}
+	if err := client.Create(ctx, bad); !dockerctl.IsDenied(err) {
+		t.Errorf("another security option: want a denial, got %v", err)
+	}
+	bad = spec
+	bad.Networks = []dockerctl.NetEndpoint{{Name: "dockervlan", IPv4: "10.0.1.77", GwPriority: 100}, {Name: "crowsnest-games-net"}}
+	if err := client.Create(ctx, bad); !dockerctl.IsDenied(err) {
+		t.Errorf("another address: want a denial, got %v", err)
+	}
+}
+
+// The catalogue says why Windrose is not addable until the operator writes an exception, and flips once they do.
+func TestCatalogueSaysWindroseNeedsAnException(t *testing.T) {
+	m, _ := newManager(t)
+	m.Config = &config.Config{} // no hand-written windrose to clash with
+	find := func() ModuleInfo {
+		for _, mi := range m.Catalogue() {
+			if mi.ID == "windrose" {
+				return mi
+			}
+		}
+		t.Fatal("windrose is not in the catalogue")
+		return ModuleInfo{}
+	}
+	mi := find()
+	if !mi.NeedsException || mi.Fits == nil || *mi.Fits || !strings.Contains(mi.Reason, "exception") {
+		t.Fatalf("without an exception: %+v", mi)
+	}
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if mi = find(); mi.Fits == nil || !*mi.Fits {
+		t.Fatalf("with the exception it should fit: %+v", mi)
+	}
+}

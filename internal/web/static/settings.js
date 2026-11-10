@@ -202,6 +202,24 @@ loaders.policy = () => {
       ? "What the panel may create when you add a game. Saved changes apply within a few seconds, and a game that no longer fits is dropped by the guard."
       : "What the panel may create when you add a game. It is read-only here on purpose: it lives in policy.yaml on the host, so a compromised panel cannot widen its own limits.";
     setEditing(false);
+    const ex = p.exceptions || [];
+    $("policy-exceptions").hidden = ex.length === 0;
+    const exList = $("policy-exceptions-list");
+    exList.replaceChildren();
+    ex.forEach((e) => {
+      const li = document.createElement("li");
+      li.className = "user-row";
+      const name = document.createElement("span");
+      name.className = "user-name";
+      name.textContent = e.name;
+      const tags = document.createElement("span");
+      tags.className = "user-tags";
+      const nets = Object.entries(e.networks || {}).map(([n, a]) => (a && a.length ? `${n} (${a.join(", ")})` : n));
+      tags.textContent = [e.image, nets.length ? "networks: " + nets.join(", ") : "", (e.secopts || []).length ? "security: " + e.secopts.join(", ") : ""]
+        .filter(Boolean).join(" · ");
+      li.append(name, tags);
+      exList.append(li);
+    });
   };
   (async () => {
     const res = await callAPI("/api/managed/policy");
@@ -223,6 +241,36 @@ loaders.policy = () => {
     state = await res.json();
     fill();
     toast("Policy saved.");
+  });
+};
+
+// ---------- Game modules ----------
+loaders.modules = async () => {
+  const list = $("modules-list");
+  const res = await callAPI("/api/managed/modules");
+  if (res.status === 404) { $("modules-off").hidden = false; return; }
+  if (!res.ok) { toast(`Could not load modules: ${(await res.text()).trim()}`); return; }
+  (await res.json()).forEach((m) => {
+    const li = document.createElement("li");
+    li.className = "user-row";
+    const name = document.createElement("span");
+    name.className = "user-name";
+    name.textContent = m.name;
+    const tags = document.createElement("span");
+    tags.className = "user-tags";
+    let verdict;
+    if (m.fits === true) verdict = "ready to add";
+    else if (m.fits === false) verdict = "blocked by policy";
+    else verdict = m.needs_image ? "you choose the image" : "";
+    tags.textContent = [m.image || "", verdict, m.needs_exception ? "needs a policy exception" : ""].filter(Boolean).join(" · ");
+    li.append(name, tags);
+    if (m.fits === false && m.reason) {
+      const why = document.createElement("small");
+      why.className = "settings-help";
+      why.textContent = m.reason;
+      li.append(why);
+    }
+    list.append(li);
   });
 };
 

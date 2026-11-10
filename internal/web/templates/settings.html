@@ -44,6 +44,7 @@
     <a href="#general" data-pane="general"><svg class="icon"><use href="#i-gear"/></svg>General</a>
     <a href="#users" data-pane="users"><svg class="icon"><use href="#i-users"/></svg>Users</a>
     <a href="#policy" data-pane="policy"><svg class="icon"><use href="#i-info"/></svg>Game policy</a>
+    <a href="#modules" data-pane="modules"><svg class="icon"><use href="#i-play"/></svg>Game modules</a>
   </nav>
 
   <div class="settings-content">
@@ -127,6 +128,18 @@
           <button id="policy-save" class="btn btn-primary" type="submit" hidden>Save policy</button>
         </div>
       </form>
+      <div id="policy-exceptions" hidden>
+        <h3>Exceptions</h3>
+        <p class="hero-sub">Games that may go beyond the limits above, each exactly as listed. They are written in policy.yaml on the host and can't be added or changed from here.</p>
+        <ul id="policy-exceptions-list" class="users-list"></ul>
+      </div>
+    </section>
+
+    <section class="settings-pane" data-pane="modules" hidden>
+      <h1>Game modules</h1>
+      <p class="hero-sub">The games this CrowsNest knows how to run, and whether the policy lets you add each one from the Games page.</p>
+      <p id="modules-off" class="banner" role="alert" hidden><svg class="icon"><use href="#i-alert"/></svg><span>Adding games from the dashboard is not configured (managed.dir in config.yaml), so there is nothing to list.</span></p>
+      <ul id="modules-list" class="users-list"></ul>
     </section>
   </div>
 </main>

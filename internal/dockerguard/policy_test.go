@@ -52,9 +52,9 @@ func TestPolicyAdmit(t *testing.T) {
 		"proto":     {strings.Replace(scopeJSON("valheim", "lloesche/valheim-server", ""), `"udp"`, `"tcp"`, 1), "port"},
 		"hostip":    {strings.Replace(scopeJSON("valheim", "lloesche/valheim-server", ""), "10.0.0.2", "0.0.0.0", 1), "host_ip"},
 		"exec":      {scopeJSON("valheim", "lloesche/valheim-server", `,"exec":true`), "exec"},
-		"secopts":   {scopeJSON("valheim", "lloesche/valheim-server", `,"secopts":["seccomp=unconfined"]`), "cannot carry"},
+		"secopts":   {scopeJSON("valheim", "lloesche/valheim-server", `,"secopts":["seccomp=unconfined"]`), "no exception"},
 		"cap_add":   {scopeJSON("valheim", "lloesche/valheim-server", `,"cap_add":["NET_ADMIN"]`), "cannot carry"},
-		"ipv4":      {scopeJSON("valheim", "lloesche/valheim-server", `,"ipv4":{"crowsnest-games-net":["10.0.1.5"]}`), "cannot carry"},
+		"ipv4":      {scopeJSON("valheim", "lloesche/valheim-server", `,"ipv4":{"crowsnest-games-net":["10.0.1.5"]}`), "no exception"},
 		"label":     {scopeJSON("valheim", "lloesche/valheim-server", `,"labels":{"caddy":"x"}`), "label"},
 	}
 	for name, c := range cases {
@@ -64,6 +64,65 @@ func TestPolicyAdmit(t *testing.T) {
 			t.Errorf("%s: want admitted, got %v", name, err)
 		case c.want != "" && (err == nil || !strings.Contains(err.Error(), c.want)):
 			t.Errorf("%s: want an error about %q, got %v", name, c.want, err)
+		}
+	}
+}
+
+const exceptionPolicy = testPolicy + `
+exceptions:
+  - name: windrose
+    image: indifferentbroccoli/windrose-server-docker
+    networks:
+      dockervlan: [10.0.1.16]
+      crowsnest-games-net: [192.168.0.50]
+    secopts: [seccomp=unconfined]
+`
+
+func windroseScope(extra string) string {
+	return `{"name":"windrose","images":["indifferentbroccoli/windrose-server-docker"],"binds":["/srv/games/Windrose/Config"],` +
+		`"networks":["dockervlan","crowsnest-games-net"],"ipv4":{"dockervlan":["10.0.1.16"],"crowsnest-games-net":["192.168.0.50"]},` +
+		`"secopts":["seccomp=unconfined","seccomp:unconfined"]` + extra + `}`
+}
+
+// A policy exception admits exactly one container with exactly what it lists.
+func TestPolicyException(t *testing.T) {
+	p, err := ParsePolicy([]byte(exceptionPolicy))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := p.Admit(mustScope(t, windroseScope(""))); err != nil {
+		t.Fatalf("the excepted game was refused: %v", err)
+	}
+	for name, c := range map[string]struct{ js, want string }{
+		"other address": {strings.Replace(windroseScope(""), "10.0.1.16", "10.0.1.99", 2), "10.0.1.99"},
+		"other network": {strings.ReplaceAll(windroseScope(""), "dockervlan", "othervlan"), "othervlan"},
+		"other image":   {strings.Replace(windroseScope(""), "indifferentbroccoli/windrose-server-docker", "evil/miner", 1), "images"},
+		"other name":    {strings.Replace(windroseScope(""), `"name":"windrose"`, `"name":"windrose2"`, 1), "names"},
+		"cap_add":       {windroseScope(`,"cap_add":["NET_ADMIN"]`), "cannot carry"},
+		"other secopt":  {strings.Replace(windroseScope(""), `"seccomp=unconfined","seccomp:unconfined"`, `"apparmor=unconfined"`, 1), "apparmor"},
+	} {
+		err := p.Admit(mustScope(t, c.js))
+		if err == nil || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s: want an error about %q, got %v", name, c.want, err)
+		}
+	}
+	// the exception names one game: another game gets none of it
+	other := strings.Replace(windroseScope(""), `"name":"windrose"`, `"name":"gs-win"`, 1)
+	if err := p.Admit(mustScope(t, other)); err == nil {
+		t.Error("a second game inherited the exception")
+	}
+}
+
+func TestPolicyExceptionParse(t *testing.T) {
+	for name, y := range map[string]string{
+		"wildcard name": strings.Replace(exceptionPolicy, "name: windrose", `name: "win*"`, 1),
+		"tagged image":  strings.Replace(exceptionPolicy, "server-docker", "server-docker:latest", 1),
+		"bad address":   strings.Replace(exceptionPolicy, "10.0.1.16", "0.0.0.0", 1),
+		"host network":  strings.Replace(exceptionPolicy, "dockervlan:", "host:", 1),
+		"unknown key":   exceptionPolicy + "    privileged: true\n",
+	} {
+		if _, err := ParsePolicy([]byte(y)); err == nil {
+			t.Errorf("%s: policy was accepted", name)
 		}
 	}
 }

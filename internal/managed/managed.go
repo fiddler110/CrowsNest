@@ -141,9 +141,13 @@ type ModuleInfo struct {
 	Fits *bool `json:"fits,omitempty"`
 	// FitID is an id the policy's names admit, when the module's own id is not one:
 	// the verdict above was reached with it.
-	FitID   string       `json:"fit_id,omitempty"`
-	Reason  string       `json:"reason,omitempty"`
-	Options []OptionInfo `json:"options"`
+	FitID string `json:"fit_id,omitempty"`
+	// NeedsException is true for a module that asks for more than the envelope
+	// ever grants by itself (a LAN address, a pinned IPv4, a relaxed seccomp
+	// profile): it only fits when policy.yaml carries an exception for its id.
+	NeedsException bool         `json:"needs_exception,omitempty"`
+	Reason         string       `json:"reason,omitempty"`
+	Options        []OptionInfo `json:"options"`
 }
 
 const (
@@ -165,8 +169,10 @@ func (m *Manager) Catalogue() []ModuleInfo {
 		if len(mf.Runtime.Ports) == 0 && mf.Runtime.Image == "" && len(mf.Runtime.Data) == 0 {
 			continue
 		}
+		rt := mf.Runtime
 		mi := ModuleInfo{ID: mf.ID, Name: mf.Name, NeedsImage: mf.Runtime.Image == "",
-			Description: mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil}
+			NeedsException: len(rt.SecOpts) > 0 || len(rt.Networks) > 0 || rt.GamesIPv4Option != "",
+			Description:    mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil}
 		for _, p := range mf.Runtime.Ports {
 			mi.Ports = append(mi.Ports, fmt.Sprintf("%d/%s", p.Port, p.Proto))
 		}
@@ -187,6 +193,15 @@ func (m *Manager) Catalogue() []ModuleInfo {
 func (m *Manager) probeFit(mi *ModuleInfo, mf *modules.Manifest) {
 	if mi.NeedsImage {
 		return
+	}
+	if mi.NeedsException {
+		pol, err := m.policy()
+		if err == nil && pol.ExceptionFor(mf.ID) == nil {
+			fits := false
+			mi.Fits = &fits
+			mi.Reason = fmt.Sprintf("needs an exception in policy.yaml for a container named %s (a LAN address and a relaxed security profile). The dashboard cannot grant it.", mf.ID)
+			return
+		}
 	}
 	req := Request{ID: mf.ID, Module: mf.ID, Options: map[string]string{}, Secrets: map[string]string{}}
 	for _, o := range mf.Options {
@@ -909,6 +924,8 @@ type PolicyDoc struct {
 	Exec      bool     `json:"exec" yaml:"exec"`
 	Labels    []string `json:"labels" yaml:"labels,omitempty"`
 	MaxScopes int      `json:"max_scopes" yaml:"max_scopes"`
+	// Exceptions are shown, never edited here: SetPolicy keeps whatever the file has.
+	Exceptions []dockerguard.Exception `json:"exceptions,omitempty" yaml:"exceptions,omitempty"`
 }
 
 // PolicyState is the current policy and whether the dashboard may change it.
@@ -925,7 +942,7 @@ func (m *Manager) Policy() (PolicyState, error) {
 	}
 	return PolicyState{Editable: m.PolicyEditable, Policy: PolicyDoc{
 		GamesRoot: p.GamesRoot, Names: p.Names, Images: p.Images, Networks: p.Networks, Ports: p.Ports,
-		HostIPs: p.HostIPs, Exec: p.Exec, Labels: p.Labels, MaxScopes: p.MaxScopes,
+		HostIPs: p.HostIPs, Exec: p.Exec, Labels: p.Labels, MaxScopes: p.MaxScopes, Exceptions: p.Exceptions,
 	}}, nil
 }
 
@@ -934,6 +951,11 @@ func (m *Manager) Policy() (PolicyState, error) {
 func (m *Manager) SetPolicy(d PolicyDoc) error {
 	if !m.PolicyEditable {
 		return errors.New("the policy is read-only here: it is edited in policy.yaml on the host")
+	}
+	// An exception loosens the guard for one container, so only the file on the host can add or change one.
+	d.Exceptions = nil
+	if cur, err := m.policy(); err == nil {
+		d.Exceptions = cur.Exceptions
 	}
 	body, err := yaml.Marshal(d)
 	if err != nil {

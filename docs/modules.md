@@ -146,11 +146,41 @@ max_scopes: 32
 
 - `names` matters: the guard lets a scope manage the container of the same name, so without it a scope called
   `caddy` would let the panel stop your reverse proxy.
-- A managed scope can never carry volumes, security options, capabilities, aliases or fixed addresses, host
-  networking, or exec unless the policy allows it. Windrose-style needs stay in the operator's own `GUARD_SCOPES`.
+- A managed scope can never carry volumes, capabilities, aliases, host networking, or exec unless the policy allows
+  it. Security options, extra networks and fixed addresses are only for a game the policy names in an
+  [exception](#exceptions-one-game-beyond-the-envelope).
 - Official Docker Hub images are fully qualified in a scope (`itzg/minecraft-server` is `docker.io/itzg/minecraft-server`),
   so policy prefixes are written that way.
 - `Policy.Admit` is the same check the dashboard will use to preview "does this fit?" before enabling a game.
+
+### Exceptions: one game beyond the envelope
+
+Some games need what the envelope never grants. Windrose is the case: its invite-code relay needs a real LAN
+address (a macvlan network, with a pinned IPv4 so a firewall rule can find it) and its Wine runtime needs
+`seccomp=unconfined`. An `exceptions` entry grants exactly that to one container and nothing else:
+
+```yaml
+exceptions:
+  - name: windrose                       # exact container name, never a wildcard
+    image: indifferentbroccoli/windrose-server-docker   # the one image it may run
+    networks:                            # extra networks, with the only addresses it may be pinned to
+      dockervlan: [10.0.1.16]
+      crowsnest-games-net: [192.168.0.50]
+    secopts: [seccomp=unconfined]        # the only security options it may ask for
+```
+
+- Only the file on the host can add or change one. The dashboard's Game policy page lists them but cannot edit
+  them, and saving the rest of the policy from the dashboard keeps them as they are.
+- A game whose module asks for more than the envelope grants (`runtime.secopts`, `runtime.networks`) shows as
+  *needs a policy exception* in Settings → Game modules until the policy has an entry for its name.
+- The guard checks the exception itself, on the create request: another address, another network or another
+  security option is refused.
+- The module takes the operator's network and addresses from options (`lan_network`, `lan_ipv4`, `games_ipv4`),
+  so they are typed in the form, not written into the module. The host firewall script
+  (`windrose-firewall.sh`) that keeps the macvlan address away from the host stays a manual step.
+- Moving a hand-written Windrose to the dashboard: remove its entry from `GUARD_SCOPES` and `config.yaml`
+  (the dashboard refuses an id config.yaml already uses), add the exception above, then enable `windrose`
+  on the Games page with the data folder set to `Windrose` so it keeps its world.
 
 ## Enabling games from the dashboard (API)
 

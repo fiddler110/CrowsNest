@@ -45,8 +45,64 @@ type Policy struct {
 	Labels []string `yaml:"labels"`
 	// MaxScopes bounds how many managed scopes load (default 32).
 	MaxScopes int `yaml:"max_scopes"`
+	// Exceptions let one named container do what the envelope otherwise never
+	// allows (a LAN address, a pinned IPv4, a relaxed seccomp profile). Each is
+	// exact: one name, one image, the networks and addresses listed, the
+	// security options listed. Only the policy file can add one; the dashboard
+	// shows them but cannot create or change them.
+	Exceptions []Exception `yaml:"exceptions,omitempty"`
 
 	ports []portRange
+}
+
+// Exception is one container's allowance beyond the envelope.
+type Exception struct {
+	Name  string `yaml:"name" json:"name"`   // exact container name, no wildcard
+	Image string `yaml:"image" json:"image"` // repository, no tag
+	// Networks are extra networks this container may join, each with the
+	// addresses it may be pinned to (empty = joined with an automatic address).
+	Networks map[string][]string `yaml:"networks,omitempty" json:"networks,omitempty"`
+	// SecOpts are the security options it may ask for, e.g. seccomp=unconfined.
+	SecOpts []string `yaml:"secopts,omitempty" json:"secopts,omitempty"`
+}
+
+// ExceptionFor is the exception the policy holds for a container name, if any.
+func (p *Policy) ExceptionFor(name string) *Exception { return p.exception(name) }
+
+func (p *Policy) exception(name string) *Exception {
+	for i := range p.Exceptions {
+		if p.Exceptions[i].Name == name {
+			return &p.Exceptions[i]
+		}
+	}
+	return nil
+}
+
+// secOptKey makes seccomp=unconfined and seccomp:unconfined the same option.
+func secOptKey(o string) string { return strings.Replace(o, ":", "=", 1) }
+
+func (e *Exception) allowsSecOpt(o string) bool {
+	for _, x := range e.SecOpts {
+		if secOptKey(x) == secOptKey(o) {
+			return true
+		}
+	}
+	return false
+}
+
+func (e *Exception) allowsAddr(network, addr string) bool {
+	for _, a := range e.Networks[network] {
+		if a == addr {
+			return true
+		}
+	}
+	return false
+}
+
+func usableIPv4(str string) bool {
+	addr, err := netip.ParseAddr(str)
+	return err == nil && addr.Is4() && addr.String() == str && !addr.IsUnspecified() && !addr.IsLoopback() &&
+		!addr.IsMulticast() && !addr.IsLinkLocalUnicast() && str != "255.255.255.255"
 }
 
 type portRange struct {
@@ -120,6 +176,34 @@ func ParsePolicy(b []byte) (*Policy, error) {
 	for _, h := range p.HostIPs {
 		if _, err := netip.ParseAddr(h); err != nil {
 			return nil, fmt.Errorf("policy: bad host_ips entry %q", h)
+		}
+	}
+	seenEx := map[string]bool{}
+	for i := range p.Exceptions {
+		e := &p.Exceptions[i]
+		if !identRe.MatchString(e.Name) || seenEx[e.Name] {
+			return nil, fmt.Errorf("policy: exceptions need a unique, exact container name, not %q", e.Name)
+		}
+		seenEx[e.Name] = true
+		repo, tag, digest, err := parseRef(e.Image)
+		if err != nil || tag != "" || digest != "" {
+			return nil, fmt.Errorf("policy: exception %s: image must be one repository without a tag or digest, not %q", e.Name, e.Image)
+		}
+		e.Image = repo
+		for n, addrs := range e.Networks {
+			if !identRe.MatchString(n) || n == "host" || n == "none" {
+				return nil, fmt.Errorf("policy: exception %s: bad network %q", e.Name, n)
+			}
+			for _, a := range addrs {
+				if !usableIPv4(a) {
+					return nil, fmt.Errorf("policy: exception %s: %q is not a usable unicast IPv4 address", e.Name, a)
+				}
+			}
+		}
+		for _, o := range e.SecOpts {
+			if o == "" || strings.ContainsAny(o, " ,") {
+				return nil, fmt.Errorf("policy: exception %s: bad security option %q", e.Name, o)
+			}
 		}
 	}
 	if p.MaxScopes < 0 || p.MaxScopes > 1000 {
@@ -206,11 +290,12 @@ func (p *Policy) Admit(s *Scope) error {
 	if s == nil {
 		return errors.New("nil scope")
 	}
-	if !matchName(p.Names, s.Name) {
+	ex := p.exception(s.Name)
+	if ex == nil && !matchName(p.Names, s.Name) {
 		return fmt.Errorf("container name %s is not in the policy's names", s.Name)
 	}
 	for img := range s.Images {
-		if !matchName(p.Images, img) {
+		if !matchName(p.Images, img) && (ex == nil || ex.Image != img) {
 			return fmt.Errorf("image %s is not in the policy's images", img)
 		}
 	}
@@ -220,7 +305,11 @@ func (p *Policy) Admit(s *Scope) error {
 		}
 	}
 	for n := range s.Networks {
-		if !matchName(p.Networks, n) || strings.HasPrefix(n, "container:") || n == "host" {
+		exNet := false
+		if ex != nil {
+			_, exNet = ex.Networks[n]
+		}
+		if !(matchName(p.Networks, n) || exNet) || strings.HasPrefix(n, "container:") || n == "host" {
 			return fmt.Errorf("network %s is not in the policy's networks", n)
 		}
 	}
@@ -246,8 +335,26 @@ func (p *Policy) Admit(s *Scope) error {
 			return fmt.Errorf("label %s is not allowed by the policy", k)
 		}
 	}
-	if len(s.Volumes) > 0 || len(s.SecOpts) > 0 || len(s.CapAdd) > 0 || len(s.Aliases) > 0 || len(s.IPv4) > 0 {
-		return errors.New("managed scopes cannot carry volumes, security options, capabilities, aliases or fixed addresses")
+	if len(s.Volumes) > 0 || len(s.CapAdd) > 0 || len(s.Aliases) > 0 {
+		return errors.New("managed scopes cannot carry volumes, capabilities or aliases")
+	}
+	for o := range s.SecOpts {
+		if ex == nil || !ex.allowsSecOpt(o) {
+			return fmt.Errorf("security option %s is not allowed: the policy has no exception for %s that permits it", o, s.Name)
+		}
+	}
+	for n, addrs := range s.IPv4 {
+		for _, a := range addrs {
+			if ex == nil {
+				return fmt.Errorf("address %s on network %s is not allowed: the policy has no exception for %s that pins it", a, n, s.Name)
+			}
+			if !ex.allowsAddr(n, a) {
+				if allowed := ex.Networks[n]; len(allowed) > 0 {
+					return fmt.Errorf("address %s on network %s is not allowed: the policy's exception for %s pins %s to %s", a, n, s.Name, n, strings.Join(allowed, ", "))
+				}
+				return fmt.Errorf("address %s on network %s is not allowed: the policy's exception for %s does not pin an address on %s", a, n, s.Name, n)
+			}
+		}
 	}
 	return nil
 }
