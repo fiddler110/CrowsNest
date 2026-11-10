@@ -128,9 +128,11 @@ Two roles: **admin** can do everything; **player** can start, stop and switch
 games and see everything on the dashboard, but can't open Settings or touch
 backups. A role is set per user in the users file (`<NAME>_ROLE=admin|player`),
 usually through `docker compose exec crowsnest crowsnest set-role <user> <admin|player>`.
-A user with no role is an admin, so existing accounts behave as before until
-you demote them. This includes Google sign-in users, who have no password
-entry: run `set-role` for each friend you want as a player. Role changes apply
+A password account with no role is an admin, so existing accounts behave as
+before until you demote them. A Google sign-in user with no role is a
+**player**: promote yourself with `crowsnest set-role <you> admin` before
+relying on Google sign-in (CrowsNest logs a warning at startup when no user
+resolves to admin). Role changes apply
 within seconds, and a demotion takes effect on the user's very next request.
 
 ### Activity log, playtime and host health

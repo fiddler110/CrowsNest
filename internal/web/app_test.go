@@ -81,6 +81,8 @@ func newHarnessFromDefs(t *testing.T, docker *dockerctl.Client, defs []games.Gam
 	}
 
 	sessions := auth.NewSessionManager([]byte("test-secret"), time.Hour)
+	// The harness user is an admin; tests that need a player say so.
+	sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
 	excl := exclusivity.NewManager(registry, docker)
 	t.Cleanup(excl.Wait) // no background start may outlive the fake docker
 	app := &App{

@@ -36,7 +36,7 @@ are stable so commits and agents can refer to them.
 - [x] **S2 (medium). Discord mention injection.** Player names come from the game and
   are posted as plain `content` (`discord.go:49`), so a player called `@everyone` pings
   the channel. Send `"allowed_mentions": {"parse": []}`.
-- [ ] **S3 (medium). Google env-allowlist users are admins by default.** A name with
+- [x] **S3 (medium). Google env-allowlist users are admins by default.** A name with
   no users-file entry gets admin (`roles.go:33`). Dashboard-created users already
   default to player. **Needs a decision:** the owner may be a Google-only user with no
   entry, so they must be pinned to admin before the default flips.

@@ -148,8 +148,10 @@ func serve() error {
 		return fmt.Errorf("load users: %w", err)
 	}
 	go userStore.Watch(ctx, 3*time.Second)
-	if len(userStore.Snapshot()) == 0 {
+	if users := userStore.Snapshot(); len(users) == 0 {
 		log.Printf("warning: no users configured yet in %s — run `crowsnest set-password <username>` to create one", cfg.UsersFile)
+	} else if !hasAdmin(users) {
+		log.Printf("warning: no admin in %s; a Google-only user with no role is a player — run `crowsnest set-role <username> admin`", cfg.UsersFile)
 	}
 	secret, err := auth.LoadOrCreateSecret(cfg.Server.SessionSecretFile)
 	if err != nil {
@@ -500,6 +502,16 @@ func healthcheck() int {
 // allowlist. Sessions are stateless, so this is what ends a removed user's
 // session (within seconds, as the users file is watched) instead of letting
 // it run out its TTL.
+// hasAdmin reports whether any user in the file resolves to the admin role.
+func hasAdmin(users auth.Users) bool {
+	for _, u := range users {
+		if u.EffectiveRole() == auth.RoleAdmin {
+			return true
+		}
+	}
+	return false
+}
+
 func sessionAllowed(users func() auth.Users, google *auth.GoogleLogin, passwordDisabled bool) func(string) bool {
 	return func(name string) bool {
 		if google != nil {

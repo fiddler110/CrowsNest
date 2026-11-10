@@ -100,7 +100,7 @@ type UserRecord struct {
 	// re-authenticate.
 	ValidAfter time.Time
 
-	// Role is "admin" or "player"; empty means admin (see EffectiveRole).
+	// Role is "admin" or "player"; empty means admin for a password account and player otherwise (see EffectiveRole).
 	Role Role
 
 	// GoogleEmail, when set, lets that Google account sign in as this user
