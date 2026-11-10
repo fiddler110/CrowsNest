@@ -51,7 +51,7 @@ derived from it.
   bundled modules; adapter-sidecar contract v0 (Windrose+ first); remove the
   typed per-game fields from `config`. Done when a fourth game (Minecraft or a
   Source game) is added with a manifest only, in under 30 minutes.
-- [ ] **Phase 3: derived security.** (done: `runtime:` + `crowsnest render` generate
+- [x] **Phase 3: derived security.** (done: `runtime:` + `crowsnest render` generate
   compose and guard scopes; per-game secrets in `secrets.json` (0600, never rendered);
   the guard reads a managed scopes file and reloads; `policy.yaml` envelope with
   per-game exceptions; guard forwards resolved container ids; fuzz targets for path
@@ -62,7 +62,12 @@ derived from it.
   module, reloaded from the managed dir, so they cannot drift); privilege
   approval is covered by operator-only policy exceptions (only policy.yaml on
   the host can grant one), and the lock file moves to Phase 5 with remote module
-  sources. Remaining: dedicated security review.) Generate guard scopes, execguard rules and
+  sources; dedicated security review 2026-11-10: managed binds may not nest in
+  one another or in a base bind, and a game reads only `TZ` and its own
+  `<ID>_<OPTION>` names from the panel's environment. Known residuals:
+  `policy_editable: true` lets the panel rewrite policy.yaml; execguard trusts
+  the panel's games.json for which container gets a module's fixed backup
+  command; the /api/events cap of 32 is shared by all users.) Generate guard scopes, execguard rules and
   compose fragments from manifests; per-module secrets (the panel stops
   reading every game's `.env` values); guard reads a scopes file and reloads;
   `policy.yaml` envelope, privilege approval (`crowsnest module apply`) and a
