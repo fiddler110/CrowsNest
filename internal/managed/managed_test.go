@@ -694,3 +694,16 @@ func TestCatalogueSaysWindroseNeedsAnException(t *testing.T) {
 		t.Fatalf("with the exception it should fit: %+v", mi)
 	}
 }
+
+// Another game holding a module's default port must not blank the module's verdict in the catalogue.
+func TestCatalogueVerdictIgnoresPortsInUse(t *testing.T) {
+	m, _ := newManager(t)
+	if err := m.Enable(Request{ID: "gs-one", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}); err != nil {
+		t.Fatal(err)
+	}
+	for _, mi := range m.Catalogue() {
+		if mi.ID == "minecraft" && mi.Fits == nil {
+			t.Fatalf("no verdict while gs-one holds minecraft's port: %+v", mi)
+		}
+	}
+}

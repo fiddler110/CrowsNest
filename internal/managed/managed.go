@@ -85,6 +85,8 @@ type Request struct {
 	// Secrets holds the values of the module's secret options. They are kept
 	// in secrets.json and never appear in a plan, a rendered file or a list.
 	Secrets map[string]string `json:"secrets,omitempty"`
+
+	probe bool // set by the catalogue's fit check: judge the policy only
 }
 
 // Info is a managed game as the dashboard lists it.
@@ -203,7 +205,7 @@ func (m *Manager) probeFit(mi *ModuleInfo, mf *modules.Manifest) {
 			return
 		}
 	}
-	req := Request{ID: mf.ID, Module: mf.ID, Options: map[string]string{}, Secrets: map[string]string{}}
+	req := Request{ID: mf.ID, Module: mf.ID, Options: map[string]string{}, Secrets: map[string]string{}, probe: true}
 	for _, o := range mf.Options {
 		switch {
 		case o.Secret:
@@ -332,7 +334,7 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	if g.DisplayName == "" {
 		g.DisplayName = mf.Name
 	}
-	if rd, err := mf.Render(g, m.Platform); err == nil {
+	if rd, err := mf.Render(g, m.Platform); err == nil && !r.probe { // a catalogue probe asks about the policy, not the ports in use
 		if clash := m.portClash(g.ID, rd); clash != "" {
 			return g, nil, errors.New(clash)
 		}
