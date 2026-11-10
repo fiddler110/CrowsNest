@@ -49,7 +49,7 @@ are stable so commits and agents can refer to them.
   overwrites the header, but use the right-most untrusted address.
 - [x] **S6 (low). `writeUsers` is not atomic** (`users.go:274`). A crash mid-write
   truncates the users file. Use temp file plus rename, like settings and history.
-- [ ] **S7 (low). The guard checks a container by name but forwards that name, not the
+- [x] **S7 (low). The guard checks a container by name but forwards that name, not the
   resolved ID**, so the engine resolves it again. Rewrite the target to the full ID.
   Fuzz targets for the guard's path and body parsing are already on the roadmap.
 - [ ] **S8 (low). Players can read every game's full live log**, including anything an
