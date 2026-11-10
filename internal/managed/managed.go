@@ -114,6 +114,16 @@ type Plan struct {
 	Ports     []string `json:"ports,omitempty"`   // host_ip:port/proto -> container
 	Folders   []string `json:"folders,omitempty"` // host folders the game stores data in
 	Memory    string   `json:"memory,omitempty"`
+	// Setup is what the operator has to do on the host for this game, in order.
+	Setup []SetupStep `json:"setup,omitempty"`
+}
+
+// SetupStep is one host-side step the dashboard cannot do for the operator.
+type SetupStep struct {
+	Title   string `json:"title"`
+	Detail  string `json:"detail,omitempty"`
+	Command string `json:"command,omitempty"` // text to copy
+	Done    *bool  `json:"done,omitempty"`    // known to be done (nil = cannot be told from here)
 }
 
 // OptionInfo and ModuleInfo describe the catalogue to the dashboard.
@@ -454,7 +464,71 @@ func (m *Manager) Preview(r Request) (*Plan, error) {
 	for _, v := range rd.EnvVars {
 		p.Env = append(p.Env, v.Name)
 	}
+	p.Setup = m.setupSteps(r, mf, rd, p.Fits)
 	return p, nil
+}
+
+var setupRef = regexp.MustCompile(`\{([a-z][a-z0-9_]*)\}`)
+
+// setupSteps is the host-side checklist for this game: the policy exception it needs (written out, ready to
+// paste), then the module's own steps with the form's values filled in.
+func (m *Manager) setupSteps(r Request, mf *modules.Manifest, rd *modules.Rendered, fits bool) []SetupStep {
+	var steps []SetupStep
+	sc := rd.Scope
+	if len(sc.SecOpts) > 0 || len(sc.IPv4) > 0 || len(sc.Networks) > 1 {
+		primary := ""
+		if len(sc.Networks) > 0 {
+			primary = sc.Networks[0]
+		}
+		ex := dockerguard.Exception{Name: sc.Name, Networks: map[string][]string{}}
+		if len(sc.Images) > 0 {
+			ex.Image = sc.Images[0]
+		}
+		for _, n := range sc.Networks {
+			if n != primary || len(sc.IPv4[n]) > 0 {
+				ex.Networks[n] = append([]string{}, sc.IPv4[n]...)
+			}
+		}
+		for _, o := range sc.SecOpts {
+			if strings.Contains(o, "=") {
+				ex.SecOpts = append(ex.SecOpts, o)
+			}
+		}
+		if len(ex.Networks) == 0 {
+			ex.Networks = nil
+		}
+		b, _ := yaml.Marshal(map[string]any{"exceptions": []dockerguard.Exception{ex}})
+		done := fits
+		detail := "This game needs more than the dashboard may ever grant (a LAN address, a pinned address or a relaxed security profile). Add this block to policy.yaml on the host. The guard picks it up within a few seconds; no restart is needed."
+		if m.PolicyFile != "" {
+			detail += " The file is " + m.PolicyFile + " inside the panel, which is the policy folder on the host."
+		}
+		if fits {
+			detail = "The policy already has an exception that covers this game exactly as set up here."
+		}
+		steps = append(steps, SetupStep{Title: "Allow it in policy.yaml", Detail: detail, Command: strings.TrimRight(string(b), "\n"), Done: &done})
+	}
+	fill := func(t string) string {
+		return setupRef.ReplaceAllStringFunc(t, func(ref string) string {
+			k := ref[1 : len(ref)-1]
+			if k == "id" {
+				return r.ID
+			}
+			if v := strings.TrimSpace(r.Options[k]); v != "" {
+				return v
+			}
+			for _, o := range mf.Options {
+				if o.Key == k && o.Default != "" {
+					return o.Default
+				}
+			}
+			return "<" + k + ">"
+		})
+	}
+	for _, h := range mf.HostSetup {
+		steps = append(steps, SetupStep{Title: fill(h.Title), Detail: fill(h.Detail), Command: fill(h.Command)})
+	}
+	return steps
 }
 
 // Enable records the game and installs it in the background: scope, image,

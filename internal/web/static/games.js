@@ -133,7 +133,7 @@ function renderCatalogue() {
     const meta = [m.image, (m.ports || []).join(", ")].filter(Boolean).join(" · ");
     if (meta) b.append(el("span", "pick-meta", meta));
     if (m.fits !== undefined && m.fits !== null) {
-      b.append(el("span", "pick-badge " + (m.fits ? "ok" : "no"), m.fits ? "Allowed by policy" : "Not allowed by policy"));
+      b.append(el("span", "pick-badge " + (m.fits ? "ok" : "no"), m.fits ? "Allowed by policy" : m.needs_exception ? "Needs a policy exception" : "Not allowed by policy"));
     }
     if (m.fits && m.fit_id) b.append(el("span", "pick-meta", `Use an id the policy allows, such as ${m.fit_id}.`));
     if (blocked && m.reason) b.append(el("span", "pick-reason", m.reason));
@@ -268,6 +268,7 @@ async function runPreview() {
     $("sum-status").textContent = "Almost there: " + msg;
     sumRow(dl, "Image", m.needs_image ? [] : [m.image]);
     sumRow(dl, "Ports", m.ports);
+    renderSetup([]);
     return;
   }
   const p = await res.json();
@@ -279,10 +280,34 @@ async function runPreview() {
   sumRow(dl, "Ports", p.ports);
   sumRow(dl, "Data folder", p.folders);
   sumRow(dl, "Memory limit", p.memory ? [p.memory] : []);
+  renderSetup(p.setup || []);
   $("tech-service").textContent = p.service || "";
   $("tech-scope").textContent = p.scope || "";
   $("tech").hidden = false;
   $("enable").disabled = !fitOK;
+}
+
+// Host-side steps the dashboard cannot do for the operator (policy exception, network, firewall).
+function renderSetup(steps) {
+  $("setup").hidden = steps.length === 0;
+  const ol = $("setup-list");
+  ol.replaceChildren();
+  steps.forEach((st) => {
+    const li = el("li", st.done ? "setup-step done" : "setup-step");
+    li.append(el("strong", "", (st.done ? "✓ " : "") + st.title));
+    if (st.detail) li.append(el("p", "settings-help", st.detail));
+    if (st.command) {
+      const pre = el("pre", "", st.command);
+      const copy = el("button", "btn btn-ghost", "Copy");
+      copy.type = "button";
+      copy.addEventListener("click", async () => {
+        try { await navigator.clipboard.writeText(st.command); copy.textContent = "Copied"; } catch { copy.textContent = "Select and copy"; }
+        setTimeout(() => { copy.textContent = "Copy"; }, 2000);
+      });
+      li.append(pre, copy);
+    }
+    ol.append(li);
+  });
 }
 
 // ---------- enable / edit ----------

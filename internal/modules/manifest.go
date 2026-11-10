@@ -44,6 +44,12 @@ type Manifest struct {
 		Option string `yaml:"option"`
 	} `yaml:"connect"`
 
+	// HostSetup lists the steps an operator must do on the host themselves for
+	// this game, because the dashboard cannot (and should not) do them: creating
+	// a network, a firewall rule. Shown beside the form, in order, with {id} and
+	// {option} replaced by what was typed in it (an unset option shows as <option>).
+	HostSetup []HostStep `yaml:"host_setup"`
+
 	// Backup is the command (run with docker exec) that backs this game up and
 	// the folder its backups land in. Used for games enabled from the dashboard,
 	// whose config has no backup block: execguard allows exactly this command in
@@ -115,6 +121,13 @@ type Manifest struct {
 	// "Update state (0x61) downloading, progress: 42.5") and maps 0-100 onto
 	// From..To of the startup bar. Label may contain {pct}.
 	StartupProgress *StartupProgress `yaml:"startup_progress"`
+}
+
+// HostStep is one thing to do on the host.
+type HostStep struct {
+	Title   string `yaml:"title"`
+	Detail  string `yaml:"detail"`
+	Command string `yaml:"command"` // optional, shown to copy
 }
 
 // StartupProgress is a percentage parsed from the log and scaled onto a range.

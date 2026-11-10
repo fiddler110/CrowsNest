@@ -707,3 +707,48 @@ func TestCatalogueVerdictIgnoresPortsInUse(t *testing.T) {
 		}
 	}
 }
+
+// The preview tells the operator exactly what to put in policy.yaml and what else to do on the host.
+func TestWindrosePreviewGivesHostSteps(t *testing.T) {
+	m, _ := newManager(t)
+	m.Config = &config.Config{}
+	plan, err := m.Preview(windroseReq)
+	if err != nil || plan.Fits || len(plan.Setup) < 3 {
+		t.Fatalf("plan: %+v %v", plan, err)
+	}
+	first := plan.Setup[0]
+	if first.Done == nil || *first.Done {
+		t.Errorf("the policy step must be open while the policy has no exception: %+v", first)
+	}
+	for _, want := range []string{"exceptions:", "name: windrose", "dockervlan:", "10.0.1.16", "192.168.0.50", "seccomp=unconfined"} {
+		if !strings.Contains(first.Command, want) {
+			t.Errorf("generated exception lacks %q:\n%s", want, first.Command)
+		}
+	}
+	// what it generated must be accepted by the policy parser and admit this very game
+	pol, err := dockerguard.ParsePolicy([]byte(policy + "\n" + first.Command + "\n"))
+	if err != nil {
+		t.Fatalf("generated block does not parse: %v\n%s", err, first.Command)
+	}
+	g, mf, _ := m.validate(windroseReq, false)
+	rd, _ := mf.Render(g, m.Platform)
+	js, _ := modules.ScopesJSON([]*modules.Rendered{rd})
+	sc, _ := dockerguard.LoadScopes(string(js))
+	if err := pol.Admit(sc[0]); err != nil {
+		t.Errorf("the generated exception does not admit the game it was made for: %v", err)
+	}
+	all := ""
+	for _, s := range plan.Setup {
+		all += s.Title + s.Detail + s.Command
+	}
+	if !strings.Contains(all, "iptables -I INPUT -s 10.0.1.16") || strings.Contains(all, "{lan_ipv4}") {
+		t.Errorf("host steps not filled in:\n%s", all)
+	}
+	// once the policy has it, the first step reads as done
+	if err := os.WriteFile(m.PolicyFile, []byte(windrosePolicy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if plan, _ = m.Preview(windroseReq); plan.Setup[0].Done == nil || !*plan.Setup[0].Done {
+		t.Errorf("step not marked done: %+v", plan.Setup[0])
+	}
+}

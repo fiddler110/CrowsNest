@@ -52,6 +52,33 @@ runtime:
     - WINDROSE_PLUS_ENABLED=${windrose_plus}
     - WINDROSE_PLUS_RCON_PASSWORD=${rcon_password}
 
+# Steps only the operator can do on the host. The Games page shows them beside the form with
+# your values filled in, after the policy.yaml block it generates for the exception.
+host_setup:
+  - title: "Make sure the Docker network {lan_network} exists"
+    detail: >-
+      Windrose joins your LAN through a macvlan network, so players' invite-code relay sees a real LAN address.
+      Check it exists. If it does not, create it on the NIC that faces your LAN, with your LAN's subnet and
+      gateway, and an ip-range that does not overlap your router's DHCP pool.
+    command: >-
+      docker network inspect {lan_network} --format '{{.Driver}} {{range .IPAM.Config}}{{.Subnet}} {{end}}'
+      || docker network create -d macvlan --subnet=<lan-subnet> --gateway=<lan-gateway> --ip-range=<small-range> -o parent=<nic> {lan_network}
+  - title: "Keep {lan_ipv4} away from this host"
+    detail: >-
+      A macvlan container is a peer on your LAN and can reach this host's own services through the host's
+      addresses. Run these once as root, then make them survive a reboot (a oneshot systemd unit that re-applies
+      them after Docker starts, as the windrose-firewall.sh pattern does). Also filter {lan_ipv4} on your
+      router if it lets you.
+    command: |-
+      sudo iptables -I INPUT -s {lan_ipv4} -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+      sudo iptables -I INPUT 2 -s {lan_ipv4} -j DROP
+      sudo iptables -I DOCKER-USER -s {lan_ipv4} -j DROP
+  - title: "Windrose+ dashboard (only if you turn the mod on)"
+    detail: >-
+      Bind the mod's dashboard to {games_ipv4} so only CrowsNest can reach it: set server.bind_ip to that
+      address in <data folder>/Config/windrose_plus.json, then put http://{games_ipv4}:8780 in the
+      Windrose+ dashboard URL option.
+
 backup:
   exec: ["/bin/sh", "-c", "mkdir -p /home/steam/server-files/backups && tar czf /home/steam/server-files/backups/world-$(date +%Y%m%d-%H%M%S).tar.gz -C /home/steam/server-files/R5/Saved SaveProfiles && chown -R 1000:1000 /home/steam/server-files/backups"]
   list_dir: /home/steam/server-files/backups
