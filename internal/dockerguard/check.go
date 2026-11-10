@@ -210,8 +210,10 @@ func (g *Guard) containerInScope(c any) bool {
 	names, _ := m["Names"].([]any)
 	for _, n := range names {
 		s, ok := n.(string)
-		if ok && strings.HasPrefix(s, "/") && g.cur().byName[s[1:]] != nil {
-			return true
+		if ok && strings.HasPrefix(s, "/") {
+			if sc := g.cur().byName[s[1:]]; sc != nil && sc.ownedBy(m["Labels"]) {
+				return true
+			}
 		}
 	}
 	return false
@@ -338,7 +340,17 @@ func (g *Guard) scopeOf(c *resolved) *Scope {
 	if c == nil {
 		return nil
 	}
-	return g.cur().byName[c.name]
+	s := g.cur().byName[c.name]
+	if s != nil && !s.ownedBy(containerLabels(c.info)) {
+		return nil
+	}
+	return s
+}
+
+// containerLabels is the label map of an inspect document.
+func containerLabels(info map[string]any) any {
+	cfg, _ := info["Config"].(map[string]any)
+	return cfg["Labels"]
 }
 
 var tmpNameRe = regexp.MustCompile(`^([0-9a-f]{12})_(.+)$`)
@@ -353,7 +365,11 @@ func (g *Guard) tmpScopeOf(c *resolved) *Scope {
 	if m == nil {
 		return nil
 	}
-	return g.cur().byName[m[2]]
+	s := g.cur().byName[m[2]]
+	if s != nil && !s.ownedBy(containerLabels(c.info)) {
+		return nil
+	}
+	return s
 }
 
 // recreateCopy is true for the container compose created under its temporary
@@ -439,6 +455,9 @@ func (g *Guard) checkCreate(q query, body any) error {
 	obj, err := checkObject(body, configRules(scope), "Config")
 	if err != nil {
 		return err
+	}
+	if !scope.ownedBy(obj["Labels"]) {
+		return deny(403, "%s must be created with the label %s=true", quote(name), OwnerLabel)
 	}
 	image := obj["Image"]
 	if repo := repoOrNone(image); repo == "" || !scope.Images[repo] {

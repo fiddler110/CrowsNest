@@ -148,9 +148,10 @@ scopes in force exactly as they were; a tighter policy drops managed scopes that
 is enough to start (`GUARD_SCOPES_FILE` with no `GUARD_SCOPES` is fine); with a managed file but no policy it refuses.
 
 ```yaml
-# policy.yaml: every list is required, so no limit is ever implied
+# policy.yaml: images, networks and ports are required, so no limit is ever implied
 games_root: /srv/games                 # managed binds must be exact paths inside this folder
-names: [valheim, minecraft, "gs-*"]    # container names the panel may manage (trailing * = prefix)
+# names: [valheim, "gs-*"]            # optional: leave it out and any name works, because the guard only manages
+                                       # containers the dashboard made (label crowsnest.managed=true)
 images: [lloesche/valheim-server, "docker.io/itzg/*"]   # "*" alone = any image; prefixes are fully qualified
 networks: [crowsnest-games-net]
 ports: ["27000-28999/udp", "25565/tcp"]  # host ports and protocol
@@ -169,8 +170,12 @@ max_scopes: 32
   game's, or one of your `GUARD_SCOPES`), or holds one, is not loaded. A container that can write a folder could
   turn a path below it into a symlink, and Docker follows that symlink when it binds the path, so a nested bind
   would reach the whole host. Sibling folders such as `<id>/config` and `<id>/data` are fine.
-- `names` matters: the guard lets a scope manage the container of the same name, so without it a scope called
-  `caddy` would let the panel stop your reverse proxy.
+- Ownership, not a list of names, is what keeps the panel off your other containers. A game the dashboard creates
+  carries the label `crowsnest.managed=true`, and with no `names` in the policy the guard only acts on a container
+  that has it: a scope called `caddy` finds nothing, because your proxy has no such label. Name your games
+  anything you like. If you do set `names`, it is the old behaviour: only those names, and the label is not
+  required (use this for containers created before the label existed). Games made by an earlier version have
+  no label, so they stay under a policy that lists their names, or you disable and re-enable them.
 - A managed scope can never carry volumes, capabilities, aliases, host networking, or exec unless the policy allows
   it. Security options, extra networks and fixed addresses are only for a game the policy names in an
   [exception](#exceptions-one-game-beyond-the-envelope).

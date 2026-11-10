@@ -43,6 +43,27 @@ type Scope struct {
 	// pin_digests: its creates must name the image by digest. It cannot be
 	// written in a scope's JSON, so only the policy turns it on.
 	pinDigest bool
+
+	// needsOwner is set on a managed scope whose name the policy does not list
+	// (the policy has no "names"): the guard then acts only on a container
+	// carrying OwnerLabel, so a scope named after someone else's container
+	// reaches nothing. Like pinDigest it cannot be written in a scope's JSON.
+	needsOwner bool
+}
+
+// OwnerLabel marks a container the dashboard created. Under a policy with no
+// "names" the guard only manages containers that carry it.
+const OwnerLabel = "crowsnest.managed"
+
+// ownedBy is true when s does not need the ownership label, or labels (a
+// container's label map from inspect or a container list) carry it.
+func (s *Scope) ownedBy(labels any) bool {
+	if s == nil || !s.needsOwner {
+		return true
+	}
+	m, _ := labels.(map[string]any)
+	v, _ := m[OwnerLabel].(string)
+	return v == "true"
 }
 
 var (

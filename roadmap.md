@@ -95,6 +95,17 @@ derived from it.
   (create containers through the Engine API behind the guard); also removes
   the compose-from-source Dockerfile stage and its x/net CVE churn.
 
+- [ ] **Policy you don't have to maintain** (planned 2026-11-10). The policy should hold only what protects the
+  host (`games_root`, `exec`, exceptions); the rest comes from the modules.
+  1. [x] **Ownership instead of a names list.** Dashboard games carry `crowsnest.managed=true`; with no `names` in
+     the policy the guard only acts on labelled containers (lists, inspect, start/stop/remove, create).
+     A policy that still lists `names` behaves as before.
+  2. [ ] Images and the games network come from the enabled modules and `platform.games_network`, not the policy.
+  3. [ ] A per-module **Allow** switch on the Games page (admin password again, audit-logged), and each game's
+     published ports shown with the module's reason. Host-port changes warn on a clash; one optional extra range.
+  4. [ ] Host address as three plain choices (this machine, my network, a specific address); max active games as a
+     number field with arrows, starting at 1.
+
 ### B. Accounts and settings
 
 Today: Google sign-in with an allowlist, admin/player roles looked up per

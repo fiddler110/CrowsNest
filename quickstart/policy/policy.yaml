@@ -2,7 +2,7 @@
 # Widen them here, on the host, deliberately. See ../../docs/modules.md ("The policy envelope").
 # Every list is required: no limit is ever implied.
 games_root: /srv/games                  # game data may only be bound from inside this folder (a host path)
-names: ["gs-*", valheim, palworld, minecraft]          # container names a game may have
+# No "names" list: any name works, and the guard only manages containers this dashboard created.
 images: [lloesche/valheim-server, thijsvanloef/palworld-server-docker, "docker.io/itzg/*"]   # image repositories you trust
 networks: [crowsnest-games-net]
 ports: ["25000-28999/udp", "25565/tcp", "2456-2458/udp", "8211/udp"]

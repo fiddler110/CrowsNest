@@ -10,6 +10,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
+	"github.com/fiddler110/crowsnest/internal/dockerguard"
 	"gopkg.in/yaml.v3"
 )
 
@@ -213,7 +214,7 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 	svc := Service{
 		Image: image + ":" + tag, Profiles: []string{g.ID}, ContainerName: g.ContainerName,
 		Restart:  "unless-stopped",
-		Labels:   map[string]string{"com.centurylinklabs.watchtower.enable": "false"},
+		Labels:   map[string]string{"com.centurylinklabs.watchtower.enable": "false", dockerguard.OwnerLabel: "true"},
 		Networks: []string{network}, MemLimit: rt.Memory,
 	}
 	if rt.StopGrace > 0 {

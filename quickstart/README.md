@@ -22,7 +22,7 @@ then pick the admin username and passphrase. Then open **Games**, choose a game,
 |---|---|
 | `compose.yaml` | two containers: the panel, and the `guard` (a scoped Docker API filter that also runs the exec allowlist) |
 | `config.yaml` | the panel's settings; no games, dashboard games switched on |
-| `policy/policy.yaml` | what the dashboard may create: names, images, networks, ports, exec |
+| `policy/policy.yaml` | what the dashboard may create: images, networks, ports, exec |
 | `.env.example` | timezone, the docker group id, where the panel listens |
 
 ## Things to know

@@ -24,8 +24,10 @@ type Policy struct {
 	// GamesRoot is the absolute host folder every managed bind must be inside.
 	GamesRoot string `yaml:"games_root"`
 	// Names are the container names the panel may manage. An entry ending in *
-	// is a prefix. Required: without it a managed scope named after any other
-	// container on the host would let the panel stop or remove that container.
+	// is a prefix. Optional: when it is left out, any name is allowed but the
+	// guard only acts on containers labelled crowsnest.managed=true, so a scope
+	// named after another container on the host still reaches nothing. When
+	// it is set, only those names are allowed (and the label is not required).
 	Names []string `yaml:"names"`
 	// Images are the repositories a managed scope may run (an entry ending in *
 	// is a prefix, "*" alone is any image). Required, so "any image" is always
@@ -140,7 +142,7 @@ func ParsePolicy(b []byte) (*Policy, error) {
 	for _, f := range []struct {
 		name string
 		n    int
-	}{{"names", len(p.Names)}, {"images", len(p.Images)}, {"networks", len(p.Networks)}, {"ports", len(p.Ports)}} {
+	}{{"images", len(p.Images)}, {"networks", len(p.Networks)}, {"ports", len(p.Ports)}} {
 		if f.n == 0 {
 			return nil, fmt.Errorf("policy: %s must list at least one entry (it is a limit, so it is never implied)", f.name)
 		}
@@ -242,7 +244,7 @@ func parsePortRange(s string) (portRange, error) {
 
 // NameAllowed reports whether name is a container the policy lets the panel
 // manage, the same test the guard applies to a managed scope.
-func (p *Policy) NameAllowed(name string) bool { return matchName(p.Names, name) }
+func (p *Policy) NameAllowed(name string) bool { return len(p.Names) == 0 || matchName(p.Names, name) }
 
 func matchName(list []string, name string) bool {
 	for _, e := range list {
@@ -316,8 +318,11 @@ func (p *Policy) Admit(s *Scope) error {
 		return errors.New("nil scope")
 	}
 	ex := p.exception(s.Name)
-	if ex == nil && !matchName(p.Names, s.Name) {
+	if ex == nil && len(p.Names) > 0 && !matchName(p.Names, s.Name) {
 		return fmt.Errorf("container name %s is not in the policy's names", s.Name)
+	}
+	if ex == nil && len(p.Names) == 0 && s.Labels[OwnerLabel] != "true" {
+		return fmt.Errorf("container %s must carry the label %s=true (the policy lists no names, so ownership is what scopes a game)", s.Name, OwnerLabel)
 	}
 	for img := range s.Images {
 		if !matchName(p.Images, img) && (ex == nil || ex.Image != img) {
@@ -358,7 +363,7 @@ func (p *Policy) Admit(s *Scope) error {
 		return errors.New("exec is not allowed by the policy")
 	}
 	for k, v := range s.Labels {
-		if k == watchtowerLabel && v == "false" {
+		if k == watchtowerLabel && v == "false" || k == OwnerLabel && v == "true" {
 			continue
 		}
 		if !matchName(p.Labels, k) {

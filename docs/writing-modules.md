@@ -153,11 +153,10 @@ Then **restart CrowsNest** (`docker compose restart crowsnest`); modules load at
 ### 2. Let the policy allow it
 
 The dashboard only creates what `policy.yaml` permits, and the module can't change that. For `mygame` the policy
-needs, at least, its container name in `names`, its image in `images`, its ports in `ports`, and the games network in
-`networks`:
+needs, at least, its image in `images`, its ports in `ports`, and the games network in `networks` (container
+names need no entry: the guard only manages containers the dashboard made):
 
 ```yaml
-names:  [mygame]
 images: ["docker.io/example/mygame-server"]     # Docker Hub images are written fully qualified
 ports:  ["7777/udp"]
 ```
