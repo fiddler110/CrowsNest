@@ -384,6 +384,9 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		if clash := m.portClash(g.ID, rd); clash != "" {
 			return g, nil, errors.New(clash)
 		}
+		if err := m.bindClash(g.ID, rd); err != nil {
+			return g, nil, err
+		}
 	}
 	return g, mf, nil
 }
@@ -423,6 +426,24 @@ func (m *Manager) portClash(id string, rd *modules.Rendered) string {
 		}
 	}
 	return ""
+}
+
+// bindClash refuses a data folder inside another dashboard game's, or holding one: the guard does not load such a
+// scope (dockerguard.NestedBinds says why), so it is better refused here, with the game named.
+func (m *Manager) bindClash(id string, rd *modules.Rendered) error {
+	for _, o := range m.entries {
+		if o.ID == id || o.rendered == nil {
+			continue
+		}
+		for _, a := range rd.Scope.Binds {
+			for _, b := range o.rendered.Scope.Binds {
+				if err := dockerguard.NestedBinds(a, b); err != nil {
+					return fmt.Errorf("%w; %s uses that folder: choose another data folder under More settings", err, o.ID)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 func (m *Manager) policy() (*dockerguard.Policy, error) {
@@ -777,12 +798,24 @@ func (m *Manager) retryDenied(ctx context.Context, f func() error) error {
 	}
 }
 
-// lookup resolves a compose variable: the game's own secrets, then the panel's environment.
+// lookup resolves a compose variable: the game's own secrets, then the panel's environment, but only for the
+// variables this game owns (TZ, and <ID>_<OPTION> for its module's options). Anything else is unset: an option
+// such as rcon_password_env, or a module's env, must not be able to name another variable of the panel's
+// environment (an OAuth client secret, a webhook URL, another game's password) and have it sent to the game.
 func (m *Manager) lookup(e *entry) func(string) (string, bool) {
 	secrets := m.secretsFor(e)
+	own := map[string]bool{"TZ": true}
+	if mf, ok := m.Modules.Manifest(e.Module); ok {
+		for _, o := range mf.Options {
+			own[envName(e.ID, o.Key)] = true
+		}
+	}
 	return func(name string) (string, bool) {
 		if v, ok := secrets[name]; ok {
 			return v, true
+		}
+		if !own[name] {
+			return "", false
 		}
 		return os.LookupEnv(name)
 	}
@@ -800,12 +833,10 @@ func (m *Manager) secretsFor(e *entry) map[string]string {
 func (m *Manager) register(e *entry, g config.GameConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	secrets := m.secretsFor(e)
+	find := m.lookup(e)
 	lookup := func(name string) string {
-		if v, ok := secrets[name]; ok {
-			return v
-		}
-		return os.Getenv(name)
+		v, _ := find(name)
+		return v
 	}
 	def, runners := m.Modules.BuildOne(m.Config, g, m.Wire, lookup)
 	if mf, ok := m.Modules.Manifest(e.Module); ok {
