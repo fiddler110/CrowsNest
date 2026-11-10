@@ -37,7 +37,10 @@
 // Every request target is refused if it holds "#", ";", "%" in the path,
 // non-ASCII or control characters, or an API version below 1.44, and is
 // rebuilt from the checked path and query before it goes to the engine, so the
-// engine sees exactly what was checked. Bodies are plain Content-Length JSON
+// engine sees exactly what was checked. A container ref (name, id or id
+// prefix) is resolved once, by inspecting it, and the engine is sent the full
+// id that inspect gave, so it cannot resolve the ref again to a container that
+// was never checked. Bodies are plain Content-Length JSON
 // (no chunked, no forms, one Content-Type, no keys that differ only in case,
 // bounded nesting). Buffered answers are capped; at most MaxConns clients are
 // served at once, and a request's head and body must arrive within 20 seconds.
@@ -628,7 +631,12 @@ func (g *Guard) safeCheck(req *request, body any) (hk *hook, err error) {
 			hk, err = nil, fmt.Errorf("internal error: %v", r)
 		}
 	}()
-	return g.check(req.method, req.path, req.query, body)
+	hk, fwd, err := g.check(req.method, req.path, req.query, body)
+	if err != nil {
+		return nil, err
+	}
+	req.path = fwd // what the engine is sent, here and on a tunnel: a container ref is now the full id it was checked as
+	return hk, nil
 }
 
 // oneLine makes request-derived text safe to log.

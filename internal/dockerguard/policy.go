@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -24,17 +25,23 @@ type Policy struct {
 	// GamesRoot is the absolute host folder every managed bind must be inside.
 	GamesRoot string `yaml:"games_root"`
 	// Names are the container names the panel may manage. An entry ending in *
-	// is a prefix. Required: without it a managed scope named after any other
-	// container on the host would let the panel stop or remove that container.
+	// is a prefix. Optional: when it is left out, any name is allowed but the
+	// guard only acts on containers labelled crowsnest.managed=true, so a scope
+	// named after another container on the host still reaches nothing. When
+	// it is set, only those names are allowed (and the label is not required).
 	Names []string `yaml:"names"`
 	// Images are the repositories a managed scope may run (an entry ending in *
-	// is a prefix, "*" alone is any image). Required, so "any image" is always
-	// a decision written down.
+	// is a prefix, "*" alone is any image). The entry "@modules" stands for the
+	// images the bundled modules declare. Left out, it is just "@modules", so
+	// only the images the modules were built for are allowed, and "any image"
+	// is always a decision written down.
 	Images []string `yaml:"images"`
-	// Networks the managed containers may join. Required.
+	// Networks the managed containers may join. Left out, it is the games
+	// network of the app's own config (platform.games_network).
 	Networks []string `yaml:"networks"`
 	// Ports are the host ports (and protocol) a managed scope may publish, as
-	// "27000-28999/udp" or "25565/tcp". Required.
+	// "27000-28999/udp" or "25565/tcp". Optional: the ports of each module the
+	// operator allowed are added to it, so this is only for ports beyond those.
 	Ports []string `yaml:"ports"`
 	// HostIPs, if set, limits the address a port may be published on.
 	HostIPs []string `yaml:"host_ips"`
@@ -45,6 +52,11 @@ type Policy struct {
 	Labels []string `yaml:"labels"`
 	// MaxScopes bounds how many managed scopes load (default 32).
 	MaxScopes int `yaml:"max_scopes"`
+	// PinDigests makes every create from a managed scope name its image by
+	// digest (repo@sha256:...), so an upstream push to a tag cannot change what
+	// a dashboard game runs. Pulls by tag stay allowed (that is how a new digest
+	// is found). The operator's own GUARD_SCOPES are not affected.
+	PinDigests bool `yaml:"pin_digests"`
 	// Exceptions let one named container do what the envelope otherwise never
 	// allows (a LAN address, a pinned IPv4, a relaxed seccomp profile). Each is
 	// exact: one name, one image, the networks and addresses listed, the
@@ -112,6 +124,82 @@ type portRange struct {
 
 const watchtowerLabel = "com.centurylinklabs.watchtower.enable"
 
+// ModulesImages, as an entry in a policy's images, stands for the repositories
+// the bundled modules declare.
+const ModulesImages = "@modules"
+
+// Defaults are what a policy that leaves out images or networks gets: the
+// repositories the bundled modules declare and the app's games network.
+type Defaults struct {
+	Images  []string
+	Network string
+	// ModulePorts are the published ports each bundled module declares
+	// ("25565/tcp"), by module id. Allowed is the set of module ids the
+	// operator switched on (the allowed file); each one adds its ports to the
+	// policy's own. An id that is not a bundled module adds nothing, so what
+	// the panel can widen is bounded by what the bundled modules declare.
+	ModulePorts map[string][]string
+	Allowed     []string
+}
+
+// Resolve fills in what the policy left out and expands "@modules". The guard
+// and the panel both call it with the same Defaults, so a game the panel says
+// fits is a game the guard admits.
+func (p *Policy) Resolve(d Defaults) error {
+	if len(p.Images) == 0 {
+		p.Images = []string{ModulesImages}
+	}
+	var imgs []string
+	for _, e := range p.Images {
+		if e != ModulesImages {
+			imgs = append(imgs, e)
+			continue
+		}
+		for _, r := range d.Images {
+			repo, tag, digest, err := parseRef(r)
+			if err != nil || tag != "" || digest != "" {
+				return fmt.Errorf("policy: a module declares the image %q, which is not a repository without a tag", r)
+			}
+			imgs = append(imgs, repo)
+		}
+	}
+	if len(imgs) == 0 {
+		return errors.New("policy: no images are allowed: list some, or use @modules once a bundled module declares one")
+	}
+	p.Images = dedupe(imgs)
+	if len(p.Networks) == 0 {
+		if d.Network == "" || !identRe.MatchString(d.Network) {
+			return errors.New("policy: no networks are allowed: list the games network")
+		}
+		p.Networks = []string{d.Network}
+	}
+	for _, id := range d.Allowed {
+		for _, s := range d.ModulePorts[id] {
+			pr, err := parsePortRange(s)
+			if err != nil {
+				return fmt.Errorf("policy: module %s declares a bad port: %w", id, err)
+			}
+			if !slices.Contains(p.Ports, s) {
+				p.Ports = append(p.Ports, s)
+				p.ports = append(p.ports, pr)
+			}
+		}
+	}
+	return nil
+}
+
+func dedupe(in []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // LoadPolicy reads and validates a policy file.
 func LoadPolicy(file string) (*Policy, error) {
 	b, err := os.ReadFile(file) // #nosec G304 -- operator-supplied path
@@ -119,6 +207,18 @@ func LoadPolicy(file string) (*Policy, error) {
 		return nil, err
 	}
 	return ParsePolicy(b)
+}
+
+// LoadPolicyWith is LoadPolicy followed by Resolve.
+func LoadPolicyWith(file string, d Defaults) (*Policy, error) {
+	p, err := LoadPolicy(file)
+	if err != nil {
+		return nil, err
+	}
+	if err := p.Resolve(d); err != nil {
+		return nil, err
+	}
+	return p, nil
 }
 
 // ParsePolicy validates policy YAML. Unknown keys are errors.
@@ -132,14 +232,6 @@ func ParsePolicy(b []byte) (*Policy, error) {
 	if !strings.HasPrefix(p.GamesRoot, "/") || path.Clean(p.GamesRoot) != p.GamesRoot || p.GamesRoot == "/" || strings.ContainsFunc(p.GamesRoot, badBindRune) {
 		return nil, fmt.Errorf("policy: games_root must be an absolute, normalised path other than /, not %q", p.GamesRoot)
 	}
-	for _, f := range []struct {
-		name string
-		n    int
-	}{{"names", len(p.Names)}, {"images", len(p.Images)}, {"networks", len(p.Networks)}, {"ports", len(p.Ports)}} {
-		if f.n == 0 {
-			return nil, fmt.Errorf("policy: %s must list at least one entry (it is a limit, so it is never implied)", f.name)
-		}
-	}
 	for _, n := range p.Names {
 		if n == "*" || !identRe.MatchString(strings.TrimSuffix(n, "*")) {
 			return nil, fmt.Errorf("policy: bad container name entry %q", n)
@@ -152,7 +244,7 @@ func ParsePolicy(b []byte) (*Policy, error) {
 	}
 	for i, img := range p.Images {
 		switch {
-		case img == "*":
+		case img == "*" || img == ModulesImages:
 		case strings.HasSuffix(img, "*"):
 			// the scopes hold fully qualified repositories, so a prefix must be one too
 			if pre := strings.TrimSuffix(img, "*"); !strings.HasSuffix(pre, "/") || !strings.Contains(strings.TrimSuffix(pre, "/"), ".") || strings.ContainsAny(pre, " :@") {
@@ -235,6 +327,10 @@ func parsePortRange(s string) (portRange, error) {
 	return portRange{l, h, proto}, nil
 }
 
+// NameAllowed reports whether name is a container the policy lets the panel
+// manage, the same test the guard applies to a managed scope.
+func (p *Policy) NameAllowed(name string) bool { return len(p.Names) == 0 || matchName(p.Names, name) }
+
 func matchName(list []string, name string) bool {
 	for _, e := range list {
 		if e == "*" || e == name {
@@ -245,6 +341,11 @@ func matchName(list []string, name string) bool {
 		}
 	}
 	return false
+}
+
+// PortAllowed reports whether the policy lets a managed game publish this host port on that address.
+func (p *Policy) PortAllowed(hostIP, host, proto string) bool {
+	return p.portOK(Port{HostIP: hostIP, HostPort: host, Proto: proto}) == nil
 }
 
 func (p *Policy) portOK(pt Port) error {
@@ -283,6 +384,22 @@ func (p *Policy) portOK(pt Port) error {
 	return nil
 }
 
+// NestedBinds is an error when one of the bind sources a and b is inside the
+// other. A container that can write a folder can replace any path below it
+// with a symlink (to / for instance), and the engine follows a symlink in a
+// bind source when it mounts it, so a bind below another bind is a way out to
+// the whole host. Equal paths are fine: a container cannot replace its own
+// mount point.
+func NestedBinds(a, b string) error {
+	switch {
+	case strings.HasPrefix(a, b+"/"):
+		return fmt.Errorf("bind %s is inside bind %s (a container that writes %s could make it a symlink to anywhere on the host)", a, b, b)
+	case strings.HasPrefix(b, a+"/"):
+		return fmt.Errorf("bind %s is inside bind %s (a container that writes %s could make it a symlink to anywhere on the host)", b, a, a)
+	}
+	return nil
+}
+
 // Admit reports why a scope does not fit the envelope, or nil if it does.
 // The same check backs the dashboard's "does this fit?" preview and the
 // guard's own enforcement when it loads managed scopes.
@@ -291,17 +408,25 @@ func (p *Policy) Admit(s *Scope) error {
 		return errors.New("nil scope")
 	}
 	ex := p.exception(s.Name)
-	if ex == nil && !matchName(p.Names, s.Name) {
+	if ex == nil && len(p.Names) > 0 && !matchName(p.Names, s.Name) {
 		return fmt.Errorf("container name %s is not in the policy's names", s.Name)
+	}
+	if ex == nil && len(p.Names) == 0 && s.Labels[OwnerLabel] != "true" {
+		return fmt.Errorf("container %s must carry the label %s=true (the policy lists no names, so ownership is what scopes a game)", s.Name, OwnerLabel)
 	}
 	for img := range s.Images {
 		if !matchName(p.Images, img) && (ex == nil || ex.Image != img) {
 			return fmt.Errorf("image %s is not in the policy's images", img)
 		}
 	}
-	for _, b := range s.Binds {
+	for i, b := range s.Binds {
 		if !strings.HasPrefix(b, p.GamesRoot+"/") {
 			return fmt.Errorf("bind %s is not inside games_root %s", b, p.GamesRoot)
+		}
+		for _, o := range s.Binds[:i] {
+			if err := NestedBinds(b, o); err != nil {
+				return err
+			}
 		}
 	}
 	for n := range s.Networks {
@@ -328,7 +453,7 @@ func (p *Policy) Admit(s *Scope) error {
 		return errors.New("exec is not allowed by the policy")
 	}
 	for k, v := range s.Labels {
-		if k == watchtowerLabel && v == "false" {
+		if k == watchtowerLabel && v == "false" || k == OwnerLabel && v == "true" {
 			continue
 		}
 		if !matchName(p.Labels, k) {

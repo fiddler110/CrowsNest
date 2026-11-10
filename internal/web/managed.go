@@ -3,7 +3,6 @@ package web
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -21,9 +20,11 @@ type ManagedGames interface {
 	Enable(managed.Request) error
 	Update(managed.Request) error
 	Refresh(id string) error
+	Rollback(id string) error
 	Disable(id string) error
 	Policy() (managed.PolicyState, error)
 	SetPolicy(managed.PolicyDoc) error
+	SetAllowed(id string, on bool) error
 }
 
 const maxManagedBody = 32 << 10
@@ -57,10 +58,8 @@ func (a *App) handleGamesPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	data := dashboardData{Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
-	if err := a.Templates.Games.Execute(w, data); err != nil {
-		log.Printf("web: render games page: %v", err)
-	}
+	data := dashboardData{Page: "games", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken, NeedsPassword: !a.Auth.HasPassword(session.Username)}
+	render(w, a.Templates.Games, data, "games page")
 }
 
 // handleSettingsPage serves the Settings page (admins only).
@@ -70,10 +69,8 @@ func (a *App) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	data := dashboardData{Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
-	if err := a.Templates.Settings.Execute(w, data); err != nil {
-		log.Printf("web: render settings page: %v", err)
-	}
+	data := dashboardData{Page: "settings", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken, NeedsPassword: !a.Auth.HasPassword(session.Username)}
+	render(w, a.Templates.Settings, data, "settings page")
 }
 
 // handleManagedConfigured lists the games that come from config.yaml (everything
@@ -147,6 +144,7 @@ func (a *App) handleManagedEnable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, req.ID, "enabled from module "+req.Module)
+	a.pokeGame(req.ID) // re-observe; an id the hub lacks prompts a registry reconcile
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": req.ID, "state": managed.StateInstalling})
 }
 
@@ -160,6 +158,7 @@ func (a *App) handleManagedDisable(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, id, "disabled")
+	a.pokeGame(id) // re-observe; an id the hub lacks prompts a registry reconcile
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -187,6 +186,7 @@ func (a *App) handleManagedUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, req.ID, "changed settings")
+	a.pokeGame(req.ID) // re-observe; an id the hub lacks prompts a registry reconcile
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": req.ID, "state": managed.StateInstalling})
 }
 
@@ -200,6 +200,23 @@ func (a *App) handleManagedRefresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.record(r, id, "updating image")
+	a.pokeGame(id) // re-observe; an id the hub lacks prompts a registry reconcile
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": managed.StateInstalling})
+}
+
+// handleManagedRollback recreates a stopped game on its previous image digest.
+// Every refusal (no previous image, running, starting or stopping) is a 409.
+func (a *App) handleManagedRollback(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := a.Managed.Rollback(id); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	a.record(r, id, "rolling back to the previous image")
+	a.pokeGame(id) // re-observe; an id the hub lacks prompts a registry reconcile
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": managed.StateInstalling})
 }
 
@@ -234,4 +251,52 @@ func (a *App) handleManagedSetPolicy(w http.ResponseWriter, r *http.Request) {
 	a.record(r, "policy", "changed the policy")
 	st, _ := a.Managed.Policy()
 	writeJSON(w, http.StatusOK, st)
+}
+
+// handleManagedAllow switches a bundled module on or off. It widens what the
+// guard accepts (that module's ports), so the admin proves who they are again
+// with their password, and the change goes in the history.
+func (a *App) handleManagedAllow(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	var body struct {
+		Allowed  bool   `json:"allowed"`
+		Password string `json:"password"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	session, _ := auth.FromContext(r.Context())
+	// Turning a module off only narrows things; asking for the password again is for widening.
+	if body.Allowed {
+		ok, have, limited := a.Auth.ConfirmPassword(r, session.Username, body.Password)
+		switch {
+		case !have:
+			http.Error(w, "set a password for your account first (Settings, Users): widening the guard asks for it, even if you sign in with Google", http.StatusForbidden)
+			return
+		case limited:
+			http.Error(w, "too many attempts, try again later", http.StatusTooManyRequests)
+			return
+		case !ok:
+			a.record(r, r.PathValue("id"), "refused to allow a module: wrong password")
+			http.Error(w, "that password is not right", http.StatusForbidden)
+			return
+		}
+	}
+	id := r.PathValue("id")
+	if err := a.Managed.SetAllowed(id, body.Allowed); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	verb := "turned off"
+	if body.Allowed {
+		verb = "allowed"
+	}
+	a.record(r, id, verb+" the "+id+" module (its ports in the policy)")
+	w.WriteHeader(http.StatusNoContent)
 }

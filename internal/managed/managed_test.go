@@ -3,11 +3,13 @@ package managed
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -18,6 +20,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerguard"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/modules"
+	"github.com/fiddler110/crowsnest/internal/probes"
 )
 
 const policy = `
@@ -36,6 +39,27 @@ type fakeDocker struct {
 	pulled  []string
 	have    map[string]bool
 	running map[string]bool
+	digests map[string]string // repo:tag -> what it resolves to now (default: one per ref)
+	removed []string
+}
+
+func defaultDigest(ref string) string {
+	return "sha256:" + strings.Repeat(fmt.Sprintf("%02x", len(ref)), 32)
+}
+
+// ImageDigests answers as the engine does: a tag's image carries repo@digest; a digest ref is there or not.
+func (f *fakeDocker) ImageDigests(_ context.Context, ref string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, _, byDigest := strings.Cut(ref, "@"); byDigest {
+		return []string{ref}, nil
+	}
+	d := f.digests[ref]
+	if d == "" {
+		d = defaultDigest(ref)
+	}
+	repo := ref[:strings.LastIndex(ref, ":")]
+	return []string{"other/mirror@sha256:" + strings.Repeat("0", 64), repo + "@" + d}, nil
 }
 
 func (f *fakeDocker) Create(_ context.Context, s dockerctl.CreateSpec) error {
@@ -55,6 +79,7 @@ func (f *fakeDocker) Remove(_ context.Context, n string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.have, n)
+	f.removed = append(f.removed, n)
 	return nil
 }
 func (f *fakeDocker) Exists(_ context.Context, n string) (bool, error) {
@@ -76,7 +101,7 @@ func newManager(t *testing.T) (*Manager, *fakeDocker) {
 		t.Fatal(err)
 	}
 	reg, _ := games.NewRegistry(nil)
-	fd := &fakeDocker{have: map[string]bool{}, running: map[string]bool{}}
+	fd := &fakeDocker{have: map[string]bool{}, running: map[string]bool{}, digests: map[string]string{}}
 	m := &Manager{
 		Dir: filepath.Join(dir, "managed"), PolicyFile: pol,
 		Platform: modules.Platform{GamesRoot: "/srv/games", HostIP: "10.0.0.2"},
@@ -162,6 +187,15 @@ func TestEnableAndDisable(t *testing.T) {
 		t.Error("a running game was disabled")
 	}
 	fd.running["minecraft"] = false
+	// A start still pulling has no running container yet: the start/stop manager says it is busy.
+	m.Busy = func(id string) bool { return id == "minecraft" }
+	if err := m.Disable("minecraft"); err == nil || fd.have["minecraft"] == false {
+		t.Errorf("disabled a game that is starting or stopping: err=%v", err)
+	}
+	if err := m.Update(Request{ID: "minecraft", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}}); err == nil {
+		t.Error("changed a game that is starting or stopping")
+	}
+	m.Busy = nil
 	if err := m.Disable("minecraft"); err != nil {
 		t.Fatal(err)
 	}
@@ -179,7 +213,7 @@ func TestEnableAndDisable(t *testing.T) {
 func newManagerAt(t *testing.T, old *Manager) (*Manager, *fakeDocker) {
 	t.Helper()
 	reg, _ := games.NewRegistry(nil)
-	fd := &fakeDocker{have: map[string]bool{"minecraft": true}, running: map[string]bool{}}
+	fd := &fakeDocker{have: map[string]bool{"minecraft": true}, running: map[string]bool{}, digests: map[string]string{}}
 	m := &Manager{Dir: old.Dir, PolicyFile: old.PolicyFile, Platform: old.Platform, Modules: old.Modules, Config: old.Config,
 		Docker: fd, Wire: &dockerctl.Client{}, Registry: reg, Settle: time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -340,7 +374,10 @@ func TestUpdateAndRefresh(t *testing.T) {
 		t.Error("game missing from the dashboard after an update")
 	}
 
-	// refresh: pulls again and recreates, same settings
+	// refresh: pulls again and, the tag now pointing at a new image, recreates with the same settings
+	fd.mu.Lock()
+	fd.digests["itzg/minecraft-server:latest"] = "sha256:" + strings.Repeat("2", 64)
+	fd.mu.Unlock()
 	pulls := len(fd.pulled)
 	if err := m.Refresh("minecraft"); err != nil {
 		t.Fatal(err)
@@ -362,7 +399,7 @@ func TestExecRulesComeFromModules(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitState(t, m, "minecraft", StateReady)
-	rules, err := ExecRules(m.Dir, m.Modules)
+	rules, err := ExecRules(m.Dir, m.PolicyFile, m.Modules)
 	if err != nil || len(rules) != 2 || rules[0].Container != "minecraft" || rules[0].Cmd[0] != "/bin/sh" {
 		t.Fatalf("rules = %+v, %v", rules, err)
 	}
@@ -375,7 +412,7 @@ func TestExecRulesComeFromModules(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(m.Dir, "games.json"), []byte(tampered), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	rules, _ = ExecRules(m.Dir, m.Modules)
+	rules, _ = ExecRules(m.Dir, m.PolicyFile, m.Modules)
 	for _, r := range rules {
 		if r.Container != "minecraft" || r.Cmd[0] == "rm" {
 			t.Errorf("unexpected rule %+v", r)
@@ -383,6 +420,34 @@ func TestExecRulesComeFromModules(t *testing.T) {
 	}
 	if len(rules) != 2 {
 		t.Errorf("rules = %+v", rules)
+	}
+}
+
+// A games.json entry named after a container the policy keeps out of the
+// panel's reach gets no rule, even with a real module and a valid id.
+func TestExecRulesStayInsideThePolicy(t *testing.T) {
+	m, _ := newManager(t)
+	tampered := `{"games":[{"id":"caddy","module":"minecraft"},{"id":"minecraft","module":"minecraft"}]}`
+	if err := os.WriteFile(filepath.Join(m.Dir, "games.json"), []byte(tampered), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rules, err := ExecRules(m.Dir, m.PolicyFile, m.Modules)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, r := range rules {
+		if r.Container == "caddy" {
+			t.Errorf("rule for a container outside the policy: %+v", r)
+		}
+	}
+	if len(rules) != 2 {
+		t.Errorf("rules = %+v, want the minecraft pair only", rules)
+	}
+	if _, err := ExecRules(m.Dir, "", m.Modules); err == nil {
+		t.Error("no policy file was accepted")
+	}
+	if _, err := ExecRules(m.Dir, filepath.Join(m.Dir, "missing.yaml"), m.Modules); err == nil {
+		t.Error("an unreadable policy was accepted")
 	}
 }
 
@@ -459,11 +524,17 @@ func TestPolicyEditing(t *testing.T) {
 		t.Fatal("a read-only policy was rewritten")
 	}
 	m.PolicyEditable = true
-	st.Policy.Names = append(st.Policy.Names, "pal-*")
-	if err := m.SetPolicy(st.Policy); err != nil {
+	wide := st.Policy
+	wide.Names = append(slices.Clone(wide.Names), "pal-*")
+	if err := m.SetPolicy(wide); err == nil {
+		t.Fatal("the dashboard widened the policy")
+	}
+	narrow := st.Policy
+	narrow.Names = st.Policy.Names[:1]
+	if err := m.SetPolicy(narrow); err != nil {
 		t.Fatal(err)
 	}
-	if again, _ := m.Policy(); !slices.Contains(again.Policy.Names, "pal-*") {
+	if again, _ := m.Policy(); len(again.Policy.Names) != 1 {
 		t.Errorf("edit not saved: %+v", again.Policy)
 	}
 	bad := st.Policy
@@ -471,12 +542,21 @@ func TestPolicyEditing(t *testing.T) {
 	if err := m.SetPolicy(bad); err == nil {
 		t.Error(`names: ["*"] was accepted`)
 	}
+	// an empty images or networks list means "the defaults", which would widen a listed policy
+	for _, clear := range []func(*PolicyDoc){func(d *PolicyDoc) { d.Images = nil }, func(d *PolicyDoc) { d.Networks = nil }, func(d *PolicyDoc) { d.Names = nil }} {
+		now, _ := m.Policy()
+		cleared := now.Policy
+		clear(&cleared)
+		if err := m.SetPolicy(cleared); err == nil || !strings.Contains(err.Error(), "emptied") {
+			t.Errorf("a list was emptied from the dashboard: %v", err)
+		}
+	}
 	empty := st.Policy
 	empty.Ports = nil
 	if err := m.SetPolicy(empty); err == nil {
 		t.Error("an empty ports list was accepted")
 	}
-	if kept, _ := m.Policy(); !slices.Contains(kept.Policy.Names, "pal-*") || len(kept.Policy.Ports) == 0 {
+	if kept, _ := m.Policy(); len(kept.Policy.Names) != 1 || len(kept.Policy.Ports) == 0 {
 		t.Errorf("a refused edit changed the file: %+v", kept.Policy)
 	}
 }
@@ -488,8 +568,13 @@ func TestTwoGamesFromOneModule(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitState(t, m, "gs-one", StateReady)
-	// Same module, default ports: refused, naming the game that holds the port.
+	// Same module, default ports: it moves to the next free host port by itself.
 	b := Request{ID: "gs-two", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "y"}}
+	if p, err := m.Preview(b); err != nil || !strings.Contains(strings.Join(p.Ports, " "), "25566:25565") {
+		t.Fatalf("the second game did not get its own port: %+v %v", p, err)
+	}
+	// A port typed by hand that is taken is refused, naming the game that holds it.
+	b.Options["ports"] = "25565:25565/tcp"
 	if _, err := m.Preview(b); err == nil || !strings.Contains(err.Error(), "gs-one") {
 		t.Fatalf("a shared host port was accepted: %v", err)
 	}
@@ -586,6 +671,13 @@ func TestWindroseNeedsAPolicyException(t *testing.T) {
 	if spec.Binds[0] != "/srv/games/Windrose/Config:/home/steam/server-files" {
 		t.Errorf("binds = %v", spec.Binds)
 	}
+	// a second Windrose cannot take the same LAN address
+	dup := windroseReq
+	dup.ID = "windrose2"
+	dup.Options = map[string]string{"lan_ipv4": "10.0.1.16", "data_dir": "Windrose2"}
+	if err := m.Enable(dup); err == nil || !strings.Contains(err.Error(), "10.0.1.16") || !strings.Contains(err.Error(), "windrose") {
+		t.Errorf("same LAN address must be refused naming the holder: %v", err)
+	}
 }
 
 // The dashboard shows exceptions and keeps them when it saves the rest of the policy, but cannot make one.
@@ -599,13 +691,13 @@ func TestPolicyExceptionsSurviveDashboardEdits(t *testing.T) {
 	if len(st.Policy.Exceptions) != 1 {
 		t.Fatalf("exception not shown: %+v", st.Policy)
 	}
-	st.Policy.Names = append(st.Policy.Names, "pal-*")
+	st.Policy.Names = st.Policy.Names[:1]
 	st.Policy.Exceptions = append(st.Policy.Exceptions, dockerguard.Exception{Name: "sneaky", Image: "evil/miner", SecOpts: []string{"seccomp=unconfined"}})
 	if err := m.SetPolicy(st.Policy); err != nil {
 		t.Fatal(err)
 	}
 	again, _ := m.Policy()
-	if len(again.Policy.Exceptions) != 1 || again.Policy.Exceptions[0].Name != "windrose" || !slices.Contains(again.Policy.Names, "pal-*") {
+	if len(again.Policy.Exceptions) != 1 || again.Policy.Exceptions[0].Name != "windrose" || len(again.Policy.Names) != 1 {
 		t.Errorf("after save: %+v", again.Policy)
 	}
 }
@@ -753,5 +845,229 @@ func TestWindrosePreviewGivesHostSteps(t *testing.T) {
 	}
 	if plan, _ = m.Preview(windroseReq); plan.Setup[0].Done == nil || !*plan.Setup[0].Done {
 		t.Errorf("step not marked done: %+v", plan.Setup[0])
+	}
+}
+
+// A game whose data folder lies inside another game's (or holds it) is refused
+// up front: the guard would reject its scope, because a container that writes
+// the outer folder can turn the inner one into a symlink to the host.
+func TestDataFolderMayNotNestInAnotherGame(t *testing.T) {
+	m, _ := newManager(t)
+	a := Request{ID: "gs-one", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+	if err := m.Enable(a); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-one", StateReady)
+	for _, dir := range []string{"gs-one/x", "gs-one/x/y"} {
+		b := Request{ID: "gs-two", Module: "minecraft", Options: map[string]string{"eula": "TRUE", "ports": "25570:25565/tcp", "data_dir": dir},
+			Secrets: map[string]string{"rcon_password": "y"}}
+		if err := m.Enable(b); err == nil || !strings.Contains(err.Error(), "inside") {
+			t.Errorf("data_dir %s inside gs-one's folder: %v", dir, err)
+		}
+	}
+	// the other way round: gs-one lives in /srv/games/gs-one, so a game in /srv/games is refused by the policy
+	// already; one whose folder holds a deeper game is refused here
+	c := Request{ID: "gs-three", Module: "minecraft", Options: map[string]string{"eula": "TRUE", "ports": "25571:25565/tcp", "data_dir": "deep/a"},
+		Secrets: map[string]string{"rcon_password": "z"}}
+	if err := m.Enable(c); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-three", StateReady)
+	d := Request{ID: "gs-four", Module: "minecraft", Options: map[string]string{"eula": "TRUE", "ports": "25572:25565/tcp", "data_dir": "deep"},
+		Secrets: map[string]string{"rcon_password": "w"}}
+	if _, err := m.Preview(d); err == nil || !strings.Contains(err.Error(), "inside") {
+		t.Errorf("a folder holding gs-three's was accepted: %v", err)
+	}
+}
+
+// A dashboard game reads only its own secrets: an option naming another
+// variable of the panel's environment (rcon_password_env) must not make the
+// panel send that variable's value (an OAuth client secret, a webhook URL)
+// as the game's RCON password to an address the same form chose.
+func TestGameCannotReadThePanelEnvironment(t *testing.T) {
+	t.Setenv("CROWSNEST_TEST_PANEL_SECRET", "s3cret")
+	m, _ := newManager(t)
+	req := Request{ID: "gs-one", Module: "minecraft",
+		Options: map[string]string{"eula": "TRUE", "rcon_addr": "attacker.example:25575", "rcon_password_env": "CROWSNEST_TEST_PANEL_SECRET"},
+		Secrets: map[string]string{"rcon_password": "own"}}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-one", StateReady)
+	def, ok := m.Registry.Get("gs-one")
+	if !ok {
+		t.Fatal("not registered")
+	}
+	rc, ok := def.RawConsole.(*probes.RawRCON)
+	if !ok {
+		t.Fatalf("raw console is %T", def.RawConsole)
+	}
+	if rc.Password == "s3cret" {
+		t.Fatal("the game's RCON password was read from another variable of the panel's environment")
+	}
+	// its own variable still works
+	lookup := m.lookup(m.find("gs-one"))
+	if v, _ := lookup("GS_ONE_RCON_PASSWORD"); v != "own" {
+		t.Errorf("own secret: %q", v)
+	}
+	if v, ok := lookup("CROWSNEST_TEST_PANEL_SECRET"); ok || v != "" {
+		t.Errorf("container env lookup read the panel's environment: %q", v)
+	}
+}
+
+// The dashboard may tighten the policy and never loosen it, whatever the
+// field, so a compromised panel cannot widen its own limits.
+func TestPolicyEditsNeverWiden(t *testing.T) {
+	m, _ := newManager(t)
+	m.PolicyEditable = true
+	st, _ := m.Policy()
+	base := st.Policy
+	widen := map[string]func(d *PolicyDoc){
+		"games_root": func(d *PolicyDoc) { d.GamesRoot = "/" },
+		"names":      func(d *PolicyDoc) { d.Names = append(slices.Clone(d.Names), "other-*") },
+		"images":     func(d *PolicyDoc) { d.Images = append(slices.Clone(d.Images), "evil/*") },
+		"networks":   func(d *PolicyDoc) { d.Networks = append(slices.Clone(d.Networks), "host") },
+		"ports":      func(d *PolicyDoc) { d.Ports = append(slices.Clone(d.Ports), "1-65535/tcp") },
+		"labels":     func(d *PolicyDoc) { d.Labels = append(slices.Clone(d.Labels), "x=y") },
+		"exec":       func(d *PolicyDoc) { d.Exec = true },
+		"max_scopes": func(d *PolicyDoc) { d.MaxScopes = 1000 },
+	}
+	for name, f := range widen {
+		d := base
+		f(&d)
+		if name == "exec" && base.Exec {
+			continue // already on: nothing to widen
+		}
+		if err := m.SetPolicy(d); err == nil {
+			t.Errorf("%s: a widening edit was saved", name)
+		}
+	}
+	if kept, _ := m.Policy(); !slices.Equal(kept.Policy.Names, base.Names) || kept.Policy.MaxScopes != base.MaxScopes {
+		t.Errorf("a refused edit changed the file: %+v", kept.Policy)
+	}
+	same := base // saving what is already there is fine
+	if err := m.SetPolicy(same); err != nil {
+		t.Errorf("an unchanged save was refused: %v", err)
+	}
+}
+
+func TestAllowingAModuleAddsItsPortsAndTurnOffIsGuarded(t *testing.T) {
+	m, _ := newManager(t)
+	if err := m.SetAllowed("not-a-module", true); err == nil {
+		t.Error("an unknown module was allowed")
+	}
+	if err := m.SetAllowed("minecraft", true); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.SetAllowed("minecraft", true); err != nil {
+		t.Errorf("allowing twice: %v", err)
+	}
+	if got, _ := m.Allowed(); len(got) != 1 || got[0] != "minecraft" {
+		t.Fatalf("allowed %v", got)
+	}
+	var mc ModuleInfo
+	for _, mi := range m.Catalogue() {
+		if mi.ID == "minecraft" {
+			mc = mi
+		}
+	}
+	if !mc.Allowed || !mc.Bundled || len(mc.PortNotes) == 0 || mc.PortNotes[0].Why == "" {
+		t.Errorf("catalogue entry: %+v", mc)
+	}
+	// The policy view shows only what the file says, so a save never writes the module's ports into it.
+	st, err := m.Policy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.Contains(st.Policy.Ports, "25565/tcp") != slices.Contains(strings.Fields(strings.NewReplacer(`"`, " ", `[`, " ", `]`, " ", `,`, " ").Replace(policy)), "25565/tcp") {
+		t.Errorf("policy view ports %v include the allowed module's ports", st.Policy.Ports)
+	}
+	m.entries = append(m.entries, &entry{Request: Request{ID: "mc1", Module: "minecraft"}})
+	if err := m.SetAllowed("minecraft", false); err == nil || !strings.Contains(err.Error(), "mc1") {
+		t.Errorf("turned off with a game still there: %v", err)
+	}
+	m.entries = nil
+	if err := m.SetAllowed("minecraft", false); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A second game of one module gets the next free host port without being asked;
+// a port typed by hand that clashes is still refused.
+func TestSecondGameGetsNextFreePort(t *testing.T) {
+	m, _ := newManager(t)
+	first := Request{ID: "minecraft", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+	if err := m.Enable(first); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	second := Request{ID: "gs-two", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+	plan, err := m.Preview(second)
+	if err != nil || !plan.Fits {
+		t.Fatalf("preview: %+v %v", plan, err)
+	}
+	if !strings.Contains(strings.Join(plan.Ports, " "), "25566:25565") {
+		t.Errorf("ports %v, want host 25566", plan.Ports)
+	}
+	second.Options["ports"] = "25565:25565/tcp"
+	if _, err := m.Preview(second); err == nil || !strings.Contains(err.Error(), "already used by minecraft") {
+		t.Errorf("a hand-typed clash was not refused: %v", err)
+	}
+	// Outside the policy's ports there is nothing to suggest, and the clash says so.
+	delete(second.Options, "ports")
+	m.entries[0].rendered.Scope.Ports = append(m.entries[0].rendered.Scope.Ports, modules.GuardPort{HostIP: "10.0.0.2", HostPort: "25566", Proto: "tcp"})
+	for p := 25567; p <= 26000; p++ {
+		m.entries[0].rendered.Scope.Ports = append(m.entries[0].rendered.Scope.Ports, modules.GuardPort{HostIP: "10.0.0.2", HostPort: strconv.Itoa(p), Proto: "tcp"})
+	}
+	if _, err := m.Preview(second); err == nil || !strings.Contains(err.Error(), "already used") {
+		t.Errorf("with the range full: %v", err)
+	}
+}
+
+// A module installed from outside is offered only once switched on, and the
+// guard never takes its image or ports from it: the policy still has to.
+func TestInstalledModuleNeedsItsSwitchAndThePolicy(t *testing.T) {
+	m, _ := newManager(t)
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "mygame"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile("../../docs/examples/mygame/module.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mygame", "module.yaml"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Modules.LoadDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	find := func() ModuleInfo {
+		for _, mi := range m.Catalogue() {
+			if mi.ID == "mygame" {
+				return mi
+			}
+		}
+		t.Fatal("mygame is not in the catalogue")
+		return ModuleInfo{}
+	}
+	mi := find()
+	if !mi.Gated || mi.Allowed || mi.Fits == nil || *mi.Fits || !strings.Contains(mi.PolicyLines, "example/mygame-server") || !strings.Contains(mi.PolicyLines, "7777/udp") {
+		t.Errorf("before the switch: %+v", mi)
+	}
+	req := Request{ID: "mygame", Module: "mygame", Options: map[string]string{}}
+	if _, err := m.Preview(req); err == nil || !strings.Contains(err.Error(), "not switched on") {
+		t.Errorf("a game from an off module: %v", err)
+	}
+	if err := m.SetAllowed("mygame", true); err != nil {
+		t.Fatal(err)
+	}
+	// On, but the policy does not name its image or ports yet: the plan says so rather than the guard accepting it.
+	plan, err := m.Preview(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Fits {
+		t.Errorf("the guard would accept an image and port the policy never listed: %+v", plan)
 	}
 }

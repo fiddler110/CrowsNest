@@ -152,6 +152,23 @@ block selects them by id. Until Phase 2 a manifest game still needs its containe
 - If a required option is unset the API half of a module is left unwired (logged) and the game keeps the baseline;
   restart cooldown and startup milestones still apply.
 
+### Phase 4a: state hub (landed)
+
+- `internal/statehub`: one observer goroutine per registered game (reconciled against the registry every 5 s and on a
+  poke for an unknown id, so managed games come and go). Cadence: 2 s while starting or stopping (exclusivity's
+  `Starting || Stopping`), 10 s online, 30 s offline or unknown. Players are probed only when the status is online or
+  unknown. `Poke` observes now (coalesced); `Get` is non-blocking; `Current` waits for the first observation or for one
+  begun after a poke; `Fresh` is poke-then-wait. Subscribers get a buffered(1) channel, signalled only when an
+  observation differs or `Busy` flips (or on `Signal`), so a slow reader never blocks an observer.
+- Consumers: the web handlers read the hub (the per-request snapshot memo is gone; actions poke instead of forget);
+  playerwatch re-checks on each hub change; idle and night shutdown keep their decision ticks, read the hub, and take
+  one `Fresh` reading before stopping. Exclusivity still does its own fresh checks during transitions and reports
+  changes through `OnChange`, which pokes the hub.
+- `GET /api/events` (session required): SSE with `games` (the caller's `/api/games` body, role-filtered) and `health`
+  (the `/api/health` body), sent on connect and on change, at most once a second, plus a 25 s heartbeat. The dashboard
+  uses it for cards and the docker banner and falls back to polling while it is down.
+- Not done: memory-budget admission (still `max_active_games`).
+
 ## 3. Performance work that rides along
 
 1. Central state hub: poll each game once on an adaptive cadence, keep one snapshot, push to browsers over one SSE

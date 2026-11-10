@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>First-run setup · CrowsNest</title>
+<link rel="icon" type="image/png" href="{{asset "brand.png"}}">
+<link rel="stylesheet" href="{{asset "style.css"}}">
+<link rel="stylesheet" href="{{asset "login.css"}}">
+</head>
+<body>
+<div class="backdrop" aria-hidden="true"><span class="grid"></span><span class="glow glow-a"></span><span class="glow glow-b"></span></div>
+<div class="login-radar" aria-hidden="true"></div>
+
+<main class="login-stage">
+  <section class="login-card" id="setup-card" aria-labelledby="title">
+    <p class="chip"><span class="beacon"></span>First run</p>
+    <h1 id="title">Set up CrowsNest</h1>
+    <p class="lede">Create the admin account. There are no users yet, so this page is open to whoever holds the setup code.</p>
+
+    <div class="alert" id="setup-alert" role="alert" hidden>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></svg>
+      <span id="setup-error"></span>
+    </div>
+
+    <form id="setup-form" autocomplete="off" novalidate>
+      <label class="field">
+        <span class="label">// Setup code</span>
+        <span class="control"><input name="code" type="text" autocomplete="off" autocapitalize="none" spellcheck="false" required autofocus></span>
+        <span class="caps">Find it in the CrowsNest log (<code>docker logs crowsnest</code>) or in the <code>setup-token</code> file next to the session secret.</span>
+      </label>
+
+      <label class="field">
+        <span class="label">// Admin username</span>
+        <span class="control"><input name="username" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" required></span>
+      </label>
+
+      {{if .PasswordLogin}}
+      <label class="field">
+        <span class="label">// Passphrase (8+ characters)</span>
+        <span class="control"><input name="password" type="password" autocomplete="new-password" required></span>
+      </label>
+      <label class="field">
+        <span class="label">// Repeat passphrase</span>
+        <span class="control"><input name="confirm" type="password" autocomplete="new-password" required></span>
+      </label>
+      {{end}}
+
+      {{if .Google}}
+      <label class="field">
+        <span class="label">// Google email{{if .PasswordLogin}} (optional){{end}}</span>
+        <span class="control"><input name="google_email" type="email" autocomplete="email" autocapitalize="none" spellcheck="false"{{if not .PasswordLogin}} required{{end}}></span>
+      </label>
+      {{end}}
+
+      <button class="submit" id="submit" type="submit"><span class="spin" aria-hidden="true"></span><span class="txt">Create admin</span></button>
+    </form>
+
+    <p class="hint">This page closes as soon as the first account exists.</p>
+  </section>
+</main>
+<script src="{{asset "setup.js"}}"></script>
+</body>
+</html>

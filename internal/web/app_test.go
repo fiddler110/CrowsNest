@@ -23,6 +23,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/managed"
 	"github.com/fiddler110/crowsnest/internal/settings"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
 // testHarness bundles an App with a pre-authenticated session cookie and
@@ -81,12 +82,23 @@ func newHarnessFromDefs(t *testing.T, docker *dockerctl.Client, defs []games.Gam
 	}
 
 	sessions := auth.NewSessionManager([]byte("test-secret"), time.Hour)
+	// The harness user is an admin; tests that need a player say so.
+	sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
 	excl := exclusivity.NewManager(registry, docker)
 	t.Cleanup(excl.Wait) // no background start may outlive the fake docker
+	// Wired as in main: one observer per game, poked on every transition.
+	hub := statehub.New(registry)
+	hub.Busy = func(id string) bool { return excl.Starting(id) || excl.Stopping(id) }
+	excl.OnChange = func(id string) { hub.Poke(id); hub.Signal() }
+	hubCtx, stopHub := context.WithCancel(context.Background())
+	hubDone := make(chan struct{})
+	go func() { hub.Run(hubCtx); close(hubDone) }()
+	t.Cleanup(func() { stopHub(); <-hubDone })
 	app := &App{
 		Registry:    registry,
 		Docker:      docker,
 		Exclusivity: excl,
+		Hub:         hub,
 		Auth: &auth.Service{
 			Users:        auth.Users{},
 			Sessions:     sessions,
@@ -868,6 +880,18 @@ func TestListGames_SharesProbesAcrossRequests(t *testing.T) {
 	h := newHarnessFromDefs(t, docker, []games.GameDef{
 		{ID: "a", DisplayName: "a", ContainerName: "a", Status: cs},
 	})
+	// The hub reconciles shortly after it starts; until it has an observer
+	// for the game, a request probes directly (by design). Wait for that, as
+	// a running server's first request always finds it.
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if _, ok := h.App.Hub.Get("a"); ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("hub never observed the game")
+		}
+	}
+	base := cs.calls.Load()
 	var wg sync.WaitGroup
 	for i := 0; i < 25; i++ {
 		wg.Add(1)
@@ -881,8 +905,10 @@ func TestListGames_SharesProbesAcrossRequests(t *testing.T) {
 		}()
 	}
 	wg.Wait()
-	if n := cs.calls.Load(); n != 1 {
-		t.Fatalf("status checked %d times for 25 concurrent polls, want 1", n)
+	// Requests read the hub's observation; at most its own observer probes
+	// meanwhile. Without sharing it would be 25.
+	if n := cs.calls.Load() - base; n > 2 {
+		t.Fatalf("status checked %d times for 25 concurrent polls, want at most 2", n)
 	}
 }
 
@@ -971,6 +997,7 @@ func TestActivity_FeedAndSettingsAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.App.History = store
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
 	h.App.Settings, _ = settings.New(settings.Values{IdleMinutes: 15, MaxActiveGames: 1, NightStartHour: 23, NightEndHour: 5}, "")
 
 	rec := httptest.NewRecorder()
@@ -1136,7 +1163,10 @@ func TestConsole_ActionsRawToggleAndAudit(t *testing.T) {
 	}
 }
 
-type fakeManaged struct{ enabled []managed.Request }
+type fakeManaged struct {
+	enabled []managed.Request
+	allowed []string
+}
 
 func (f *fakeManaged) Catalogue() []managed.ModuleInfo {
 	return []managed.ModuleInfo{{ID: "minecraft"}}
@@ -1153,6 +1183,10 @@ func (f *fakeManaged) Policy() (managed.PolicyState, error) {
 	return managed.PolicyState{Policy: managed.PolicyDoc{Names: []string{"x"}}}, nil
 }
 func (f *fakeManaged) SetPolicy(managed.PolicyDoc) error { return nil }
+func (f *fakeManaged) SetAllowed(id string, on bool) error {
+	f.allowed = append(f.allowed, fmt.Sprintf("%s=%v", id, on))
+	return nil
+}
 
 func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\nexit 0\n")
@@ -1187,6 +1221,52 @@ func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 	}
 }
 
+func TestManagedAllowNeedsThePasswordAgain(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	hash, err := auth.HashPassword("s3cret-pw")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin, Hash: hash}}
+	h.App.Auth.Users = h.App.Auth.Sessions.Users
+	fm := &fakeManaged{}
+	h.App.Managed = fm
+	do := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("PUT", "/api/managed/modules/minecraft/allow", []byte(body)))
+		return rec.Code
+	}
+	if c := do(`{"allowed":true}`); c != http.StatusForbidden || len(fm.allowed) != 0 {
+		t.Errorf("no password: %d %v, want 403 and nothing changed", c, fm.allowed)
+	}
+	if c := do(`{"allowed":true,"password":"wrong-pw-1"}`); c != http.StatusForbidden || len(fm.allowed) != 0 {
+		t.Errorf("wrong password: %d %v, want 403", c, fm.allowed)
+	}
+	if c := do(`{"allowed":true,"password":"s3cret-pw"}`); c != http.StatusNoContent || len(fm.allowed) != 1 || fm.allowed[0] != "minecraft=true" {
+		t.Errorf("right password: %d %v", c, fm.allowed)
+	}
+	// Narrowing needs no password.
+	if c := do(`{"allowed":false}`); c != http.StatusNoContent || fm.allowed[1] != "minecraft=false" {
+		t.Errorf("turn off: %d %v", c, fm.allowed)
+	}
+	// A Google-only admin has no password to confirm with, so they set one first.
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
+	h.App.Auth.Users = h.App.Auth.Sessions.Users
+	n := len(fm.allowed)
+	if c := do(`{"allowed":true,"password":"anything"}`); c != http.StatusForbidden || len(fm.allowed) != n {
+		t.Errorf("no stored password: %d, want 403", c)
+	}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/games", nil))
+	if !strings.Contains(rec.Body.String(), "has no password yet") {
+		t.Error("the games page lacks the set-a-password banner")
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer, Hash: hash}}
+	if c := do(`{"allowed":true,"password":"s3cret-pw"}`); c != http.StatusForbidden {
+		t.Errorf("player: %d, want 403", c)
+	}
+}
+
 func TestGamesPageIsAdminOnly(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\nexit 0\n")
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
@@ -1216,5 +1296,77 @@ func TestSettingsPageIsAdminOnly(t *testing.T) {
 	h.mux().ServeHTTP(rec, h.req("GET", "/settings", nil))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "settings.js") {
 		t.Errorf("admin /settings = %d, want the page", rec.Code)
+	}
+}
+
+func TestActivity_PlayersDoNotSeeAdminEvents(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	store, err := history.Open(filepath.Join(t.TempDir(), "events.jsonl"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.History = store
+	store.Record(history.KindJoin, "windrose", "ann", "")
+	store.Record(history.KindSettings, "", "root", "idle_minutes 15→30")
+	store.Record(history.KindConsole, "windrose", "root", "say hi")
+	store.Record(history.KindUsers, "", "root", "added x")
+	store.Record(history.KindGames, "", "root", "edited")
+
+	get := func(role auth.Role, limit string) []history.Event {
+		h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: role}}
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.req("GET", "/api/activity?limit="+limit, nil))
+		var out struct {
+			Events []history.Event `json:"events"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Events
+	}
+	if ev := get(auth.RolePlayer, "1"); len(ev) != 1 || ev[0].Kind != history.KindJoin {
+		t.Fatalf("player events = %+v, want just the join (limit filled past hidden kinds)", ev)
+	}
+	if ev := get(auth.RoleAdmin, "10"); len(ev) != 5 {
+		t.Fatalf("admin events = %+v, want all 5", ev)
+	}
+}
+
+func TestListGames_StartErrorDetailAdminOnly(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\ncase \"$1\" in ps) if [ \"$2\" = \"-a\" ]; then echo windrose; fi ;; start) echo 'boom: secret path' >&2; exit 1 ;; esac\n")
+	if err := h.App.Exclusivity.RequestStart(context.Background(), "windrose"); err != nil {
+		t.Fatal(err)
+	}
+	h.App.Exclusivity.Wait()
+	get := func(role auth.Role) string {
+		h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: role}}
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.req("GET", "/api/games", nil))
+		return rec.Body.String()
+	}
+	if body := get(auth.RolePlayer); strings.Contains(body, "boom") || !strings.Contains(body, "start_error") {
+		t.Fatalf("player body leaks or lacks error: %s", body)
+	}
+	if body := get(auth.RoleAdmin); !strings.Contains(body, "boom: secret path") {
+		t.Fatalf("admin body lacks detail: %s", body)
+	}
+}
+
+func TestHandleSwitch_CooldownIs429(t *testing.T) {
+	script := "#!/bin/sh\ncase \"$1\" in ps) if [ \"$2\" = \"-a\" ]; then echo windrose; echo valheim; else echo valheim; fi ;; esac\n"
+	docker := fakeDockerClient(t, script)
+	mk := func(id string, cd time.Duration) games.GameDef {
+		return games.GameDef{ID: id, DisplayName: id, ContainerName: id, RestartCooldown: cd,
+			Status: &games.DockerStatusChecker{Docker: docker}, Players: games.UnknownPlayerCounter{}}
+	}
+	h := newHarnessFromDefs(t, docker, []games.GameDef{mk("windrose", time.Hour), mk("valheim", 0)})
+	if err := h.App.Exclusivity.Stop(context.Background(), "windrose"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(switchRequest{From: "valheim"})
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPost, "/api/games/windrose/switch", body))
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("switch = %d (Retry-After %q), want 429", rec.Code, rec.Header().Get("Retry-After"))
 	}
 }

@@ -41,15 +41,7 @@ func (a *App) maxConcurrentStreams() int {
 // acquireStream reserves a slot for a new log-streaming subprocess,
 // reporting false if the process-wide cap is already reached.
 func (a *App) acquireStream() bool {
-	for {
-		cur := a.streamCount.Load()
-		if int(cur) >= a.maxConcurrentStreams() {
-			return false
-		}
-		if a.streamCount.CompareAndSwap(cur, cur+1) {
-			return true
-		}
-	}
+	return acquireSlot(&a.streamCount, a.maxConcurrentStreams())
 }
 
 func (a *App) releaseStream() {
@@ -208,7 +200,13 @@ func streamLines(r *http.Request, sw *sse.Writer, rc interface{ Read([]byte) (in
 		scanner := bufio.NewScanner(rc)
 		scanner.Buffer(make([]byte, 64*1024), 1024*1024)
 		for scanner.Scan() {
-			lines <- strings.TrimSuffix(scanner.Text(), "\r")
+			// Select on ctx so a departed consumer can't strand this
+			// goroutine (and its 1MB buffer) on the send.
+			select {
+			case lines <- strings.TrimSuffix(scanner.Text(), "\r"):
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
 

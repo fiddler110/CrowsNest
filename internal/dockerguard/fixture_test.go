@@ -20,7 +20,7 @@ import (
 )
 
 const (
-	palDir     = "/home/plex/docker/storage/mounts/Palworld"
+	palDir     = "/srv/games/Palworld"
 	palImageID = "sha256:f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6f6"
 	digest     = "sha256:1717171717171717171717171717171717171717171717171717171717171717"
 	execID     = "9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e9e"
@@ -101,7 +101,7 @@ var (
 		"CgroupDriver": "systemd", "CgroupVersion": "2", "DefaultRuntime": "runc", "LoggingDriver": "json-file",
 		"SecurityOptions": []any{"name=apparmor", "name=seccomp,profile=builtin"}, "IndexServerAddress": "https://index.docker.io/v1/",
 		"Containers": 47, "Images": 120, "DockerRootDir": "/var/lib/docker", "HttpProxy": "http://user:pw@proxy:3128",
-		"Labels": []any{"owner=plex"}, "RegistryConfig": map[string]any{"Mirrors": []any{"https://mirror.internal"}}, "NCPU": 8, "MemTotal": 15 * (1 << 30),
+		"Labels": []any{"owner=ops"}, "RegistryConfig": map[string]any{"Mirrors": []any{"https://mirror.internal"}}, "NCPU": 8, "MemTotal": 15 * (1 << 30),
 		"Swarm": map[string]any{"LocalNodeState": "active", "NodeID": "node-secret"}, "Warnings": []any{"WARNING: something about the host"}}
 )
 
@@ -161,16 +161,48 @@ func (e *fakeEngine) clear() {
 	e.seen = nil
 }
 
+// reached is the requests for method and path, a container in either named
+// the way the fake engine resolves it (name, id or id prefix): the guard sends
+// the engine full ids, so "never reached /containers/vaultwarden/stop" must
+// also mean never by its id. exactly is the strict comparison.
 func (e *fakeEngine) reached(method, path string) []seenReq {
+	return e.match(method, canonContainer(path), canonContainer)
+}
+
+func (e *fakeEngine) exactly(method, path string) []seenReq {
+	return e.match(method, path, func(p string) string { return p })
+}
+
+func (e *fakeEngine) match(method, path string, canon func(string) string) []seenReq {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	var out []seenReq
 	for _, s := range e.seen {
-		if s.method == method && s.path == path {
+		if s.method == method && canon(s.path) == path {
 			out = append(out, s)
 		}
 	}
 	return out
+}
+
+// canonContainer is path with a /containers/<ref> the fake engine knows
+// replaced by that container's full id.
+func canonContainer(path string) string {
+	rest, ok := strings.CutPrefix(path, "/containers/")
+	if !ok {
+		return path
+	}
+	ref, tail, _ := strings.Cut(rest, "/")
+	if ref == "json" || ref == "create" || ref == "prune" {
+		return path
+	}
+	if c := findContainer(ref); c != nil {
+		if tail != "" || strings.HasSuffix(rest, "/") {
+			return "/containers/" + c["Id"].(string) + "/" + tail
+		}
+		return "/containers/" + c["Id"].(string)
+	}
+	return path
 }
 
 func (e *fakeEngine) all() []seenReq {
@@ -398,6 +430,7 @@ func (h *harness) start(l net.Listener) *harness {
 }
 
 func (h *harness) reached(method, path string) []seenReq { return h.eng.reached(method, path) }
+func (h *harness) exactly(method, path string) []seenReq { return h.eng.exactly(method, path) }
 
 type result struct {
 	code int

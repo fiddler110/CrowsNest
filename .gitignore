@@ -9,3 +9,7 @@
 # Editor / OS artifacts
 .DS_Store
 *.swp
+
+# quickstart state
+quickstart/.env
+quickstart/data/

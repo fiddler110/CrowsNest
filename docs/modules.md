@@ -71,13 +71,29 @@ Bots are never counted. Without `rcon_addr` the game still starts and stops, but
 
 ## Writing a new module
 
+See the step-by-step [guide to writing a module](writing-modules.md), and check yours with
+`crowsnest module check <dir> --log <captured log>`.
+
 A module may also carry a `backup:` block (`exec`, `list_dir`, `before_stop`, same meaning as the config.yaml block).
 It applies to games enabled from the dashboard only; games in `config.yaml` keep their own.
+
+An optional `accent: "#rrggbb"` sets the colour of the game's dashboard card. Without one the card uses the
+default theme colour.
 
 Copy `internal/modules/bundled/minecraft/module.yaml` (log-based) or `source` (RCON-based) into
 `<modules_dir>/<id>/module.yaml`, change the regexes, and add the game to `config.yaml`. Unknown keys are an
 error, so a typo cannot silently disable a setting. Add a fixture of real log lines and test it the way
 `internal/modules/minecraft_test.go` does.
+
+## Memory admission
+
+Besides `max_active_games`, a start is refused when the host does not have the memory for the game.
+
+- A module declares what the game typically uses in `runtime.ram` (for example `ram: 8g`). Without it, `runtime.memory` (the container limit) is used; with neither, the game is never refused for memory.
+- An instance can override the figure with the reserved option `ram` (in `options:` of a `config.yaml` game, or under *More settings* when adding a game from the dashboard).
+- Once a game has run, its measured peak (sampled every 30 seconds, kept in `memory-peaks.json` next to `settings.json`) replaces the declared figure.
+- A start is admitted when the host's available memory, less `server.memory_reserve_mb` (default 1024) and less what other starting games are still to take, covers the figure. A switch counts the memory the stopping game gives back, and is refused before anything is stopped.
+- Set `server.memory_reserve_mb: -1` to turn the check off. If host memory can't be read, the check is skipped.
 
 ## Rendering containers from a module (`crowsnest render`)
 
@@ -132,27 +148,58 @@ scopes in force exactly as they were; a tighter policy drops managed scopes that
 is enough to start (`GUARD_SCOPES_FILE` with no `GUARD_SCOPES` is fine); with a managed file but no policy it refuses.
 
 ```yaml
-# policy.yaml: every list is required, so no limit is ever implied
+# policy.yaml: only games_root is required. Everything else has a safe default.
 games_root: /srv/games                 # managed binds must be exact paths inside this folder
-names: [valheim, minecraft, "gs-*"]    # container names the panel may manage (trailing * = prefix)
-images: [lloesche/valheim-server, "docker.io/itzg/*"]   # "*" alone = any image; prefixes are fully qualified
-networks: [crowsnest-games-net]
-ports: ["27000-28999/udp", "25565/tcp"]  # host ports and protocol
+# names: [valheim, "gs-*"]            # optional: leave it out and any name works, because the guard only manages
+                                       # containers the dashboard made (label crowsnest.managed=true)
+# images: ["@modules"]                 # optional. Left out, it is the images the bundled modules declare. Add your own
+                                       # beside it: ["@modules", "ghcr.io/you/mygame"]. A list without "@modules" is
+                                       # exactly that list. "*" alone = any image; prefixes are fully qualified
+# networks: [crowsnest-games-net]      # optional. Left out, it is platform.games_network from config.yaml
+# ports: ["27000-28999/udp"]          # optional: extra host ports, beyond the games you switch on (see below)
 host_ips: [10.0.0.2]                   # optional: limits the address ports are published on
 exec: false                            # may managed scopes use docker exec (save-on-stop hooks need it)
 labels: []                             # extra labels they may require (the watchtower opt-out is always fine)
+pin_digests: true                      # managed creates must name the image by digest (see "Image pinning" below)
 max_scopes: 32
 ```
 
+- **Ports come from the games you allow.** On the Games page each bundled game has a switch. Turning it on asks
+  for your password, is written to the history, and adds that game's published ports (shown under the card with
+  the module's reason for each) to what the guard accepts. It is stored in `allowed.json` beside the managed
+  scopes file; the guard only adds ports a *bundled* module declares, so the file cannot open anything else. A
+  game can't be switched off while one of its servers still exists, since the guard would drop it. A second
+  server of the same game gets the next free host port on its own (a second Palworld is 8212, a third 8213), but only
+  if the policy admits that port, so add a range to `ports` for the games you plan to run more than one of, such
+  as `["8200-8299/udp", "25560-25599/tcp"]`. A port you type that another dashboard game holds is refused, naming
+  that game. `ports` in `policy.yaml` is only for ports beyond those: a game installed from a URL, or a different host port. An admin with no
+  stored password (Google sign-in only) sees a banner on every page and is refused until they set one in Settings,
+  Users: the password is only used to confirm this, so a hijacked session alone cannot widen the guard.
+- **A module installed from a URL has a switch too, but a weaker one.** The panel can write module files and the
+  lock file, so the guard never takes a port or an image from them. The switch only makes the dashboard offer the
+  game; the card shows the `images:` and `ports:` lines to paste into `policy.yaml`, and until they are there the
+  plan says the game falls outside the policy. Install as many as you like and switch them on when you want them.
 - Point `games_root` at a folder that holds only game data, such as `<your data mount>/crowsnest/games`, not at a
   mount shared with other services: every dashboard-added game's folder is `<games_root>/<id>`, and the policy
   lets the panel bind anything inside `games_root`. Create it once, owned by you, before the first game.
   `platform.games_root` in config.yaml must be the same path. Servers you set up by hand keep their own paths.
-- `names` matters: the guard lets a scope manage the container of the same name, so without it a scope called
-  `caddy` would let the panel stop your reverse proxy.
+- Managed binds never nest: a managed scope whose bind is inside another bind in force (its own, another managed
+  game's, or one of your `GUARD_SCOPES`), or holds one, is not loaded. A container that can write a folder could
+  turn a path below it into a symlink, and Docker follows that symlink when it binds the path, so a nested bind
+  would reach the whole host. Sibling folders such as `<id>/config` and `<id>/data` are fine.
+- Ownership, not a list of names, is what keeps the panel off your other containers. A game the dashboard creates
+  carries the label `crowsnest.managed=true`, and with no `names` in the policy the guard only acts on a container
+  that has it: a scope called `caddy` finds nothing, because your proxy has no such label. Name your games
+  anything you like. If you do set `names`, it is the old behaviour: only those names, and the label is not
+  required.
 - A managed scope can never carry volumes, capabilities, aliases, host networking, or exec unless the policy allows
   it. Security options, extra networks and fixed addresses are only for a game the policy names in an
   [exception](#exceptions-one-game-beyond-the-envelope).
+- Images and the games network need no entry. The guard allows the images the bundled modules were built for, and
+  only the games network, so you don't keep a list in step with the modules. A module installed from a URL is not
+  bundled: add its image to `images` (with `"@modules"` if you also want the bundled ones). The guard and the
+  dashboard's preview resolve these the same way. The dashboard's policy editor cannot empty `images`, `networks`
+  or `names`, because an empty list means the defaults.
 - Official Docker Hub images are fully qualified in a scope (`itzg/minecraft-server` is `docker.io/itzg/minecraft-server`),
   so policy prefixes are written that way.
 - `Policy.Admit` is the same check the dashboard will use to preview "does this fit?" before enabling a game.
@@ -209,7 +256,8 @@ Admin-only endpoints (the page that uses them is step 4):
 | `POST /api/managed/preview` | dry run: the rendered compose service, the guard scope, and whether it fits the policy (and why not) |
 | `POST /api/managed/games` | enable: `{id, module, display_name, options, secrets}` |
 | `PUT /api/managed/games/{id}` | change a **stopped** game's settings (`display_name`, `connect_address`, `options`, `secrets`); the container is recreated, the module cannot change, secrets left out keep their stored value |
-| `POST /api/managed/games/{id}/refresh` | pull the image again and recreate the container with the same settings |
+| `POST /api/managed/games/{id}/refresh` | pull the image tag again; only if it now points to another image, recreate the container on that digest (the game must be stopped) |
+| `POST /api/managed/games/{id}/rollback` | recreate a **stopped** game on its previous digest and swap the two; 409 when there is none, or while it is running, starting or stopping |
 | `DELETE /api/managed/games/{id}` | disable a **stopped** game: removes the container, scope and secrets; the data folder is kept |
 
 How enabling works: validate against the module (unknown options, secrets sent as plain options, missing required
@@ -225,10 +273,38 @@ so a game that did not finish installing is finished on the next start.
   is pointed at the stored value automatically. Modules receive them through a lookup, not the process environment.
 - The panel cannot widen what it may do: the guard re-checks every scope against the policy, so a panel that wrote an
   out-of-policy scope would simply not have it loaded.
-- Updates and edits recreate the container (the data folder is a bind mount, so nothing is lost). An unreachable
-  registry is tolerated on an edit if the image is already local, but not on a refresh. Pull-on-start for managed
+- Edits, rollbacks and updates that bring a new image recreate the container (the data folder is a bind mount, so nothing is lost). An unreachable
+  registry is tolerated on an edit or rollback if the image is already local, but not on a refresh. Pull-on-start for managed
   games is not wired: use refresh.
-- Not yet: the Games page (step 4).
+
+### Image pinning and rollback
+
+A module names its image by tag (`runtime.tag`, default `latest`), and a tag moves whenever upstream pushes. So a
+dashboard game is pulled by tag once, and its container is created from the exact image that tag resolved to:
+`image: repo@sha256:...`. Nothing changes until an admin presses **Update image**.
+
+- **Where the digest comes from.** After pulling `repo:tag`, the panel inspects the image (the guard already lets it
+  read scope images) and takes the `RepoDigests` entry for that repository. It is kept in `games.json` as `image`
+  (the `repo:tag` it was resolved from), `digest`, and `previous_digest` (what the digest was before the last change).
+  `GET /api/managed/games` lists the three, plus `refresh` (`updated` or `up_to_date`) once an Update image finishes.
+- **Update image** pulls the tag again. Same digest: the container is left alone and the page says it is already up to
+  date. New digest: the container is recreated on it and the old digest becomes `previous_digest`. A failed pull
+  leaves the old container untouched.
+- **Roll back** (shown when there is a previous digest) recreates the container on `previous_digest` and swaps the two,
+  so rolling back again returns to the newer image. The game must be stopped. A world saved by a newer server version
+  may not load in an older one: back up first. Rolling back needs the old image: it is pulled by digest if it was pruned.
+- **Edits** (Settings) recreate on the pinned digest; they only follow the tag when you change `image` or `tag`.
+- **Games installed before pinning** keep running as they are, by tag. Their first Update image (or an edit) resolves
+  and stores a digest; the image they ran until then becomes the rollback target if the update brings a new one.
+- An image with no registry digest (built locally) cannot be pinned: it keeps running by tag, which `pin_digests`
+  refuses.
+
+`pin_digests: true` in `policy.yaml` makes the guard enforce it: a create from a **managed** scope must name its image as
+`repo@sha256:<64 hex>` (no tag), otherwise it is refused with `image ... must be pinned by digest ... the policy sets
+pin_digests`. Pulls by tag stay allowed (that is how a new digest is found). The operator's own `GUARD_SCOPES` are not
+affected, and a scope cannot switch it off for itself (it is not a scope key). Scopes name repositories only, so
+`Policy.Admit` and the catalogue's verdicts do not change. Settings shows the setting; a dashboard save that does not
+send it keeps what the file has.
 
 ### Options that fill themselves in
 
@@ -242,8 +318,10 @@ under "More settings" with an "automatic" placeholder; typing a value there over
 
 Admins get a **Games** link in the header, opening `/games`. It lists the games enabled from the dashboard (installing, ready or
 failed, with the error), and has a form to add one: pick a module, an id, the module's options (secret options are
-password fields), then **Preview** to see whether it fits the policy before **Enable**. Per game: **Edit** (recreates
-the container; leaving a secret empty keeps it), **Update image**, and **Disable** (the data folder is kept). When an
+password fields), then **Preview** to see whether it fits the policy before **Enable**. Each game shows the tag it
+follows and the first 12 characters of the digest it runs. Per game: **Edit** (recreates the container; leaving a
+secret empty keeps it), **Update image** (says whether there was anything new), **Roll back** (when there is a
+previous image), and **Disable** (the data folder is kept). When an
 install finishes the page reloads so the game's card appears. It talks to `/api/managed/*`; without `managed.dir` the
 dialog says the feature is off.
 
@@ -254,6 +332,11 @@ compromised panel cannot widen its own limits. To edit it from the dashboard, mo
 writable into the panel and set `managed.policy_editable: true`. Saves are validated with the same parser as the
 guard, written atomically, and applied by the guard within seconds (a managed game that no longer fits is dropped).
 Keep the guard's own mount read-only.
+
+Even then the dashboard can only **tighten** the policy: every list entry must already be in the file (compared
+exactly), `max_scopes` can only fall, and `exec` and `pin_digests` can only turn toward the stricter setting. Widening,
+including exceptions, is done in `policy.yaml` on the host. Enabling the option logs a warning at startup, because a
+compromised panel could still remove limits (for example every entry of a list but one).
 
 ### Deploying it (tested shape)
 
@@ -273,6 +356,7 @@ crowsnest-execguard:
   volumes:
     - ./config.yaml:/app/config.yaml:ro                                 # already there
     - ${USERDIR}/crowsnest/config/managed:/app/data/managed:ro          # same path as managed.dir in config.yaml
+    - ./policy:/etc/crowsnest/policy:ro                                 # same path as managed.policy_file: limits which containers get a rule
 crowsnest:                                # the panel
   volumes:
     - ${USERDIR}/crowsnest/config:/app/data                            # already there: managed/ lives inside it
@@ -291,12 +375,16 @@ managed: {dir: /app/data/managed, policy_file: /etc/crowsnest/policy/policy.yaml
 - `mkdir -p ${USERDIR}/crowsnest/config/managed` and make it writable by the panel's uid (1000).
 - `policy.yaml` is parsed at every reload, so tightening it takes effect within seconds and drops any managed scope
   that no longer fits. The panel reads the same file for its preview.
-- **exec and backups.** Everything the panel does goes through execguard, whose allowlist for `config.yaml` games is
+- **exec and backups.** (`crowsnest guard --exec` runs this allowlist inside the guard container, in front of the
+  guard; the quickstart does. `crowsnest execguard` runs it as a separate container.) Everything the panel does goes through execguard, whose allowlist for `config.yaml` games is
   read at start. For dashboard-enabled games it is built from each module's `backup:` block (command, `list_dir`,
   `before_stop`) and **reloaded every 2 seconds** from the managed dir, so enabling a game adds its backup command
   and disabling removes it, with no restart. The command always comes from the installed module, never from the
-  saved state, so a panel that rewrote `games.json` could pick a game but not a command. Execguard therefore needs
-  `config.yaml` (for `managed.dir`) and the managed dir mounted read-only. `valheim`, `palworld` and `minecraft`
+  saved state, so a panel that rewrote `games.json` could pick a game but not a command. A game also gets a rule only
+  if its id is a container name the policy's `names` allows, so a rewritten `games.json` cannot aim a module's
+  backup command at an unrelated container either. Execguard therefore needs `config.yaml` (for `managed.dir` and
+  `managed.policy_file`), the managed dir and the policy directory mounted read-only; with the policy unreadable it
+  issues no dashboard-game rules. `valheim`, `palworld` and `minecraft`
   ship a backup; a module without one has none.
 
 ## Where this is heading: enable games from the dashboard
@@ -311,7 +399,7 @@ for the operator to approve outside the dashboard. Steps, each shippable on its 
 3. The dashboard enables, installs and removes games itself, admin only (done, below).
 4. A Games page: pick a module, fill in its options, see the rendered compose and what falls outside the policy,
    enable.
-5. Remote module sources with signature checks.
+5. Remote module sources: hash-pinned install is done (below); signed catalogs are not built.
 
 ## Several servers from one module
 
@@ -320,3 +408,28 @@ You can enable the same module more than once (for example two Valheim worlds) a
 ## Showing join details on the card
 
 A module can list `connect:` entries (a `label` and the `option` whose value to show), such as the Palworld and Valheim server passwords. They appear on the game's card for admins and are never part of the list API.
+
+## Installing a module from a URL
+
+```
+crowsnest module install https://example.com/mygame/module.yaml [--sha256 HASH] [--yes]
+crowsnest module update mygame
+crowsnest module remove mygame
+crowsnest module list
+```
+
+Needs `modules_dir` in `config.yaml`. Install downloads the manifest (https only, 256 KiB cap, nothing is run),
+validates it, and prints what it would let the module do: the image, ports, env, security options, the backup
+command, admin actions, RCON and API addresses and host commands it asks you to run. You approve by typing the
+module's id. Give `--sha256` when the author published a hash and the download must match it exactly.
+
+What is recorded: `<modules_dir>/modules.lock.json` holds each installed module's source, SHA-256 and date.
+At startup a locked module is loaded only if its `module.yaml` still has that hash. If the file was edited or
+swapped, it is left out with a log line, and its games fall back to the baseline until you re-approve it.
+`update` re-downloads from the recorded source and shows what changed in that summary (new image, new port,
+newly loosened security option) before you approve; if the source is byte-identical to what you approved it just
+restores that copy. Update refuses if the source now serves a different module id.
+
+Limits: a module cannot replace a bundled one or a hand-placed one, and the policy envelope still applies
+(a module only runs what `policy.yaml` allows). This pins what you approved; it does not prove who wrote it.
+A signed catalog would, and is deferred until someone needs it.

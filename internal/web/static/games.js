@@ -1,5 +1,5 @@
 // Games page: fleet, catalogue, one-page setup form with a live summary, and an install progress view.
-const CSRF_TOKEN = document.querySelector("meta[name=csrf-token]").content;
+// callAPI, errorText, toast and confirmAction come from api.js.
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -7,21 +7,6 @@ const el = (tag, cls, text) => {
   if (text !== undefined) n.textContent = text;
   return n;
 };
-
-let toastTimer;
-function toast(message) {
-  $("toast-text").textContent = message;
-  $("toast").hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 6000);
-}
-
-function callAPI(path, options = {}) {
-  return fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF_TOKEN, ...(options.headers || {}) },
-  });
-}
 
 const form = $("setup");
 let modules = [];
@@ -35,12 +20,41 @@ let fitOK = false;
 let installId = null;
 let pollTimer = null;
 let seenInstalling = {};
+const pendingImage = {}; // game id -> "refresh" | "rollback", reported once the game settles
 
 const moduleById = (id) => modules.find((m) => m.id === id);
 const showError = (msg) => { $("form-error").textContent = msg; $("form-error").hidden = !msg; };
 const slug = (s) => s.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").replace(/^[^a-z]+/, "").slice(0, 31);
 
 // ---------- fleet ----------
+const shortDigest = (d) => (d || "").replace(/^sha256:/, "").slice(0, 12);
+
+// The image line of a card: the tag it follows and the exact image (digest) it runs.
+function imageLine(g) {
+  const p = el("p", "fleet-image");
+  if (g.image) p.append(el("span", "fleet-image-tag", g.image));
+  if (g.digest) {
+    const d = el("code", "fleet-digest", shortDigest(g.digest));
+    d.title = g.digest;
+    p.append(d);
+  } else if (g.state !== "installing") {
+    p.append(el("span", "fleet-image-note", "not pinned yet: Update image pins it"));
+  }
+  return p;
+}
+
+// reportImage tells the outcome of an Update image or Roll back once the game has settled.
+function reportImage(g) {
+  const kind = pendingImage[g.id];
+  if (!kind || g.state === "installing") return;
+  delete pendingImage[g.id];
+  const name = g.display_name || g.id;
+  if (g.state === "failed") { toast(`${name}: ${g.error || "the image change failed"}`, "error"); return; }
+  if (kind === "rollback") toast(`${name} rolled back to ${shortDigest(g.digest)}.`, "ok");
+  else if (g.refresh === "up_to_date") toast(`${name} is already up to date.`, "info");
+  else toast(`${name} updated${g.digest ? " to " + shortDigest(g.digest) : ""}.`, "ok");
+}
+
 function stateBadge(state) {
   const b = el("span", "status status-" + (state === "ready" ? "online" : state === "failed" ? "unknown" : "starting"));
   b.append(el("i", "beacon"), el("span", "status-text", state === "installing" ? "installing…" : state));
@@ -65,6 +79,7 @@ function renderFleet(configured) {
   games.forEach((g) => {
     const m = moduleById(g.module);
     const c = fleetCard(g.display_name || g.id, `${m ? m.name : g.module} · added here`, stateBadge(g.state));
+    c.append(imageLine(g));
     if (g.state === "failed" && g.error) c.append(el("p", "settings-error", g.error.slice(-300)));
     const row = el("div", "fleet-actions");
     const busy = g.state === "installing";
@@ -74,22 +89,58 @@ function renderFleet(configured) {
     const upd = el("button", "btn btn-ghost", "Update image");
     upd.type = "button"; upd.disabled = busy;
     upd.addEventListener("click", async () => {
+      const name = g.display_name || g.id;
+      const ok = await confirmAction({
+        eyebrow: "// refit",
+        title: `Update ${name}?`,
+        message: `This pulls ${g.image || "the image"} again. If it points to a new image, the container is recreated on it (the game must be stopped; the data folder is kept) and the current image is kept for Roll back. If nothing changed, the container is left alone.`,
+        confirmLabel: "Update image",
+      });
+      if (!ok) return;
       upd.disabled = true;
-      const res = await callAPI(`/api/managed/games/${g.id}/refresh`, { method: "POST" });
-      if (!res.ok) toast((await res.text()).trim()); else toast(`${g.display_name || g.id}: pulling the latest image…`);
+      const res = await callAPI(`/api/managed/games/${encodeURIComponent(g.id)}/refresh`, { method: "POST" });
+      if (!res.ok) toast(await errorText(res, "Update"), "error");
+      else { pendingImage[g.id] = "refresh"; toast(`${name}: checking for a new image…`, "info"); }
+      await loadGames();
+    });
+    const back = el("button", "btn btn-ghost", "Roll back");
+    back.type = "button"; back.disabled = busy;
+    back.hidden = !g.previous_digest;
+    back.addEventListener("click", async () => {
+      const name = g.display_name || g.id;
+      const ok = await confirmAction({
+        eyebrow: "// roll back",
+        title: `Roll ${name} back?`,
+        message: `The container is recreated on the image it ran before (${shortDigest(g.previous_digest)} instead of ${shortDigest(g.digest)}). The game must be stopped; the data folder is kept, but a world already saved by the newer version may not load in the older one. Rolling back again returns to the current image.`,
+        confirmLabel: "Roll back",
+      });
+      if (!ok) return;
+      back.disabled = true;
+      const res = await callAPI(`/api/managed/games/${encodeURIComponent(g.id)}/rollback`, { method: "POST" });
+      if (!res.ok) { toast(await errorText(res, "Roll back"), "error"); back.disabled = false; return; }
+      pendingImage[g.id] = "rollback";
+      toast(`${name}: rolling back…`, "info");
       await loadGames();
     });
     const del = el("button", "btn btn-danger", "Disable");
     del.type = "button"; del.disabled = busy;
     del.addEventListener("click", async () => {
-      if (!confirm(`Disable ${g.display_name || g.id}? The container is removed; its data folder is kept.`)) return;
+      const name = g.display_name || g.id;
+      const ok = await confirmAction({
+        eyebrow: "// decommission",
+        title: `Disable ${name}?`,
+        message: "The container is removed and the game leaves the dashboard. Its data folder is kept, so it can be enabled again later.",
+        confirmLabel: "Disable",
+        danger: true,
+      });
+      if (!ok) return;
       del.disabled = true;
-      const res = await callAPI(`/api/managed/games/${g.id}`, { method: "DELETE" });
-      if (!res.ok) { toast((await res.text()).trim()); del.disabled = false; return; }
-      toast(`${g.display_name || g.id} disabled.`);
+      const res = await callAPI(`/api/managed/games/${encodeURIComponent(g.id)}`, { method: "DELETE" });
+      if (!res.ok) { toast(await errorText(res, "Disable"), "error"); del.disabled = false; return; }
+      toast(`${name} disabled.`, "ok");
       await loadGames();
     });
-    row.append(edit, upd, del);
+    row.append(edit, upd, back, del);
     c.append(row);
     root.append(c);
   });
@@ -102,12 +153,19 @@ function renderFleet(configured) {
 }
 
 async function loadGames() {
-  const [gr, cr] = await Promise.all([callAPI("/api/managed/games"), callAPI("/api/managed/configured")]);
+  let gr, cr;
+  try {
+    [gr, cr] = await Promise.all([callAPI("/api/managed/games"), callAPI("/api/managed/configured")]);
+  } catch (err) {
+    return; // transient; the install poll (if any) retries
+  }
+  if (gr.status === 401) { window.location.href = "/login"; return; }
   if (gr.ok) games = await gr.json();
   const configured = cr.ok ? await cr.json() : [];
   // A game that was installing and is now ready or failed finishes the progress view.
   games.forEach((g) => {
     if (g.state === "installing") seenInstalling[g.id] = true;
+    reportImage(g);
   });
   renderFleet(configured);
   if (installId) updateProgress();
@@ -124,6 +182,7 @@ function renderCatalogue() {
   modules.forEach((m) => {
     const b = el("button", "pick");
     b.type = "button";
+    b.id = `module-${m.id}`;
     b.setAttribute("role", "radio");
     b.setAttribute("aria-checked", String(m.id === selected));
     b.dataset.module = m.id;
@@ -133,13 +192,90 @@ function renderCatalogue() {
     const meta = [m.image, (m.ports || []).join(", ")].filter(Boolean).join(" · ");
     if (meta) b.append(el("span", "pick-meta", meta));
     if (m.fits !== undefined && m.fits !== null) {
-      b.append(el("span", "pick-badge " + (m.fits ? "ok" : "no"), m.fits ? "Allowed by policy" : m.needs_exception ? "Needs a policy exception" : "Not allowed by policy"));
+      b.append(el("span", "pick-badge " + (m.fits ? "ok" : "no"), m.fits ? "Allowed by policy" : m.needs_exception ? "Needs a policy exception" : m.bundled && !m.allowed ? "Switch it on below to use it" : "Not allowed by policy"));
     }
     if (m.fits && m.fit_id) b.append(el("span", "pick-meta", `Use an id the policy allows, such as ${m.fit_id}.`));
     if (blocked && m.reason) b.append(el("span", "pick-reason", m.reason));
     b.addEventListener("click", () => choose(m.id));
-    root.append(b);
+    const wrap = el("div", "pick-wrap");
+    wrap.append(b, allowBar(m));
+    root.append(wrap);
   });
+}
+
+// Under each card: the ports the game publishes and why, and the switch that lets the guard accept them.
+function allowBar(m) {
+  const bar = el("div", "allow-bar");
+  if ((m.port_notes || []).length) {
+    const ul = el("ul", "port-notes");
+    m.port_notes.forEach((p) => {
+      const li = el("li");
+      li.append(el("code", "", p.port), document.createTextNode(p.why ? " " + p.why : ""));
+      ul.append(li);
+    });
+    bar.append(ul);
+  }
+  if (!m.bundled && !m.gated) {
+    if (m.ports && m.ports.length) bar.append(el("p", "allow-note", "Its ports are allowed in policy.yaml on the host."));
+    return bar;
+  }
+  const label = el("label", "allow-switch");
+  const box = document.createElement("input");
+  box.type = "checkbox";
+  box.checked = !!m.allowed;
+  box.setAttribute("role", "switch");
+  label.append(box, el("span", "", m.allowed ? "Allowed" : "Not allowed yet"));
+  bar.append(label);
+  const ask = el("form", "allow-ask");
+  ask.hidden = true;
+  ask.autocomplete = "off";
+  const pw = document.createElement("input");
+  pw.type = "password";
+  pw.placeholder = "Your password";
+  pw.autocomplete = "current-password";
+  const ok = el("button", "btn btn-primary", "Allow");
+  ok.type = "submit";
+  const no = el("button", "btn btn-ghost", "Cancel");
+  no.type = "button";
+  const err = el("p", "settings-error");
+  err.hidden = true;
+  ask.append(el("p", "allow-note", m.gated ? "Switching it on lets the dashboard offer this game. Enter your password to confirm." : "Allowing a game lets the guard accept its ports. Enter your password to confirm."), pw, ok, no, err);
+  bar.append(ask);
+  if (m.gated) {
+    const d = el("details", "allow-policy");
+    d.append(el("summary", "", "Also needed in policy.yaml"));
+    d.append(el("p", "allow-note", "This module was installed, so the guard does not take its image or ports from it. Add these on the host:"));
+    d.append(el("pre", "", m.policy_lines || "(nothing: it needs no image or ports)"));
+    bar.append(d);
+  }
+  const send = async (allowed, password) => {
+    const res = await callAPI(`/api/managed/modules/${encodeURIComponent(m.id)}/allow`, { method: "PUT", body: JSON.stringify({ allowed, password }) });
+    if (!res.ok) return errorText(res);
+    return "";
+  };
+  box.addEventListener("change", async () => {
+    err.hidden = true;
+    if (box.checked) { ask.hidden = false; pw.focus(); return; }
+    ask.hidden = true;
+    const msg = await send(false, "");
+    if (msg) { box.checked = true; toast(msg, "error"); return; }
+    await reloadModules();
+  });
+  no.addEventListener("click", () => { ask.hidden = true; box.checked = false; pw.value = ""; });
+  ask.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const msg = await send(true, pw.value);
+    pw.value = "";
+    if (msg) { err.textContent = msg; err.hidden = false; return; }
+    toast(`${m.name || m.id} allowed.`, "ok");
+    await reloadModules();
+  });
+  return bar;
+}
+
+async function reloadModules() {
+  const res = await callAPI("/api/managed/modules");
+  if (res.ok) { modules = await res.json(); renderCatalogue(); if (selected && !editing) schedulePreview(); }
 }
 
 function choose(id) {
@@ -196,6 +332,7 @@ function buildForm(values = {}) {
   [
     ["data_dir", "Data folder name", "automatic (one folder per game)"],
     ["ports", "Published ports (host:container/proto, comma-separated)", "automatic (the game's defaults)"],
+    ["ram", "Memory the game needs (for example 6g)", "automatic (the module's figure, then the measured peak)"],
   ].forEach(([key, label, hint]) => {
     if (have.has(key)) return;
     addTo($("options-more"), { key, label, auto: true });
@@ -219,7 +356,7 @@ function collect() {
     options: {}, secrets: {},
   };
   if (m.needs_image && form.elements.image.value.trim()) req.options.image = form.elements.image.value.trim();
-  [...(m.options || []), { key: "data_dir" }, { key: "ports" }].forEach((o) => {
+  [...(m.options || []), { key: "data_dir" }, { key: "ports" }, { key: "ram" }].forEach((o) => {
     const f = form.elements["opt:" + o.key];
     if (!f) return;
     const v = f.value.trim();
@@ -263,7 +400,7 @@ async function runPreview() {
   dl.replaceChildren();
   $("tech").hidden = true;
   if (!res.ok) {
-    const msg = (await res.text()).trim();
+    const msg = await errorText(res);
     $("sum-status").className = "sum-status wait";
     $("sum-status").textContent = "Almost there: " + msg;
     sumRow(dl, "Image", m.needs_image ? [] : [m.image]);
@@ -276,7 +413,7 @@ async function runPreview() {
   $("sum-status").className = "sum-status " + (p.fits ? "ok" : "no");
   $("sum-status").textContent = p.fits ? "✓ Allowed by the operator's policy" : "✗ Outside the policy: " + (p.reason || "not allowed");
   sumRow(dl, "Container", [p.container]);
-  sumRow(dl, "Image", [p.image]);
+  sumRow(dl, "Image", [p.image, p.pinning ? "pinned by digest when installed" : ""].filter(Boolean));
   sumRow(dl, "Ports", p.ports);
   sumRow(dl, "Data folder", p.folders);
   sumRow(dl, "Memory limit", p.memory ? [p.memory] : []);
@@ -289,8 +426,8 @@ async function runPreview() {
 
 // Host-side steps the dashboard cannot do for the operator (policy exception, network, firewall).
 function renderSetup(steps) {
-  $("setup").hidden = steps.length === 0;
-  const ol = $("setup-list");
+  $("host-setup").hidden = steps.length === 0;
+  const ol = $("host-setup-list");
   ol.replaceChildren();
   steps.forEach((st) => {
     const li = el("li", st.done ? "setup-step done" : "setup-step");
@@ -320,7 +457,7 @@ form.addEventListener("submit", async (e) => {
   const res = editing
     ? await callAPI(`/api/managed/games/${editing}`, { method: "PUT", body: JSON.stringify(req) })
     : await callAPI("/api/managed/games", { method: "POST", body: JSON.stringify(req) });
-  if (!res.ok) { showError((await res.text()).trim()); $("enable").disabled = false; return; }
+  if (!res.ok) { showError(await errorText(res)); $("enable").disabled = false; return; }
   installId = req.id;
   seenInstalling[req.id] = true;
   showProgress(editing ? "Applying your changes…" : `Setting up ${req.display_name || req.id}…`);
@@ -408,8 +545,20 @@ $("cancel-edit").addEventListener("click", () => {
     $("setup-section").hidden = true;
     return;
   }
-  if (mres.status === 401) { window.location.href = "/login"; return; }
   if (mres.ok) modules = await mres.json();
+  else { toast(await errorText(mres, "Loading the games"), "error"); return; }
   renderCatalogue();
   await loadGames();
+  selectFromHash();
 })();
+
+// /games#module-<id> (linked from Settings → Game modules) picks that game.
+function selectFromHash() {
+  const m = /^#module-(.+)$/.exec(location.hash);
+  if (!m || editing || !moduleById(decodeURIComponent(m[1]))) return;
+  const id = decodeURIComponent(m[1]);
+  choose(id);
+  const card = document.getElementById(`module-${id}`);
+  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+window.addEventListener("hashchange", selectFromHash);

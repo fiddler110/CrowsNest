@@ -212,7 +212,7 @@ func TestGoogleLoginFromEnv(t *testing.T) {
 
 	t.Setenv("T_GID", "")
 	t.Setenv("T_GSECRET", "")
-	t.Setenv("T_GUSERS", "scott=scott@gmail.com")
+	t.Setenv("T_GUSERS", "alex=alex@example.com")
 	if _, err := googleLogin(cfg, svc); err == nil {
 		t.Fatal("googleLogin with no client ID/secret should fail")
 	}
@@ -224,9 +224,9 @@ func TestGoogleLoginFromEnv(t *testing.T) {
 		t.Fatal("googleLogin with an empty allowlist should fail")
 	}
 
-	t.Setenv("T_GUSERS", "scott=scott@gmail.com")
+	t.Setenv("T_GUSERS", "alex=alex@example.com")
 	g, err := googleLogin(cfg, svc)
-	if err != nil || g == nil || g.Users["scott@gmail.com"] != "scott" {
+	if err != nil || g == nil || g.Users["alex@example.com"] != "alex" {
 		t.Fatalf("googleLogin() = %+v, %v", g, err)
 	}
 	if g, err := googleLogin(&config.Config{}, svc); g != nil || err != nil {

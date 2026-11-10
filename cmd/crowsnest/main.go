@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -31,6 +32,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/notify"
 	"github.com/fiddler110/crowsnest/internal/playerwatch"
 	"github.com/fiddler110/crowsnest/internal/settings"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 	"github.com/fiddler110/crowsnest/internal/web"
 )
 
@@ -59,6 +61,28 @@ func main() {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(2)
 		}
+	case "module":
+		if len(os.Args) >= 3 && os.Args[2] == "check" {
+			os.Exit(runModuleCheck(os.Args[3:], os.Stdout))
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, moduleUsage)
+			os.Exit(2)
+		}
+		cfg, err := config.Load(configPath())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FAIL  config does not load:", err)
+			os.Exit(1)
+		}
+		t := &moduleTool{dir: cfg.ModulesDir, in: os.Stdin, out: os.Stdout}
+		os.Exit(t.run(os.Args[2:]))
+	case "doctor":
+		cfg, err := config.Load(configPath())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FAIL  config does not load:", err)
+			os.Exit(1)
+		}
+		os.Exit(runDoctor(cfg, &dockerctl.Client{Host: cfg.Server.DockerHost}, os.Stdout))
 	case "healthcheck":
 		os.Exit(healthcheck())
 	case "set-password":
@@ -67,6 +91,14 @@ func main() {
 			os.Exit(2)
 		}
 		if err := setPassword(os.Args[2]); err != nil {
+			log.Fatal(err)
+		}
+	case "clear-password":
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, "usage: crowsnest clear-password <username>")
+			os.Exit(2)
+		}
+		if err := clearPassword(os.Args[2]); err != nil {
 			log.Fatal(err)
 		}
 	case "revoke-sessions":
@@ -86,7 +118,7 @@ func main() {
 			log.Fatal(err)
 		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, execguard, guard, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, doctor, module, execguard, guard, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -148,8 +180,15 @@ func serve() error {
 		return fmt.Errorf("load users: %w", err)
 	}
 	go userStore.Watch(ctx, 3*time.Second)
-	if len(userStore.Snapshot()) == 0 {
-		log.Printf("warning: no users configured yet in %s — run `crowsnest set-password <username>` to create one", cfg.UsersFile)
+	setup := &auth.Setup{Store: userStore, CodeFile: filepath.Join(filepath.Dir(cfg.Server.SessionSecretFile), "setup-token")}
+	if users := userStore.Snapshot(); len(users) == 0 {
+		if code, _, err := setup.Code(); err != nil {
+			log.Printf("warning: no users configured yet in %s and no setup code could be made (%v) — run `crowsnest set-password <username>` to create one", cfg.UsersFile, err)
+		} else {
+			log.Printf("setup: no users yet. Open /setup in a browser and enter the setup code %s (also saved in %s), or run `crowsnest set-password <username>`", code, setup.CodeFile)
+		}
+	} else if !hasAdmin(users) {
+		log.Printf("warning: no admin in %s; a Google-only user with no role is a player — run `crowsnest set-role <username> admin`", cfg.UsersFile)
 	}
 	secret, err := auth.LoadOrCreateSecret(cfg.Server.SessionSecretFile)
 	if err != nil {
@@ -217,17 +256,33 @@ func serve() error {
 	backups := &backup.Manager{Docker: docker, History: activity, BaseContext: ctx}
 	exclusivityMgr.Backups = backups
 	exclusivityMgr.MaxActiveFunc = func() int { return settingsStore.Get().MaxActiveGames }
+	if budget := newMemoryBudget(cfg, registry); budget != nil {
+		exclusivityMgr.Memory = budget
+		go sampleMemory(ctx, budget, docker, registry)
+	}
 	exclusivityMgr.AutoUpdate = func() bool { return settingsStore.Get().AutoUpdate }
 	// Background starts (compose pull/up) belong to the process, not to the
 	// HTTP request that asked for them; shutdown cancels them.
 	exclusivityMgr.BaseContext = ctx
+
+	// One observer per game feeds the dashboard, its live stream, player
+	// announcements and both auto-stop loops. Every start/stop transition
+	// pokes it, so the change shows at once.
+	hub := statehub.New(registry)
+	hub.Busy = func(id string) bool { return exclusivityMgr.Starting(id) || exclusivityMgr.Stopping(id) }
+	exclusivityMgr.OnChange = func(id string) { hub.Poke(id); hub.Signal() }
+	go hub.Run(ctx)
+
 	app := &web.App{
+		Hub:         hub,
 		Registry:    registry,
 		Docker:      docker,
 		Exclusivity: exclusivityMgr,
 		Auth:        authSvc,
+		Setup:       setup,
 		Google:      google,
 		Settings:    settingsStore,
+		TimeZone:    cfg.Server.TZ,
 		History:     activity,
 		HostPaths:   cfg.Server.HostDiskPaths,
 		Backups:     backups,
@@ -235,9 +290,13 @@ func serve() error {
 	}
 
 	if cfg.Managed.Dir != "" {
+		if cfg.Managed.PolicyEditable {
+			log.Printf("warning: managed.policy_editable is on: the panel can rewrite %s (it may only tighten it, but it can still remove limits it was given)", cfg.Managed.PolicyFile)
+		}
 		mgr := &managed.Manager{
 			Dir: cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, PolicyEditable: cfg.Managed.PolicyEditable, Platform: modules.PlatformFrom(cfg.Platform),
 			Modules: mods, Config: cfg, Docker: docker, Wire: docker, Registry: registry,
+			Busy: func(id string) bool { return exclusivityMgr.Starting(id) || exclusivityMgr.Stopping(id) },
 		}
 		if err := mgr.Restore(ctx); err != nil {
 			return fmt.Errorf("managed games: %w", err)
@@ -276,6 +335,7 @@ func serve() error {
 	}
 	idle.Notifier = discordNotifier
 	idle.History = activity
+	idle.Hub = hub
 	app.IdleTimer = idle
 	go idle.Run(ctx)
 
@@ -297,6 +357,7 @@ func serve() error {
 	}
 	night.Notifier = discordNotifier
 	night.History = activity
+	night.Hub = hub
 	night.StartedAt = docker.StartedAt
 	night.MinUptime = time.Duration(cfg.NightShutdown.MinUptimeMinutes) * time.Minute
 	go night.Run(ctx)
@@ -309,6 +370,7 @@ func serve() error {
 	}
 	watcher := playerwatch.New(registry, joinLeave, 30*time.Second)
 	watcher.History = activity
+	watcher.Hub = hub // re-checks on every hub change
 	go watcher.Run(ctx)
 
 	// Header/idle timeouts bound slow or idle clients (slowloris). No
@@ -349,7 +411,7 @@ func serve() error {
 	// stop already under way is not interrupted: it runs on the docker
 	// daemon, and the process only waits briefly for it.
 	waited := make(chan struct{})
-	go func() { exclusivityMgr.Wait(); close(waited) }()
+	go func() { exclusivityMgr.Wait(); backups.Wait(); close(waited) }()
 	select {
 	case <-waited:
 	case <-time.After(10 * time.Second):
@@ -386,6 +448,33 @@ func setPassword(username string) error {
 		return err
 	}
 	fmt.Printf("Password set for %s in %s\n", strings.ToLower(username), cfg.UsersFile)
+	return nil
+}
+
+// clearPassword implements `crowsnest clear-password <username>`: drops the stored
+// password hash of a user who signs in with Google, so a leaked users file or an
+// old password can't be used. It refuses unless Google sign-in is set up for them.
+// Existing sessions are revoked too, since they were issued on the password.
+func clearPassword(username string) error {
+	cfg, err := config.Load(configPath())
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	other := cfg.Auth.Google != nil
+	if other {
+		users, err := auth.LoadUsers(cfg.UsersFile)
+		if err != nil {
+			return err
+		}
+		other = users[strings.ToLower(username)].GoogleEmail != "" || googleAllowed(cfg, username)
+	}
+	if err := auth.ClearPasswordHash(cfg.UsersFile, username, other); err != nil {
+		return err
+	}
+	if err := auth.RevokeSessions(cfg.UsersFile, username, true); err != nil {
+		return err
+	}
+	fmt.Printf("Cleared the password for %s; they sign in with Google now (role kept, sessions revoked)\n", strings.ToLower(username))
 	return nil
 }
 
@@ -499,6 +588,16 @@ func healthcheck() int {
 // allowlist. Sessions are stateless, so this is what ends a removed user's
 // session (within seconds, as the users file is watched) instead of letting
 // it run out its TTL.
+// hasAdmin reports whether any user in the file resolves to the admin role.
+func hasAdmin(users auth.Users) bool {
+	for _, u := range users {
+		if u.EffectiveRole() == auth.RoleAdmin {
+			return true
+		}
+	}
+	return false
+}
+
 func sessionAllowed(users func() auth.Users, google *auth.GoogleLogin, passwordDisabled bool) func(string) bool {
 	return func(name string) bool {
 		if google != nil {

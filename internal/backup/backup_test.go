@@ -43,10 +43,10 @@ func TestParseList(t *testing.T) {
 func TestRunBackup(t *testing.T) {
 	r := &rec{}
 	m := &Manager{Docker: fakeDocker(t, `case "$1" in ps) echo pal ;; exec) exit 0 ;; esac`), History: r}
-	if err := m.RunBackup(context.Background(), def(), "scott"); err != nil {
+	if err := m.RunBackup(context.Background(), def(), "alex"); err != nil {
 		t.Fatalf("RunBackup = %v", err)
 	}
-	if len(r.events) != 1 || !strings.HasPrefix(r.events[0], "backup:pal:scott:done") {
+	if len(r.events) != 1 || !strings.HasPrefix(r.events[0], "backup:pal:alex:done") {
 		t.Fatalf("events = %v", r.events)
 	}
 }
@@ -54,7 +54,7 @@ func TestRunBackup(t *testing.T) {
 func TestRunBackup_FailureAndPreconditions(t *testing.T) {
 	r := &rec{}
 	failing := &Manager{Docker: fakeDocker(t, `case "$1" in ps) echo pal ;; exec) echo disk full >&2; exit 1 ;; esac`), History: r}
-	if err := failing.RunBackup(context.Background(), def(), "scott"); err == nil {
+	if err := failing.RunBackup(context.Background(), def(), "alex"); err == nil {
 		t.Fatal("want an error when the command fails")
 	}
 	if len(r.events) != 1 || !strings.Contains(r.events[0], "failed: ") || !strings.Contains(r.events[0], "disk full") {

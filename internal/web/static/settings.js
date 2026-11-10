@@ -1,21 +1,6 @@
-// Settings page: a sidebar of panes (General, Users, Game policy). The pane is chosen by the URL hash.
-const CSRF_TOKEN = document.querySelector("meta[name=csrf-token]").content;
+// Settings page: a sidebar of panes (General, Users, Game policy, Game modules). The pane is chosen by the URL hash.
+// callAPI, errorText, toast and confirmAction come from api.js.
 const $ = (id) => document.getElementById(id);
-
-let toastTimer;
-function toast(message) {
-  $("toast-text").textContent = message;
-  $("toast").hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 6000);
-}
-
-function callAPI(path, options = {}) {
-  return fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF_TOKEN, ...(options.headers || {}) },
-  });
-}
 
 // ---------- navigation ----------
 const loaded = {};
@@ -40,11 +25,16 @@ loaders.general = () => {
   const input = (n) => form.elements[n];
   (async () => {
     const res = await callAPI("/api/settings");
-    if (!res.ok) { toast(`Could not load settings: ${(await res.text()).trim()}`); return; }
+    if (!res.ok) { toast(await errorText(res, "Loading settings"), "error"); return; }
     const v = await res.json();
     fields.forEach((n) => {
       if (input(n).type === "checkbox") input(n).checked = !!v[n]; else input(n).value = v[n];
     });
+    // tz is for display only; the body sent back is built from fields alone.
+    if (v.tz) {
+      $("night-tz").textContent = `Hours are in the server's time zone, ${v.tz}.`;
+      $("night-tz").hidden = false;
+    }
   })();
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -53,9 +43,9 @@ loaders.general = () => {
       body[n] = input(n).type === "checkbox" ? input(n).checked : parseInt(input(n).value, 10);
     });
     const res = await callAPI("/api/settings", { method: "PUT", body: JSON.stringify(body) });
-    if (!res.ok) { errorEl.textContent = (await res.text()).trim(); errorEl.hidden = false; return; }
+    if (!res.ok) { errorEl.textContent = await errorText(res); errorEl.hidden = false; return; }
     errorEl.hidden = true;
-    toast("Settings saved.");
+    toast("Settings saved.", "ok");
   });
 };
 
@@ -101,7 +91,7 @@ loaders.users = () => {
   };
   const request = async (path, method, body) => {
     const res = await callAPI(path, { method, body: body ? JSON.stringify(body) : undefined });
-    if (!res.ok) { showError((await res.text()).trim()); return null; }
+    if (!res.ok) { showError(await errorText(res)); return null; }
     showError("");
     const data = await res.json();
     if ("google_enabled" in data) googleEnabled = data.google_enabled;
@@ -135,10 +125,17 @@ loaders.users = () => {
         if (!u.self) {
           actions.append(mk("Sign out", async () => {
             const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "PUT", { revoke_sessions: true });
-            if (r) toast(`Signed ${u.username} out everywhere.`);
+            if (r) toast(`Signed ${u.username} out everywhere.`, "ok");
           }));
           actions.append(mk("Delete", async () => {
-            if (!confirm(`Delete user ${u.username}? They will be signed out.`)) return;
+            const ok = await confirmAction({
+              eyebrow: "// crew list",
+              title: `Delete ${u.username}?`,
+              message: "They are signed out everywhere and can no longer sign in. This can't be undone.",
+              confirmLabel: "Delete user",
+              danger: true,
+            });
+            if (!ok) return;
             const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "DELETE");
             if (r) { render(r); if (editing === u.username) resetForm(); }
           }, true));
@@ -151,7 +148,7 @@ loaders.users = () => {
 
   (async () => {
     const res = await callAPI("/api/users");
-    if (!res.ok) { toast(`Could not load users: ${(await res.text()).trim()}`); return; }
+    if (!res.ok) { toast(await errorText(res, "Loading users"), "error"); return; }
     const data = await res.json();
     googleEnabled = !!data.google_enabled;
     resetForm();
@@ -176,7 +173,7 @@ loaders.users = () => {
     if (!users) return;
     f.role.disabled = false;
     render(users);
-    toast(editing ? "User updated." : "User added.");
+    toast(editing ? "User updated." : "User added.", "ok");
     resetForm();
   });
 };
@@ -184,22 +181,41 @@ loaders.users = () => {
 // ---------- Game policy ----------
 loaders.policy = () => {
   const pf = $("policy-form");
-  const listFields = ["names", "images", "networks", "ports", "host_ips"];
+  const listFields = ["names", "images", "networks", "ports"];
   let state = null;
   const setEditing = (on) => {
     [...pf.elements].forEach((f) => { if (f.name) f.disabled = !on; });
+    syncHost();
     $("policy-edit").hidden = on || !(state && state.editable);
     $("policy-cancel").hidden = !on;
     $("policy-save").hidden = !on;
   };
+  // Host addresses as three plain choices: any (an empty list in the file), this machine, or one address.
+  const hostMode = () => (pf.querySelector("input[name=host_mode]:checked") || {}).value;
+  const syncHost = () => { pf.elements.host_specific.disabled = pf.elements.host_specific.disabled || hostMode() !== "specific"; };
+  pf.querySelectorAll("input[name=host_mode]").forEach((r) => r.addEventListener("change", () => {
+    pf.elements.host_specific.disabled = hostMode() !== "specific";
+    if (hostMode() === "specific") pf.elements.host_specific.focus();
+  }));
+  const hostIPs = () => {
+    const m = hostMode();
+    if (m === "local") return ["127.0.0.1"];
+    if (m === "specific") return pf.elements.host_specific.value.split(/[\s,]+/).filter(Boolean);
+    return [];
+  };
   const fill = () => {
     const p = state.policy;
+    const ips = p.host_ips || [];
+    const mode = ips.length === 0 ? "any" : (ips.length === 1 && ips[0] === "127.0.0.1" ? "local" : "specific");
+    pf.querySelectorAll("input[name=host_mode]").forEach((r) => { r.checked = r.value === mode; });
+    pf.elements.host_specific.value = mode === "specific" ? ips.join(", ") : "";
     pf.elements.games_root.value = p.games_root;
     listFields.forEach((k) => { pf.elements[k].value = (p[k] || []).join("\n"); pf.elements[k].rows = Math.max(2, (p[k] || []).length); });
     pf.elements.max_scopes.value = p.max_scopes;
     pf.elements.exec.checked = !!p.exec;
+    pf.elements.pin_digests.checked = !!p.pin_digests;
     $("policy-note").textContent = state.editable
-      ? "What the panel may create when you add a game. Saved changes apply within a few seconds, and a game that no longer fits is dropped by the guard."
+      ? "What the panel may create when you add a game. You can tighten it here: remove entries or lower a limit. Saved changes apply within a few seconds, and a game that no longer fits is dropped by the guard. Adding entries or turning a limit off is done in policy.yaml on the host."
       : "What the panel may create when you add a game. It is read-only here on purpose: it lives in policy.yaml on the host, so a compromised panel cannot widen its own limits.";
     setEditing(false);
     const ex = p.exceptions || [];
@@ -224,7 +240,7 @@ loaders.policy = () => {
   (async () => {
     const res = await callAPI("/api/managed/policy");
     if (res.status === 404) { $("policy-off").hidden = false; pf.hidden = true; return; }
-    if (!res.ok) { $("policy-note").textContent = "The policy could not be read: " + (await res.text()).trim(); return; }
+    if (!res.ok) { $("policy-note").textContent = "The policy could not be read: " + await errorText(res); return; }
     state = await res.json();
     fill();
   })();
@@ -233,14 +249,16 @@ loaders.policy = () => {
   $("policy-cancel").addEventListener("click", () => { $("policy-error").hidden = true; fill(); });
   pf.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const body = { games_root: pf.elements.games_root.value.trim(), exec: pf.elements.exec.checked,
+    const body = { games_root: pf.elements.games_root.value.trim(), exec: pf.elements.exec.checked, pin_digests: pf.elements.pin_digests.checked,
       max_scopes: parseInt(pf.elements.max_scopes.value, 10) || 0 };
     listFields.forEach((k) => { body[k] = lines(pf.elements[k].value); });
+    body.host_ips = hostIPs();
+    if (hostMode() === "specific" && body.host_ips.length === 0) { $("policy-error").textContent = "Enter the address, or choose another option."; $("policy-error").hidden = false; return; }
     const res = await callAPI("/api/managed/policy", { method: "PUT", body: JSON.stringify(body) });
-    if (!res.ok) { $("policy-error").textContent = (await res.text()).trim(); $("policy-error").hidden = false; return; }
+    if (!res.ok) { $("policy-error").textContent = await errorText(res); $("policy-error").hidden = false; return; }
     state = await res.json();
     fill();
-    toast("Policy saved.");
+    toast("Policy saved.", "ok");
   });
 };
 
@@ -249,12 +267,14 @@ loaders.modules = async () => {
   const list = $("modules-list");
   const res = await callAPI("/api/managed/modules");
   if (res.status === 404) { $("modules-off").hidden = false; return; }
-  if (!res.ok) { toast(`Could not load modules: ${(await res.text()).trim()}`); return; }
+  if (!res.ok) { toast(await errorText(res, "Loading modules"), "error"); return; }
   (await res.json()).forEach((m) => {
     const li = document.createElement("li");
     li.className = "user-row";
-    const name = document.createElement("span");
-    name.className = "user-name";
+    // Each entry opens that game's card on the Games page.
+    const name = document.createElement("a");
+    name.className = "user-name module-link";
+    name.href = `/games#module-${encodeURIComponent(m.id)}`;
     name.textContent = m.name;
     const tags = document.createElement("span");
     tags.className = "user-tags";

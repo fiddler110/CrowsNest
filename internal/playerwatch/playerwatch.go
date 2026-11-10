@@ -2,7 +2,8 @@
 // diffing the names its PlayerCounter reports between polls. It only speaks
 // from a positive reading: an unreadable count is skipped, and the first
 // reading after a game comes online just seeds the baseline, so a CrowsNest
-// restart doesn't announce everyone already aboard as "joined".
+// restart doesn't announce everyone already aboard as "joined". Its readings
+// come from the state hub when one is wired (see Watcher.Hub).
 package playerwatch
 
 import (
@@ -15,6 +16,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
 // Notifier delivers a message; satisfied by *notify.Discord.
@@ -33,18 +35,35 @@ type Watcher struct {
 	notifier Notifier
 	// History, when set, records a join/leave event per named player (the
 	// source of playtime totals). Optional.
-	History  history.Recorder
+	History history.Recorder
+	// Hub, when set, supplies the observations, and Run re-checks on each of
+	// its change notifications instead of on a ticker. Nil means probe every
+	// game directly each interval.
+	Hub      *statehub.Hub
 	interval time.Duration
 	last     map[string]state // present only while a game is online and readable
 }
 
-// New builds a Watcher that polls every interval.
+// New builds a Watcher that polls every interval (unused with a Hub).
 func New(registry *games.Registry, notifier Notifier, interval time.Duration) *Watcher {
 	return &Watcher{registry: registry, notifier: notifier, interval: interval, last: map[string]state{}}
 }
 
 // Run polls until ctx is cancelled.
 func (w *Watcher) Run(ctx context.Context) {
+	if w.Hub != nil {
+		sub := w.Hub.Subscribe()
+		defer sub.Close()
+		w.Tick(ctx)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-sub.C:
+				w.Tick(ctx)
+			}
+		}
+	}
 	t := time.NewTicker(w.interval)
 	defer t.Stop()
 	for {
@@ -57,25 +76,42 @@ func (w *Watcher) Run(ctx context.Context) {
 	}
 }
 
-// Tick polls every game once.
+// Tick checks every game once. Checking the same observation twice
+// announces nothing new, so a hub change on one game re-reading the others
+// is harmless.
 func (w *Watcher) Tick(ctx context.Context) {
 	for _, d := range w.registry.All() {
-		w.check(ctx, d)
+		if d.Status == nil || !games.CanCountPlayers(d) {
+			continue
+		}
+		var o statehub.Observation
+		if w.Hub != nil {
+			var ok bool
+			if o, ok = w.Hub.Get(d.ID); !ok {
+				continue
+			}
+		} else {
+			o = statehub.Probe(ctx, d)
+		}
+		w.check(ctx, d, o)
 	}
 }
 
-func (w *Watcher) check(ctx context.Context, d games.GameDef) {
-	if d.Status == nil || !games.CanCountPlayers(d) {
-		return
-	}
-	status, err := d.Status.Check(ctx, d.ContainerName)
-	if err != nil || status != games.StatusOnline {
-		if err == nil { // confirmed not online: start over next time
+func (w *Watcher) check(ctx context.Context, d games.GameDef, o statehub.Observation) {
+	if o.Status != games.StatusOnline {
+		// Unknown means the check failed: keep the baseline. Anything else
+		// is confirmed not online: start over next time, closing out
+		// everyone still listed so playtime doesn't depend on the stop
+		// event alone.
+		if o.Status != games.StatusUnknown {
+			for _, n := range w.last[d.ID].names {
+				w.record(history.KindLeave, d.ID, n)
+			}
 			delete(w.last, d.ID)
 		}
 		return
 	}
-	count, names, ok := d.Players.PlayerCount(ctx)
+	count, names, ok := o.Count, o.Names, o.PlayersOK
 	if !ok {
 		return
 	}

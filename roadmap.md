@@ -51,22 +51,67 @@ derived from it.
   bundled modules; adapter-sidecar contract v0 (Windrose+ first); remove the
   typed per-game fields from `config`. Done when a fourth game (Minecraft or a
   Source game) is added with a manifest only, in under 30 minutes.
-- [ ] **Phase 3: derived security.** Generate guard scopes, execguard rules and
+- [x] **Phase 3: derived security.** (done: `runtime:` + `crowsnest render` generate
+  compose and guard scopes; per-game secrets in `secrets.json` (0600, never rendered);
+  the guard reads a managed scopes file and reloads; `policy.yaml` envelope with
+  per-game exceptions; guard forwards resolved container ids; fuzz targets for path
+  and body parsing (2026-11-10); dashboard games pinned by image digest, with
+  `pin_digests` in `policy.yaml` making the guard refuse a managed create by tag,
+  and one-step rollback to the previous digest; exec rules derived at runtime
+  (execguard builds them from config.yaml backups plus each managed game's
+  module, reloaded from the managed dir, so they cannot drift); privilege
+  approval is covered by operator-only policy exceptions (only policy.yaml on
+  the host can grant one), and the lock file moves to Phase 5 with remote module
+  sources; dedicated security review 2026-11-10: managed binds may not nest in
+  one another or in a base bind, and a game reads only `TZ` and its own
+  `<ID>_<OPTION>` names from the panel's environment. The residuals
+  it listed are closed: with `policy_editable: true` the dashboard may only
+  tighten policy.yaml (and a startup warning says it is on); execguard issues a
+  dashboard game's backup rule only for a container name the policy allows
+  (execguard now mounts the policy directory); /api/events also has a
+  per-user cap of 4.) Generate guard scopes, execguard rules and
   compose fragments from manifests; per-module secrets (the panel stops
   reading every game's `.env` values); guard reads a scopes file and reloads;
   `policy.yaml` envelope, privilege approval (`crowsnest module apply`) and a
   lock file; Go fuzz targets for the guard's path/body parsing; pin game
   images by digest or version range. Needs its own security review.
-- [ ] **Phase 4: state hub.** One poller per game on an adaptive cadence, one
+- [x] **Phase 4: state hub.** (done: one poller per game on an adaptive
+  cadence in `internal/statehub`, feeding the dashboard, playerwatch and both
+  auto-stop loops, and one SSE stream to browsers, `/api/events`; memory-budget admission (done
+  2026-11-10): modules declare `runtime.ram`, the measured peak replaces it,
+  and a start needs host free RAM less `server.memory_reserve_mb`;
+  `max_active_games` stays as an optional cap.) One poller per game on an adaptive cadence, one
   SSE stream to browsers, memory-budget admission instead of
   `max_active_games` as a RAM proxy.
-- [ ] **Phase 5: modules in the UI.** Install, enable, configure and remove
+- [ ] **Phase 5: modules in the UI.** (done: the Games page enables, edits,
+  refreshes and disables games from bundled modules inside the policy envelope,
+  with preview, host-setup steps and install progress; Settings shows the policy.
+  Remaining: profiles, installing modules from signed remote sources with a
+  lock file of what was installed, moved here from Phase 3.) Install, enable, configure and remove
   modules and profiles from the dashboard (inside the policy envelope);
   signed remote sources. Done when a profile is created and started with no
   file edits.
 - [ ] **Phase 6 (optional):** drop the docker CLI and compose from the image
   (create containers through the Engine API behind the guard); also removes
   the compose-from-source Dockerfile stage and its x/net CVE churn.
+
+- [ ] **Policy you don't have to maintain** (planned 2026-11-10). The policy should hold only what protects the
+  host (`games_root`, `exec`, exceptions); the rest comes from the modules.
+  1. [x] **Ownership instead of a names list.** Dashboard games carry `crowsnest.managed=true`; with no `names` in
+     the policy the guard only acts on labelled containers (lists, inspect, start/stop/remove, create).
+     A policy that still lists `names` behaves as before.
+  2. [x] Images and the games network come from the bundled modules and `platform.games_network`, not the policy
+     (`images` and `networks` are optional; `"@modules"` adds the module images to an explicit list; the dashboard
+     editor cannot empty a list). A module installed from a URL still needs its image listed.
+  3. [x] A per-module **Allow** switch on the Games page (admin password again, audit-logged), and each game's
+     published ports shown with the module's reason (`why:` on a module port). `ports` in the policy is optional.
+     A password is required to allow (a Google-only admin gets a banner until they set one). A second server of a
+     game gets the next free host port the policy admits; a typed clash is refused naming the game. Not done: a
+     switch for URL-installed modules (needs the guard to read the lock file); the extra range is edited in
+     `policy.yaml`; the clash on *start* is Docker's own error. A fixed LAN or games-network address another game already holds is refused naming that game.
+  4. [x] Host address as three plain choices (my network, this machine only, a specific address) in the policy pane;
+     the dashboard can still only narrow it. "Servers allowed at once" was already a number field starting at 1
+     (Settings, General); the policy's `max_scopes` is now labelled "Most games that can be set up".
 
 ### B. Accounts and settings
 
@@ -75,9 +120,22 @@ request, user create/update/delete (`/api/users`), per-user session
 revocation, and global runtime settings (idle, night, max games, auto-update,
 raw console) in `settings.json`. Expansion, tied to the phase it depends on:
 
-- [ ] **First-run setup in the UI** (no `admin:admin`: CrowsNest is internet
-  facing). Independent of the module work; can ship any time. Includes
-  retiring the unused password hashes in `users.env`.
+- [x] **First-run setup in the UI (done 2026-11-10).** With no users the
+  login page redirects to `/setup`, which creates the first admin from a
+  one-time setup code printed in the log and kept in `setup-token` (so only
+  someone with host access can claim the panel). It closes for good once a
+  user exists. Unused password hashes: `crowsnest clear-password <user>` drops one (refused without a
+  Google login, keeps the role, revokes sessions) and `doctor` flags hashes left while password login is off.
+- [x] **Hardening for other people's hosts (done 2026-11-10):** `crowsnest
+  doctor` (Docker access, writable state, policy, cookies, memory), a
+  `quickstart/` stack with the guards and no preset games, a history and
+  fixture audit (no secrets found; personal details removed from fixtures).
+  License is PolyForm Noncommercial 1.0.0 with a `SECURITY.md`. A module-authoring guide
+  (`docs/writing-modules.md`) and `crowsnest module check <dir> --log` (validates a manifest and replays a
+  captured log) are done. The author email stays in git history by decision. Still to do before going public:
+  the real-server checks in track C. Hash-pinned remote install is done (`crowsnest module
+  install|update|remove|list`, a lock file, an approval summary and re-approval on change); a web
+  UI for it and signed catalogs are not built.
 - [ ] **Per-game settings** (idle timeout, restart cooldown, max players,
   night opt-out per game, instead of global only). Comes from manifest
   `params` and `runtime`: Phase 1-2, form in Phase 5.
@@ -96,7 +154,9 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
 - [ ] **Backup retention, restore button and offsite copy** (restic/rclone).
   Backups and the admin panel exist; restore and retention do not.
 - [ ] **"Update available" and one-click rollback** to the last-known-good
-  image (needs the digest pinning from Phase 3).
+  image. (done: Roll back on the Games page recreates a dashboard game on its
+  previous digest, and Update image says whether anything changed. Not built:
+  an "update available" check that asks the registry without pulling.)
 - [ ] **Crash-loop detection** with a Discord/ntfy alert; **Prometheus
   `/metrics`**.
 - [ ] **Mod and config file editing**, files declared in the manifest.
@@ -196,6 +256,9 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   Still open from the review list: scheduled starts and Discord slash commands
   (both deferred).
 
+- [x] **One guard container (2026-11-10).** `crowsnest guard --exec` runs the exec allowlist in front of the
+  guard in a single process (the guard on loopback, nothing else listening), so the quickstart is two
+  containers, the panel and the guard, instead of three. `crowsnest execguard` still works on its own.
 - [x] **Exec guard and admin console (2026-11-07).** `crowsnest execguard`
   allowlists `docker exec` to exactly the commands config implies, in front of
   docker-socket-proxy. Palworld gets an admin-only Console tab: fixed REST

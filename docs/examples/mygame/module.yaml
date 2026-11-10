@@ -1,0 +1,34 @@
+api_version: 1
+id: mygame
+name: My Game
+accent: "#38bdf8"
+description: "An example dedicated server, read from its log. Replace every line of this with your game."
+
+runtime:
+  ram: 2g                          # what it typically uses; CrowsNest replaces this with the measured peak after a run
+  image: example/mygame-server     # the repository, no tag. A real module names the image you trust.
+  stop_grace: 30s                  # how long Docker waits for the server to save on SIGTERM
+  data_dir: MyGame                 # folder under games_root holding this game's data
+  ports:
+    - {port: 7777, proto: udp}
+  data:
+    - {path: /data}                # <games_root>/MyGame is mounted at /data
+  env:
+    - SERVER_NAME=${server_name}
+    - MAX_PLAYERS=${max_players}
+
+options:
+  - {key: server_name, label: Server name, default: My CrowsNest server}
+  - {key: max_players, label: Max players, default: "8"}
+
+status:
+  ready_log: 'Server is listening on port'
+players:
+  type: log_markers
+  join: '\[INFO\] (\S+) connected'
+  leave: '\[INFO\] (\S+) disconnected'
+
+startup:
+  - {match: 'Loading config', pct: 30, label: Reading config}
+  - {match: 'Loading world', pct: 70, label: Loading world}
+  - {match: 'Server is listening on port', pct: 100, label: Server ready}

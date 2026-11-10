@@ -1,6 +1,11 @@
 package web
 
 import (
+	"context"
+	"runtime"
+
+	"github.com/fiddler110/crowsnest/internal/auth"
+	"github.com/fiddler110/crowsnest/internal/sse"
 	"net/http"
 	"net/http/httptest"
 	"regexp"
@@ -182,5 +187,51 @@ func TestHandleStartupProgress_ParseIsMonotonicAndScopedToCurrentRun(t *testing.
 	}
 	if !strings.Contains(body, `"pct":40`) {
 		t.Errorf("missing first Parse-derived event: %q", body)
+	}
+}
+
+// endless yields lines forever.
+type endless struct{}
+
+func (endless) Read(p []byte) (int, error) { return copy(p, "line\n"), nil }
+
+// The reader goroutine must stop once the request is gone, not block on a
+// send nobody will receive.
+func TestStreamLines_ReaderStopsOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := httptest.NewRequest("GET", "/", nil).WithContext(ctx)
+	sw, ok := sse.NewWriter(httptest.NewRecorder())
+	if !ok {
+		t.Fatal("no sse writer")
+	}
+	done := make(chan struct{})
+	go func() {
+		streamLines(r, sw, endless{}, time.Hour, func(string) (string, string, bool) { return "", "", false })
+		close(done)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-done
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		buf := make([]byte, 1<<16)
+		buf = buf[:runtime.Stack(buf, true)]
+		if !strings.Contains(string(buf), "streamLines.func1") {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("reader goroutine leaked after cancel:\n%s", buf)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestLogs_PlayerForbidden(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/logs", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("player logs = %d, want 403", rec.Code)
 	}
 }

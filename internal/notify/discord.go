@@ -46,7 +46,11 @@ func (d *Discord) Notify(ctx context.Context, message string) {
 		return
 	}
 
-	body, err := json.Marshal(map[string]string{"content": message})
+	body, err := json.Marshal(map[string]any{
+		"content": message,
+		// Player names come from game servers; never let one ping the channel.
+		"allowed_mentions": map[string]any{"parse": []string{}},
+	})
 	if err != nil {
 		log.Printf("notify: encode message: %v", err)
 		return

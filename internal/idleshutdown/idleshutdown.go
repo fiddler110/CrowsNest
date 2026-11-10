@@ -17,6 +17,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
 // Stopper stops a registered game by ID — the subset of
@@ -68,6 +69,11 @@ type Manager struct {
 	// Now overrides time.Now. Intended for tests; production callers should
 	// leave it unset.
 	Now func() time.Time
+
+	// Hub, when set, supplies each game's status and player count (and is
+	// asked for a fresh reading just before a stop). Nil means probe each
+	// game directly every tick.
+	Hub *statehub.Hub
 
 	// lastNonZero tracks, per game ID, the last time it was observed online
 	// with a nonzero (or undeterminable-turned-determinable) player count.
@@ -192,12 +198,21 @@ func (m *Manager) observe(id string, last time.Time, isEmpty bool) {
 	m.mu.Unlock()
 }
 
+// read returns d's latest observation: the hub's when one is wired (ok is
+// false until it has observed d), else a direct probe.
+func (m *Manager) read(ctx context.Context, d games.GameDef) (statehub.Observation, bool) {
+	if m.Hub != nil {
+		return m.Hub.Get(d.ID)
+	}
+	return statehub.Probe(ctx, d), true
+}
+
 func (m *Manager) checkGame(ctx context.Context, d games.GameDef, idleDuration time.Duration) {
 	if d.Status == nil {
 		return
 	}
-	status, err := d.Status.Check(ctx, d.ContainerName)
-	if err != nil || status != games.StatusOnline {
+	o, seen := m.read(ctx, d)
+	if !seen || o.Status != games.StatusOnline {
 		// Not confirmedly online: drop any tracked grace period so the next
 		// time this game comes online it starts a fresh one, rather than
 		// getting credit (or blame) for time spent stopped or starting.
@@ -220,7 +235,7 @@ func (m *Manager) checkGame(ctx context.Context, d games.GameDef, idleDuration t
 	if d.Players == nil {
 		return // no PlayerCounter wired for this game -> never auto-stop it
 	}
-	count, _, ok := d.Players.PlayerCount(ctx)
+	count, ok := o.Count, o.PlayersOK
 	if !ok {
 		m.observe(d.ID, last, false) // undeterminable -> never assume zero
 		return
@@ -240,6 +255,12 @@ func (m *Manager) checkGame(ctx context.Context, d games.GameDef, idleDuration t
 		return
 	}
 	idleDuration = grace
+	if m.Hub != nil {
+		// The hub's reading may be a cadence old; confirm before stopping.
+		if f := m.Hub.Fresh(ctx, d); f.Status != games.StatusOnline || !f.PlayersOK || f.Count > 0 {
+			return
+		}
+	}
 
 	log.Printf("idleshutdown: stopping %s after %s with no players", d.ID, idleDuration)
 	if err := m.stopper.Stop(ctx, d.ID); err != nil {

@@ -1,6 +1,7 @@
 api_version: 1
 id: palworld
 name: Palworld
+accent: "#c084fc"
 description: "Palworld dedicated server (thijsvanloef/palworld-server-docker) with the REST API for status, players and save-on-stop."
 # Palworld's dedicated-server REST API
 # (https://docs.palworldgame.com/api/rest-api/) as served by
@@ -12,6 +13,7 @@ connect:
   - {label: Join password, option: server_password}
 
 runtime:
+  ram: 8g                # typical use; admission swaps in the measured peak after a run
   # Bringing it back up seconds after a stop segfaulted it once.
   restart_cooldown: 30s
   image: thijsvanloef/palworld-server-docker
@@ -19,7 +21,7 @@ runtime:
   memory: 10g               # the README asks for 16GB+; cap it so a leak kills Palworld, not the host
   data_dir: Palworld
   ports:
-    - {port: 8211, proto: udp}   # the REST API (8212) is deliberately not published
+    - {port: 8211, proto: udp, why: "players connect here"}   # the REST API (8212) is deliberately not published
   data:
     - {path: /palworld}
   env:

@@ -60,7 +60,7 @@ func TestRenderMatchesHandWrittenValheim(t *testing.T) {
 	want := `{"name":"valheim","images":["lloesche/valheim-server"],"binds":["${USERDIR}/Valheim/config","${USERDIR}/Valheim/data"],` +
 		`"networks":["crowsnest-games-net"],"ports":[{"host_ip":"10.0.0.2","host_port":"2456","container_port":"2456","proto":"udp"},` +
 		`{"host_ip":"10.0.0.2","host_port":"2457","container_port":"2457","proto":"udp"}],` +
-		`"labels":{"com.centurylinklabs.watchtower.enable":"false"},"exec":true}`
+		`"labels":{"com.centurylinklabs.watchtower.enable":"false","crowsnest.managed":"true"},"exec":true}`
 	if string(b) != want {
 		t.Errorf("scope:\n got %s\nwant %s", b, want)
 	}

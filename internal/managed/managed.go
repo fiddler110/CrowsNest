@@ -22,7 +22,9 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -44,6 +46,8 @@ type Docker interface {
 	Remove(ctx context.Context, name string) error
 	Exists(ctx context.Context, name string) (bool, error)
 	Running(ctx context.Context, name string) (bool, error)
+	// ImageDigests is a local image's RepoDigests ("repo@sha256:...").
+	ImageDigests(ctx context.Context, image string) ([]string, error)
 }
 
 // Manager owns the dashboard-enabled games.
@@ -60,6 +64,9 @@ type Manager struct {
 	Registry       *games.Registry
 	// Settle is how long a new game waits for the guard to pick up its scope.
 	Settle time.Duration
+	// Busy, when set, reports a game that is mid start/stop. A start still
+	// pulling has no container yet, so Docker.Running alone would miss it.
+	Busy func(id string) bool
 
 	mu      sync.Mutex
 	ctx     context.Context
@@ -70,10 +77,31 @@ type entry struct {
 	Request
 	State string `json:"state"`
 	Error string `json:"error,omitempty"`
+	pin
 
 	rendered *modules.Rendered
 	stop     context.CancelFunc
+	refresh  string // outcome of the last image update: RefreshUpdated or RefreshUpToDate
 }
+
+// pin is the exact image a game runs. A game is pulled by tag, and the digest
+// that tag resolved to is what its container is created from, so an upstream
+// push changes nothing until the operator presses Update image. The digest
+// before the last change is kept for a rollback.
+type pin struct {
+	Image          string `json:"image,omitempty"` // repo:tag the digest was resolved from
+	Digest         string `json:"digest,omitempty"`
+	PreviousDigest string `json:"previous_digest,omitempty"`
+}
+
+// Outcomes of an image update, as Info.Refresh reports them.
+const (
+	RefreshUpdated  = "updated"
+	RefreshUpToDate = "up_to_date"
+)
+
+// ErrNoPrevious is a rollback with nothing to go back to.
+var ErrNoPrevious = errors.New("there is no previous image to roll back to")
 
 // Request is what the dashboard sends to enable a game.
 type Request struct {
@@ -99,6 +127,14 @@ type Info struct {
 	DisplayName    string            `json:"display_name,omitempty"`
 	ConnectAddress string            `json:"connect_address,omitempty"`
 	Options        map[string]string `json:"options,omitempty"`
+	// Image is the tag the game follows (repo:tag); Digest is the exact image it
+	// runs (empty for a game installed before pinning, until its next update);
+	// PreviousDigest is what Rollback goes back to.
+	Image          string `json:"image,omitempty"`
+	Digest         string `json:"digest,omitempty"`
+	PreviousDigest string `json:"previous_digest,omitempty"`
+	// Refresh is how the last Update image ended: "updated" or "up_to_date".
+	Refresh string `json:"refresh,omitempty"`
 }
 
 // Plan is the dry-run of a Request.
@@ -114,6 +150,8 @@ type Plan struct {
 	Ports     []string `json:"ports,omitempty"`   // host_ip:port/proto -> container
 	Folders   []string `json:"folders,omitempty"` // host folders the game stores data in
 	Memory    string   `json:"memory,omitempty"`
+	// Pinning says how the image is held still: the tag is resolved to a digest on install.
+	Pinning string `json:"pinning,omitempty"`
 	// Setup is what the operator has to do on the host for this game, in order.
 	Setup []SetupStep `json:"setup,omitempty"`
 }
@@ -136,6 +174,12 @@ type OptionInfo struct {
 	Auto     bool   `json:"auto,omitempty"` // filled in from the game itself when left empty
 }
 
+// PortNote is one published port and the module's reason for it.
+type PortNote struct {
+	Port string `json:"port"` // "25565/tcp"
+	Why  string `json:"why,omitempty"`
+}
+
 type ModuleInfo struct {
 	ID          string   `json:"id"`
 	Name        string   `json:"name"`
@@ -143,7 +187,18 @@ type ModuleInfo struct {
 	Description string   `json:"description,omitempty"`
 	Image       string   `json:"image,omitempty"`
 	Ports       []string `json:"ports,omitempty"` // "25565/tcp"
-	HasBackup   bool     `json:"has_backup,omitempty"`
+	// PortNotes says what each published port is for, as the module declares it.
+	PortNotes []PortNote `json:"port_notes,omitempty"`
+	// Allowed is whether the operator switched this module on. Bundled is whether
+	// the guard knows its ports (so a switch can allow them); a module installed
+	// from a URL has no switch, its ports go in policy.yaml.
+	Allowed bool `json:"allowed"`
+	Bundled bool `json:"bundled"`
+	// Gated: the switch only lets the dashboard offer the module; its image and
+	// ports still have to be in policy.yaml. PolicyLines are those lines, ready to paste.
+	Gated       bool   `json:"gated,omitempty"`
+	PolicyLines string `json:"policy_lines,omitempty"`
+	HasBackup   bool   `json:"has_backup,omitempty"`
 	// ConnectHint is the address players most likely use (published host address
 	// and first port), offered as the default connect address.
 	ConnectHint string `json:"connect_hint,omitempty"`
@@ -170,13 +225,15 @@ const (
 
 var (
 	idRe    = regexp.MustCompile(`^[a-z][a-z0-9-]{1,30}$`)
-	reserve = map[string]bool{"image": true, "tag": true, "ports": true, "data_dir": true}
+	reserve = map[string]bool{"image": true, "tag": true, "ports": true, "data_dir": true, "ram": true}
 )
 
 // Catalogue lists the modules that can be enabled from the dashboard: those
 // that describe a container (a runtime section).
 func (m *Manager) Catalogue() []ModuleInfo {
 	var out []ModuleInfo
+	defs := modules.PolicyDefaults(m.Platform)
+	allowed, _ := dockerguard.ReadAllowed(m.path(allowedFile))
 	for _, mf := range m.Modules.Manifests() {
 		if len(mf.Runtime.Ports) == 0 && mf.Runtime.Image == "" && len(mf.Runtime.Data) == 0 {
 			continue
@@ -186,7 +243,14 @@ func (m *Manager) Catalogue() []ModuleInfo {
 			NeedsException: len(rt.SecOpts) > 0 || len(rt.Networks) > 0 || rt.GamesIPv4Option != "",
 			Description:    mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil}
 		for _, p := range mf.Runtime.Ports {
-			mi.Ports = append(mi.Ports, fmt.Sprintf("%d/%s", p.Port, p.Proto))
+			mi.Ports = append(mi.Ports, modules.PortSpec(p))
+			mi.PortNotes = append(mi.PortNotes, PortNote{Port: modules.PortSpec(p), Why: p.Why})
+		}
+		mi.Bundled = len(defs.ModulePorts[mf.ID]) > 0
+		mi.Allowed = slices.Contains(allowed, mf.ID)
+		if m.gated(mf.ID) {
+			mi.Gated = true
+			mi.PolicyLines = policyLines(mf)
 		}
 		if len(mf.Runtime.Ports) > 0 && m.Platform.HostIP != "" && m.Platform.HostIP != "0.0.0.0" {
 			mi.ConnectHint = fmt.Sprintf("%s:%d", m.Platform.HostIP, mf.Runtime.Ports[0].Port)
@@ -194,10 +258,35 @@ func (m *Manager) Catalogue() []ModuleInfo {
 		for _, o := range mf.Options {
 			mi.Options = append(mi.Options, OptionInfo{Key: o.Key, Label: o.Label, Default: o.Default, Required: (o.Required || o.ManagedRequired) && o.Derive == "", Secret: o.Secret, Auto: o.Derive != ""})
 		}
-		m.probeFit(&mi, mf)
+		if mi.Gated && !mi.Allowed {
+			no := false
+			mi.Fits, mi.Reason = &no, notOnMsg(mf.Name)
+		} else {
+			m.probeFit(&mi, mf)
+		}
 		out = append(out, mi)
 	}
 	return out
+}
+
+func notOnMsg(name string) string {
+	return name + " is installed but not switched on yet. Switch it on below (your password is asked)."
+}
+
+// policyLines is what policy.yaml needs for a module the guard cannot read the needs of itself.
+func policyLines(mf *modules.Manifest) string {
+	var b strings.Builder
+	if mf.Runtime.Image != "" {
+		fmt.Fprintf(&b, "images: [\"@modules\", %q]\n", mf.Runtime.Image)
+	}
+	var ports []string
+	for _, p := range mf.Runtime.Ports {
+		ports = append(ports, strconv.Quote(modules.PortSpec(p)))
+	}
+	if len(ports) > 0 {
+		fmt.Fprintf(&b, "ports: [%s]\n", strings.Join(ports, ", "))
+	}
+	return b.String()
 }
 
 // probeFit dry-runs the module with its defaults (placeholders for what has
@@ -274,6 +363,11 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	if !ok {
 		return g, nil, fmt.Errorf("module %q is not installed", r.Module)
 	}
+	if !existing && !r.probe && m.gated(mf.ID) {
+		if allowed, _ := m.Allowed(); !slices.Contains(allowed, mf.ID) {
+			return g, nil, errors.New(notOnMsg(mf.Name))
+		}
+	}
 	if !existing {
 		for _, c := range m.Config.Games {
 			if c.ID == r.ID || c.ContainerName == r.ID {
@@ -298,6 +392,11 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		}
 		if err := plainValue(k, v); err != nil {
 			return g, nil, err
+		}
+		if k == "ram" && v != "" {
+			if _, err := modules.SizeBytes("ram", v); err != nil {
+				return g, nil, err
+			}
 		}
 		opts[k] = v
 	}
@@ -348,6 +447,12 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		if clash := m.portClash(g.ID, rd); clash != "" {
 			return g, nil, errors.New(clash)
 		}
+		if err := m.bindClash(g.ID, rd); err != nil {
+			return g, nil, err
+		}
+		if err := m.addrClash(g.ID, rd); err != nil {
+			return g, nil, err
+		}
 	}
 	return g, mf, nil
 }
@@ -389,11 +494,64 @@ func (m *Manager) portClash(id string, rd *modules.Rendered) string {
 	return ""
 }
 
+// addrClash refuses a fixed address (a macvlan LAN address, or one on the games network) that another dashboard
+// game already holds on the same network: two containers cannot own one address.
+func (m *Manager) addrClash(id string, rd *modules.Rendered) error {
+	for _, o := range m.entries {
+		if o.ID == id || o.rendered == nil {
+			continue
+		}
+		for net, mine := range rd.Scope.IPv4 {
+			for _, a := range mine {
+				if slices.Contains(o.rendered.Scope.IPv4[net], a) {
+					return fmt.Errorf("address %s on network %s is already used by %s: choose another address", a, net, o.ID)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// bindClash refuses a data folder inside another dashboard game's, or holding one: the guard does not load such a
+// scope (dockerguard.NestedBinds says why), so it is better refused here, with the game named.
+func (m *Manager) bindClash(id string, rd *modules.Rendered) error {
+	for _, o := range m.entries {
+		if o.ID == id || o.rendered == nil {
+			continue
+		}
+		for _, a := range rd.Scope.Binds {
+			for _, b := range o.rendered.Scope.Binds {
+				if err := dockerguard.NestedBinds(a, b); err != nil {
+					return fmt.Errorf("%w; %s uses that folder: choose another data folder under More settings", err, o.ID)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// policy is the policy in force: the file plus the ports of the modules switched on.
 func (m *Manager) policy() (*dockerguard.Policy, error) {
+	return m.loadPolicy(true)
+}
+
+// filePolicy is what policy.yaml itself says, without the allowed modules' ports.
+func (m *Manager) filePolicy() (*dockerguard.Policy, error) {
+	return m.loadPolicy(false)
+}
+
+func (m *Manager) loadPolicy(withAllowed bool) (*dockerguard.Policy, error) {
 	if m.PolicyFile == "" {
 		return nil, errors.New("no policy file is configured: managed games need an operator policy")
 	}
-	return dockerguard.LoadPolicy(m.PolicyFile)
+	d := modules.PolicyDefaults(m.Platform)
+	if withAllowed {
+		var err error
+		if d.Allowed, err = dockerguard.ReadAllowed(m.path(allowedFile)); err != nil {
+			return nil, err
+		}
+	}
+	return dockerguard.LoadPolicyWith(m.PolicyFile, d)
 }
 
 // renderAndFit renders the game and checks it against the policy.
@@ -421,16 +579,74 @@ func (m *Manager) renderAndFit(g config.GameConfig, mf *modules.Manifest) (*modu
 // the operator points at a folder that holds only game data). Two games from one module must never share a
 // folder (they would write the same world). A folder typed in the form is kept.
 func (m *Manager) withDefaults(r Request) Request {
-	if _, ok := m.Modules.Manifest(r.Module); !ok || r.Options["data_dir"] != "" || r.ID == "" {
+	if _, ok := m.Modules.Manifest(r.Module); !ok || r.ID == "" {
 		return r
 	}
-	opts := make(map[string]string, len(r.Options)+1)
+	opts := make(map[string]string, len(r.Options)+2)
 	for k, v := range r.Options {
 		opts[k] = v
 	}
-	opts["data_dir"] = r.ID
+	if spec := m.freePorts(r); spec != "" {
+		opts["ports"] = spec
+	}
+	if opts["data_dir"] == "" {
+		opts["data_dir"] = r.ID
+	}
 	r.Options = opts
 	return r
+}
+
+// freePorts picks host ports for a game that did not choose any, when the
+// module's own are taken by another dashboard game: each is moved up to the
+// next free one the policy admits (a second Palworld gets 8212, a third 8213).
+// It returns "" when the defaults are free or nothing workable is left, and
+// the clash check then says what is wrong.
+func (m *Manager) freePorts(r Request) string {
+	mf, ok := m.Modules.Manifest(r.Module)
+	if !ok || r.Options["ports"] != "" || len(mf.Runtime.Ports) == 0 {
+		return ""
+	}
+	pol, err := m.policy()
+	if err != nil {
+		return ""
+	}
+	used := map[string]bool{}
+	for _, o := range m.entries {
+		if o.ID == r.ID || o.rendered == nil {
+			continue
+		}
+		for _, p := range o.rendered.Scope.Ports {
+			used[p.HostPort+"/"+p.Proto] = true
+		}
+	}
+	hostIP := m.Platform.HostIP
+	if hostIP == "" {
+		hostIP = "0.0.0.0"
+	}
+	var spec []string
+	moved := false
+	for _, pt := range mf.Runtime.Ports {
+		proto := pt.Proto
+		if proto == "" {
+			proto = "udp"
+		}
+		h := pt.Port
+		for used[fmt.Sprintf("%d/%s", h, proto)] {
+			h++
+		}
+		if h != pt.Port {
+			moved = true
+			if h > 65535 || !pol.PortAllowed(hostIP, strconv.Itoa(h), proto) {
+				return ""
+			}
+		}
+		used[fmt.Sprintf("%d/%s", h, proto)] = true
+		spec = append(spec, fmt.Sprintf("%d:%d/%s", h, pt.Port, proto))
+	}
+	if !moved {
+		return ""
+	}
+	return strings.Join(spec, ",")
 }
 
 // Preview renders a Request without changing anything.
@@ -449,7 +665,8 @@ func (m *Manager) Preview(r Request) (*Plan, error) {
 	svc, _ := yaml.Marshal(map[string]any{r.ID: rd.Service})
 	sc, _ := json.MarshalIndent(rd.Scope, "", "  ")
 	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil,
-		Container: rd.Service.ContainerName, Image: rd.Service.Image, Ports: rd.Service.Ports, Memory: rd.Service.MemLimit}
+		Container: rd.Service.ContainerName, Image: rd.Service.Image, Ports: rd.Service.Ports, Memory: rd.Service.MemLimit,
+		Pinning: "Pinned: the container runs the exact image " + rd.Ref() + " points to when it is installed, by digest. Update image moves it on; Roll back returns to the one before."}
 	for _, v := range rd.Service.Volumes {
 		p.Folders = append(p.Folders, strings.SplitN(v, ":", 2)[0])
 	}
@@ -583,42 +800,142 @@ func (m *Manager) install(e *entry, g config.GameConfig, mode installMode) {
 func (m *Manager) doInstall(e *entry, g config.GameConfig, mode installMode) error {
 	m.mu.Lock()
 	rd := e.rendered
-	spec, err := rd.Spec(m.lookup(e))
-	if err == nil {
-		err = m.writeScopes()
-	}
+	ref, repo, name := rd.Ref(), rd.Repo, rd.Service.ContainerName
+	cur := e.pin
+	err := m.writeScopes()
 	m.mu.Unlock()
 	if err != nil {
 		return err
+	}
+	if name == "" {
+		name = rd.ID
 	}
 	ctx := m.ctx
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	exists, err := m.Docker.Exists(ctx, spec.Name)
+	exists, err := m.Docker.Exists(ctx, name)
 	if err != nil {
 		return err
 	}
-	if exists && mode.recreate {
-		if err := m.Docker.Remove(ctx, spec.Name); err != nil {
+	if exists && !mode.recreate {
+		return m.register(e, g) // a half-finished install whose container is already there
+	}
+	// A pull tolerated when it fails: an edit or rollback can use the image already on the host.
+	tolerant := mode.recreate && !mode.pull
+	pull := func(image string) error {
+		// The guard reloads on its own schedule; until it has our scope it answers 403.
+		err := m.retryDenied(ctx, func() error { return m.Docker.Pull(ctx, image) })
+		if err != nil && tolerant && !dockerctl.IsDenied(err) {
+			log.Printf("managed: pull %s failed, using the local image: %v", image, err)
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("pull %s: %w", image, err)
+		}
+		return nil
+	}
+
+	next := cur
+	if mode.pull || cur.Digest == "" || cur.Image != ref {
+		// Follow the tag: pull it and pin what it resolves to now.
+		before := cur.Digest
+		if before == "" && exists {
+			before, _ = m.digestOf(ctx, ref, repo) // an install from before pinning: what the tag pointed to until now
+		}
+		if cur.Image != "" && cur.Image != ref && !sameRepo(cur.Image, repo) {
+			before = "" // another repository: its digests mean nothing here
+		}
+		if err := pull(ref); err != nil {
+			if exists {
+				// The old container was never touched: keep the game on the dashboard as it was.
+				if rerr := m.register(e, g); rerr != nil {
+					log.Printf("managed: %s: %v", e.ID, rerr)
+				}
+			}
+			return err
+		}
+		d, derr := m.digestOf(ctx, ref, repo)
+		if derr != nil {
+			log.Printf("managed: %s: no digest to pin, running the tag: %v", e.ID, derr)
+		}
+		next = pin{Image: ref, Digest: d, PreviousDigest: cur.PreviousDigest}
+		if cur.Image != "" && !sameRepo(cur.Image, repo) {
+			next.PreviousDigest = ""
+		}
+		if before != "" && d != "" && before != d {
+			next.PreviousDigest = before
+		}
+		if mode.pull {
+			m.mu.Lock()
+			e.refresh = RefreshUpdated
+			if d != "" && d == before {
+				e.refresh = RefreshUpToDate // the same image (an older install is still recreated once, to pin it)
+			}
+			if d != "" && d == cur.Digest && exists {
+				// Nothing new upstream: the container stays exactly as it is.
+				e.refresh = RefreshUpToDate
+				m.mu.Unlock()
+				return m.register(e, g)
+			}
+			m.mu.Unlock()
+		}
+	} else if _, ierr := m.Docker.ImageDigests(ctx, repo+"@"+cur.Digest); ierr != nil {
+		// Pinned, but the image is not on the host (pruned): fetch exactly that one.
+		if err := pull(repo + "@" + cur.Digest); err != nil {
+			return err
+		}
+	}
+
+	m.mu.Lock()
+	e.pin = next
+	rd.Pin(next.Digest)
+	spec, err := rd.Spec(m.lookup(e))
+	if err == nil {
+		err = m.save()
+	}
+	m.mu.Unlock()
+	if err != nil {
+		return err
+	}
+	if exists {
+		if err := m.Docker.Remove(ctx, name); err != nil {
 			return fmt.Errorf("remove the old container: %w", err)
 		}
-		exists = false
 	}
-	if !exists {
-		// The guard reloads on its own schedule; until it has our scope it answers 403.
-		if err := m.retryDenied(ctx, func() error { return m.Docker.Pull(ctx, spec.Image) }); err != nil {
-			if mode.recreate && !mode.pull && !dockerctl.IsDenied(err) {
-				log.Printf("managed: pull %s failed, using the local image: %v", spec.Image, err)
-			} else {
-				return fmt.Errorf("pull %s: %w", spec.Image, err)
-			}
-		}
-		if err := m.retryDenied(ctx, func() error { return m.Docker.Create(ctx, spec) }); err != nil {
-			return fmt.Errorf("create container: %w", err)
-		}
+	if err := m.retryDenied(ctx, func() error { return m.Docker.Create(ctx, spec) }); err != nil {
+		return fmt.Errorf("create container: %w", err)
 	}
 	return m.register(e, g)
+}
+
+// digestOf is the registry digest (sha256:...) the local image ref carries for repo.
+func (m *Manager) digestOf(ctx context.Context, ref, repo string) (string, error) {
+	list, err := m.Docker.ImageDigests(ctx, ref)
+	if err != nil {
+		return "", err
+	}
+	want, _, _, err := dockerguard.ParseImageRef(repo)
+	if err != nil {
+		return "", err
+	}
+	for _, rd := range list {
+		name, d, ok := strings.Cut(rd, "@")
+		if !ok || !dockerguard.IsDigest(d) {
+			continue
+		}
+		if r, _, _, err := dockerguard.ParseImageRef(name); err == nil && r == want {
+			return d, nil
+		}
+	}
+	return "", fmt.Errorf("%s has no registry digest for %s (built locally?)", ref, repo)
+}
+
+// sameRepo reports whether the tag reference ref names repository repo.
+func sameRepo(ref, repo string) bool {
+	a, _, _, err1 := dockerguard.ParseImageRef(ref)
+	b, _, _, err2 := dockerguard.ParseImageRef(repo)
+	return err1 == nil && err2 == nil && a == b
 }
 
 func (m *Manager) retryDenied(ctx context.Context, f func() error) error {
@@ -640,12 +957,24 @@ func (m *Manager) retryDenied(ctx context.Context, f func() error) error {
 	}
 }
 
-// lookup resolves a compose variable: the game's own secrets, then the panel's environment.
+// lookup resolves a compose variable: the game's own secrets, then the panel's environment, but only for the
+// variables this game owns (TZ, and <ID>_<OPTION> for its module's options). Anything else is unset: an option
+// such as rcon_password_env, or a module's env, must not be able to name another variable of the panel's
+// environment (an OAuth client secret, a webhook URL, another game's password) and have it sent to the game.
 func (m *Manager) lookup(e *entry) func(string) (string, bool) {
 	secrets := m.secretsFor(e)
+	own := map[string]bool{"TZ": true}
+	if mf, ok := m.Modules.Manifest(e.Module); ok {
+		for _, o := range mf.Options {
+			own[envName(e.ID, o.Key)] = true
+		}
+	}
 	return func(name string) (string, bool) {
 		if v, ok := secrets[name]; ok {
 			return v, true
+		}
+		if !own[name] {
+			return "", false
 		}
 		return os.LookupEnv(name)
 	}
@@ -663,12 +992,10 @@ func (m *Manager) secretsFor(e *entry) map[string]string {
 func (m *Manager) register(e *entry, g config.GameConfig) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	secrets := m.secretsFor(e)
+	find := m.lookup(e)
 	lookup := func(name string) string {
-		if v, ok := secrets[name]; ok {
-			return v
-		}
-		return os.Getenv(name)
+		v, _ := find(name)
+		return v
 	}
 	def, runners := m.Modules.BuildOne(m.Config, g, m.Wire, lookup)
 	if mf, ok := m.Modules.Manifest(e.Module); ok {
@@ -703,13 +1030,33 @@ func (m *Manager) register(e *entry, g config.GameConfig) error {
 // Update changes an enabled game's settings and recreates its container with
 // them. The module cannot change. Secrets left out keep their stored value.
 // The game must be stopped; its data folder is untouched.
-func (m *Manager) Update(r Request) error { return m.reinstall(r, false) }
+func (m *Manager) Update(r Request) error { return m.reinstall(r, opEdit) }
 
-// Refresh pulls the game's image again and recreates its container with the
-// same settings.
-func (m *Manager) Refresh(id string) error { return m.reinstall(Request{ID: id}, true) }
+// Refresh pulls the game's image tag again and, only if it now points at
+// another image, recreates the container on that digest (the old one becomes
+// the rollback target). List reports the outcome in Info.Refresh once done.
+func (m *Manager) Refresh(id string) error { return m.reinstall(Request{ID: id}, opRefresh) }
 
-func (m *Manager) reinstall(r Request, refresh bool) error {
+// Rollback recreates a stopped game's container on its previous image digest,
+// and makes the current one the previous (so a second rollback undoes it).
+// ErrNoPrevious when there is none.
+func (m *Manager) Rollback(id string) error { return m.reinstall(Request{ID: id}, opRollback) }
+
+var errBusy = errors.New("the game is starting or stopping; wait for it to finish")
+
+type reinstallOp int
+
+const (
+	opEdit reinstallOp = iota
+	opRefresh
+	opRollback
+)
+
+func (m *Manager) reinstall(r Request, op reinstallOp) error {
+	refresh := op != opEdit
+	if m.Busy != nil && m.Busy(r.ID) {
+		return errBusy
+	}
 	ctx := m.ctx
 	if ctx == nil {
 		ctx = context.Background()
@@ -727,6 +1074,9 @@ func (m *Manager) reinstall(r Request, refresh bool) error {
 	}
 	if e.State == StateInstalling {
 		return errors.New("the game is still installing")
+	}
+	if op == opRollback && (e.PreviousDigest == "" || e.Image == "") {
+		return ErrNoPrevious
 	}
 	next := e.Request
 	if !refresh {
@@ -757,11 +1107,14 @@ func (m *Manager) reinstall(r Request, refresh bool) error {
 		e.stop = nil
 	}
 	m.Registry.Remove(e.ID)
-	e.Request, e.rendered, e.State, e.Error = next, rd, StateInstalling, ""
+	e.Request, e.rendered, e.State, e.Error, e.refresh = next, rd, StateInstalling, "", ""
+	if op == opRollback {
+		e.Digest, e.PreviousDigest = e.PreviousDigest, e.Digest
+	}
 	if err := m.save(); err != nil {
 		return err
 	}
-	go m.install(e, g, installMode{recreate: true, pull: refresh})
+	go m.install(e, g, installMode{recreate: true, pull: op == opRefresh})
 	return nil
 }
 
@@ -773,6 +1126,9 @@ func (m *Manager) Disable(id string) error {
 	m.mu.Unlock()
 	if e == nil {
 		return fmt.Errorf("game %q is not a dashboard-enabled game", id)
+	}
+	if m.Busy != nil && m.Busy(id) {
+		return errBusy
 	}
 	ctx := m.ctx
 	if ctx == nil {
@@ -818,8 +1174,13 @@ func (m *Manager) List() []Info {
 		for k, v := range e.Options {
 			opts[k] = v
 		}
-		out = append(out, Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error,
-			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Options: opts})
+		in := Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error,
+			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Options: opts,
+			Image: e.Image, Digest: e.Digest, PreviousDigest: e.PreviousDigest, Refresh: e.refresh}
+		if in.Image == "" && e.rendered != nil {
+			in.Image = e.rendered.Ref()
+		}
+		out = append(out, in)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
 	return out
@@ -828,11 +1189,14 @@ func (m *Manager) List() []Info {
 // ---- persistence
 
 type stateFile struct {
-	Games []struct {
-		Request
-		State string `json:"state"`
-		Error string `json:"error,omitempty"`
-	} `json:"games"`
+	Games []savedGame `json:"games"`
+}
+
+type savedGame struct {
+	Request
+	State string `json:"state"`
+	Error string `json:"error,omitempty"`
+	pin
 }
 
 func (m *Manager) path(name string) string { return filepath.Join(m.Dir, name) }
@@ -844,11 +1208,7 @@ func (m *Manager) save() error {
 	for _, e := range m.entries {
 		req := e.Request
 		req.Secrets = nil
-		st.Games = append(st.Games, struct {
-			Request
-			State string `json:"state"`
-			Error string `json:"error,omitempty"`
-		}{req, e.State, e.Error})
+		st.Games = append(st.Games, savedGame{req, e.State, e.Error, e.pin})
 		if len(e.Secrets) > 0 {
 			secrets[e.ID] = e.Secrets
 		}
@@ -935,9 +1295,12 @@ func (m *Manager) Restore(ctx context.Context) error {
 		req := s.Request
 		req.Secrets = secrets[req.ID]
 		g, mf, err := m.validate(req, true)
-		e := &entry{Request: req, State: s.State, Error: s.Error}
+		e := &entry{Request: req, State: s.State, Error: s.Error, pin: s.pin}
 		if err == nil {
 			e.rendered, err = mf.Render(g, m.Platform)
+		}
+		if err == nil && e.Digest != "" && e.Image == e.rendered.Ref() {
+			e.rendered.Pin(e.Digest)
 		}
 		if err != nil {
 			log.Printf("managed: %s no longer renders: %v", req.ID, err)
@@ -965,7 +1328,18 @@ func (m *Manager) Restore(ctx context.Context) error {
 // each, its module's backup command (and listing) in the container named after
 // the game. The commands come from the installed modules, never from the saved
 // state, so what the panel writes there can choose a game but not a command.
-func ExecRules(dir string, mods *modules.Set) ([]execguard.Rule, error) {
+// It also cannot choose a container the policy keeps out of its reach: a game
+// whose id is not a name the policy lets the panel manage gets no rule, so a
+// tampered games.json cannot aim a backup command at an unrelated container.
+// The policy file is required; unreadable, no rules are issued.
+func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, error) {
+	if policyFile == "" {
+		return nil, errors.New("exec rules for dashboard games need managed.policy_file")
+	}
+	pol, err := dockerguard.LoadPolicy(policyFile) // only names are read here, so nothing is resolved
+	if err != nil {
+		return nil, fmt.Errorf("exec rules: %w", err)
+	}
 	b, err := os.ReadFile(filepath.Join(dir, "games.json")) // #nosec G304 -- dir is the operator-set managed.dir; the file name is fixed
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
@@ -980,7 +1354,7 @@ func ExecRules(dir string, mods *modules.Set) ([]execguard.Rule, error) {
 	var rules []execguard.Rule
 	for _, g := range st.Games {
 		mf, ok := mods.Manifest(g.Module)
-		if !ok || mf.Backup == nil || !idRe.MatchString(g.ID) {
+		if !ok || mf.Backup == nil || !idRe.MatchString(g.ID) || !pol.NameAllowed(g.ID) {
 			continue
 		}
 		rules = append(rules, execguard.Rule{Container: g.ID, Cmd: mf.Backup.Exec})
@@ -1002,6 +1376,8 @@ type PolicyDoc struct {
 	Exec      bool     `json:"exec" yaml:"exec"`
 	Labels    []string `json:"labels" yaml:"labels,omitempty"`
 	MaxScopes int      `json:"max_scopes" yaml:"max_scopes"`
+	// PinDigests: managed creates must name their image by digest. Nil in a save keeps what the file has.
+	PinDigests *bool `json:"pin_digests,omitempty" yaml:"pin_digests"`
 	// Exceptions are shown, never edited here: SetPolicy keeps whatever the file has.
 	Exceptions []dockerguard.Exception `json:"exceptions,omitempty" yaml:"exceptions,omitempty"`
 }
@@ -1014,14 +1390,74 @@ type PolicyState struct {
 
 // Policy reads the policy in force.
 func (m *Manager) Policy() (PolicyState, error) {
-	p, err := m.policy()
+	p, err := m.filePolicy()
 	if err != nil {
 		return PolicyState{}, err
 	}
 	return PolicyState{Editable: m.PolicyEditable, Policy: PolicyDoc{
 		GamesRoot: p.GamesRoot, Names: p.Names, Images: p.Images, Networks: p.Networks, Ports: p.Ports,
 		HostIPs: p.HostIPs, Exec: p.Exec, Labels: p.Labels, MaxScopes: p.MaxScopes, Exceptions: p.Exceptions,
+		PinDigests: &p.PinDigests,
 	}}, nil
+}
+
+// narrowOnly refuses an edit that would let the panel do more than the file
+// on the host already allows. A panel that can rewrite its own policy could
+// otherwise widen it as far as it likes, so the dashboard may only tighten:
+// every list entry must already be in the file (compared exactly, since two
+// patterns cannot be compared by what they match), numbers may only fall and
+// switches may only turn toward the stricter setting. Widening is done in
+// policy.yaml on the host.
+func narrowOnly(cur *dockerguard.Policy, d PolicyDoc) error {
+	const hint = "the dashboard can only tighten the policy; widen it in policy.yaml on the host"
+	subset := func(name string, now, was []string) error {
+		for _, e := range now {
+			if !slices.Contains(was, e) {
+				return fmt.Errorf("%s: %q is not in the current policy (%s)", name, e, hint)
+			}
+		}
+		return nil
+	}
+	if d.GamesRoot != cur.GamesRoot {
+		return fmt.Errorf("games_root cannot be changed here (%s)", hint)
+	}
+	for _, l := range []struct {
+		name     string
+		now, was []string
+	}{
+		{"names", d.Names, cur.Names}, {"images", d.Images, cur.Images},
+		{"networks", d.Networks, cur.Networks}, {"ports", d.Ports, cur.Ports},
+		{"labels", d.Labels, cur.Labels},
+	} {
+		if len(l.now) == 0 && len(l.was) > 0 && l.name != "ports" && l.name != "labels" {
+			return fmt.Errorf("%s: a list cannot be emptied here, because an empty one means the defaults (%s)", l.name, hint)
+		}
+		if err := subset(l.name, l.now, l.was); err != nil {
+			return err
+		}
+	}
+	if len(cur.HostIPs) > 0 { // an empty list is unrestricted, so only a listed one is a limit to keep
+		if len(d.HostIPs) == 0 {
+			return fmt.Errorf("host_ips: clearing the list removes the limit (%s)", hint)
+		}
+		if err := subset("host_ips", d.HostIPs, cur.HostIPs); err != nil {
+			return err
+		}
+	}
+	if d.Exec && !cur.Exec {
+		return fmt.Errorf("exec cannot be turned on here (%s)", hint)
+	}
+	if cur.PinDigests && d.PinDigests != nil && !*d.PinDigests {
+		return fmt.Errorf("pin_digests cannot be turned off here (%s)", hint)
+	}
+	max := cur.MaxScopes
+	if max <= 0 {
+		max = 32 // the guard's default
+	}
+	if d.MaxScopes > max {
+		return fmt.Errorf("max_scopes cannot be raised above %d here (%s)", max, hint)
+	}
+	return nil
 }
 
 // SetPolicy validates and rewrites policy.yaml. The guard reads the same file and applies it within
@@ -1032,8 +1468,19 @@ func (m *Manager) SetPolicy(d PolicyDoc) error {
 	}
 	// An exception loosens the guard for one container, so only the file on the host can add or change one.
 	d.Exceptions = nil
-	if cur, err := m.policy(); err == nil {
+	cur, curErr := m.filePolicy()
+	if curErr == nil {
 		d.Exceptions = cur.Exceptions
+	}
+	if d.PinDigests == nil { // not sent: keep the file's setting
+		keep := curErr == nil && cur.PinDigests
+		d.PinDigests = &keep
+	}
+	if curErr != nil {
+		return fmt.Errorf("the current policy cannot be read, so it cannot be narrowed: %w", curErr)
+	}
+	if err := narrowOnly(cur, d); err != nil {
+		return err
 	}
 	body, err := yaml.Marshal(d)
 	if err != nil {

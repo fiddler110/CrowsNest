@@ -10,6 +10,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
+	"github.com/fiddler110/crowsnest/internal/dockerguard"
 	"gopkg.in/yaml.v3"
 )
 
@@ -25,6 +26,12 @@ type Runtime struct {
 	Tag       string        `yaml:"tag"`   // default "latest"
 	StopGrace time.Duration `yaml:"stop_grace"`
 	Memory    string        `yaml:"memory"` // compose mem_limit, e.g. 10g
+	// RAM is the memory the game typically uses, e.g. 6g. It is only a
+	// planning figure: a start is refused when the host has less free than
+	// this (see internal/memadmit), until the game has run and its measured
+	// peak takes over. Unset, memory is used; with neither there is no check.
+	// An instance may override it with the reserved option ram.
+	RAM string `yaml:"ram"`
 	// DataDir is the folder under platform.games_root holding this game's
 	// data. An instance may override it with the reserved option data_dir.
 	DataDir string        `yaml:"data_dir"`
@@ -72,6 +79,9 @@ type ServiceNet struct {
 type RuntimePort struct {
 	Port  int    `yaml:"port"`
 	Proto string `yaml:"proto"` // udp (default) or tcp
+	// Why says in a few words what players or the game use this port for. The
+	// Games page shows it beside the port.
+	Why string `yaml:"why,omitempty"`
 }
 
 // DataMount is a bind mount of <games_root>/<data_dir>/<Sub> at Path.
@@ -138,7 +148,10 @@ type GuardScope struct {
 type Rendered struct {
 	ID      string
 	Service Service
-	Scope   GuardScope
+	// Repo and Tag are the image as the module and options name it. Service.Image
+	// is Repo:Tag until Pin names one exact image by digest.
+	Repo, Tag string
+	Scope     GuardScope
 	// EnvVars are the .env variables the service reads, name -> default
 	// ("" for secrets and unset values), in a stable order.
 	EnvVars []EnvVar
@@ -200,11 +213,11 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		return nil, fmt.Errorf("game %q: data_dir %q must be a plain relative folder name", g.ID, dataDir)
 	}
 
-	r := &Rendered{ID: g.ID}
+	r := &Rendered{ID: g.ID, Repo: image, Tag: tag}
 	svc := Service{
 		Image: image + ":" + tag, Profiles: []string{g.ID}, ContainerName: g.ContainerName,
 		Restart:  "unless-stopped",
-		Labels:   map[string]string{"com.centurylinklabs.watchtower.enable": "false"},
+		Labels:   map[string]string{"com.centurylinklabs.watchtower.enable": "false", dockerguard.OwnerLabel: "true"},
 		Networks: []string{network}, MemLimit: rt.Memory,
 	}
 	if rt.StopGrace > 0 {
@@ -404,6 +417,21 @@ func ComposeFile(rs []*Rendered, network string) ([]byte, error) {
 	return []byte(out.String()), nil
 }
 
+// Ref is the tag reference a pull resolves (repo:tag).
+func (r *Rendered) Ref() string { return r.Repo + ":" + r.Tag }
+
+// Pin makes the service (and the container Spec creates) run exactly the image
+// with this digest (sha256:...) instead of whatever the tag points at now. An
+// empty digest goes back to the tag. The guard scope is unchanged: it names
+// repositories, never tags or digests.
+func (r *Rendered) Pin(digest string) {
+	if digest == "" {
+		r.Service.Image = r.Ref()
+		return
+	}
+	r.Service.Image = r.Repo + "@" + digest
+}
+
 // ScopesJSON renders GUARD_SCOPES for the given games.
 func ScopesJSON(rs []*Rendered) ([]byte, error) {
 	scopes := make([]GuardScope, 0, len(rs))
@@ -467,6 +495,15 @@ func expandCompose(s string, lookup func(string) (string, bool)) string {
 		}
 	}
 	return out.String()
+}
+
+// SizeBytes parses sizes like 512m or 10g (k, m, g; no suffix is bytes).
+func SizeBytes(field, s string) (int64, error) {
+	n, err := parseSize(s)
+	if err != nil {
+		return 0, fmt.Errorf("%s %q must look like 512m or 10g", field, s)
+	}
+	return n, nil
 }
 
 func parseSize(s string) (int64, error) {

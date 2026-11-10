@@ -1,0 +1,28 @@
+# CrowsNest quickstart config. Reference for every option: ../config.yaml.example
+server:
+  addr: ":5000"
+  session_secret_file: /app/data/session_secret
+  settings_file: /app/data/settings.json
+  history_file: /app/data/events.jsonl
+  # Every Docker call goes through the guard; never the raw socket.
+  docker_host: tcp://dockerproxy-crowsnest:2375
+  # Set to true once you serve CrowsNest over HTTPS (marks the cookie Secure, adds HSTS).
+  secure_cookies: false
+  # Behind a reverse proxy, list its address so the sign-in rate limit counts real visitors:
+  # trusted_proxies: ["172.30.0.2/32"]
+
+users_file: /app/data/users.env
+
+# Where game data lives on the HOST, and the address players connect to (shown on the cards).
+# games_root must match games_root in policy/policy.yaml.
+platform:
+  games_root: /srv/games
+  host_ip: 0.0.0.0
+
+# Extra game modules (crowsnest module install ...) live here; restart after installing one.
+modules_dir: /app/data/modules
+
+# Games are added from the Games page, inside the limits in policy/policy.yaml.
+managed:
+  dir: /app/data/managed
+  policy_file: /etc/crowsnest/policy/policy.yaml

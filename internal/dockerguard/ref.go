@@ -74,3 +74,10 @@ func repoOrNone(ref any) string {
 	}
 	return repo
 }
+
+// ParseImageRef splits an image reference into its fully qualified repository
+// (docker.io/library/x for "x"), tag and digest, exactly as the guard reads it.
+func ParseImageRef(ref string) (repo, tag, digest string, err error) { return parseRef(ref) }
+
+// IsDigest reports whether s is a sha256 image digest as the guard accepts it.
+func IsDigest(s string) bool { return digestRe.MatchString(s) }

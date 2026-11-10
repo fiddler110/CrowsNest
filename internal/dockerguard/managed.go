@@ -3,9 +3,11 @@ package dockerguard
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -20,6 +22,43 @@ type Sources struct {
 	Base        string
 	ManagedFile string
 	PolicyFile  string
+	// Defaults are what a policy that leaves out images or networks gets.
+	Defaults Defaults
+	// AllowedFile lists the modules the operator switched on (see AllowedPath).
+	// Empty means none are.
+	AllowedFile string
+}
+
+// AllowedPath is where the allowed-modules file sits, beside the managed scopes file.
+func AllowedPath(managedFile string) string {
+	if managedFile == "" {
+		return ""
+	}
+	return filepath.Join(filepath.Dir(managedFile), "allowed.json")
+}
+
+// ReadAllowed reads the module ids switched on. A missing or empty file is none;
+// anything unparseable is an error, so a damaged file is never read as "all".
+func ReadAllowed(file string) ([]string, error) {
+	if file == "" {
+		return nil, nil
+	}
+	b, err := os.ReadFile(file) // #nosec G304 -- operator-supplied path
+	if errors.Is(err, os.ErrNotExist) || (err == nil && strings.TrimSpace(string(b)) == "") {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var doc struct {
+		Modules []string `json:"modules"`
+	}
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		return nil, fmt.Errorf("%s: %w", file, err)
+	}
+	return doc.Modules, nil
 }
 
 // Result is one load of the sources.
@@ -52,7 +91,13 @@ func (s Sources) Load() (*Result, error) {
 	if s.PolicyFile == "" {
 		return nil, errors.New("GUARD_SCOPES_FILE needs GUARD_POLICY: managed scopes are only loaded inside an operator policy")
 	}
-	pol, err := LoadPolicy(s.PolicyFile)
+	d := s.Defaults
+	allowed, err := ReadAllowed(s.AllowedFile)
+	if err != nil {
+		return nil, err
+	}
+	d.Allowed = allowed
+	pol, err := LoadPolicyWith(s.PolicyFile, d)
 	if err != nil {
 		return nil, err
 	}
@@ -79,12 +124,33 @@ func (s Sources) Load() (*Result, error) {
 				res.Rejected = append(res.Rejected, fmt.Errorf("managed scope %s: %w", m.Name, err))
 				continue
 			}
+			if err := nestsIn(m, res.Scopes); err != nil {
+				res.Rejected = append(res.Rejected, fmt.Errorf("managed scope %s: %w", m.Name, err))
+				continue
+			}
+			m.pinDigest = pol.PinDigests
+			m.needsOwner = len(pol.Names) == 0 && pol.exception(m.Name) == nil
 			taken[m.Name] = true
 			res.Scopes = append(res.Scopes, m)
 			res.Managed++
 		}
 	}
 	return &res, nil
+}
+
+// nestsIn is an error when a bind of s is inside a bind of a scope already in
+// force, or holds one (see NestedBinds). The operator's own scopes count too.
+func nestsIn(s *Scope, admitted []*Scope) error {
+	for _, o := range admitted {
+		for _, a := range s.Binds {
+			for _, b := range o.Binds {
+				if err := NestedBinds(a, b); err != nil {
+					return fmt.Errorf("%w; %s binds it", err, o.Name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // loadManaged parses the managed file: a missing or empty file or "[]" is no
@@ -100,7 +166,7 @@ func loadManaged(raw string) ([]*Scope, error) {
 // signature identifies the bytes of the files a load depends on.
 func (s Sources) signature() [sha256.Size]byte {
 	h := sha256.New()
-	for _, f := range []string{s.ManagedFile, s.PolicyFile} {
+	for _, f := range []string{s.ManagedFile, s.PolicyFile, s.AllowedFile} {
 		b, err := os.ReadFile(f) // #nosec G304 -- operator-supplied paths
 		if err != nil {
 			b = []byte("missing:" + f)

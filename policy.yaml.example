@@ -9,4 +9,9 @@ networks: [crowsnest-games-net]
 ports: ["25000-28999/udp", "25565/tcp"]
 host_ips: [10.0.0.2]
 exec: false
+# Dashboard games run their image by digest (repo@sha256:...), resolved when they are
+# enabled or updated, so an upstream push changes nothing until you press Update image.
+# true: the guard refuses a dashboard-game create that names a tag. Pulls by tag stay
+# allowed; your own GUARD_SCOPES are not affected.
+pin_digests: true
 max_scopes: 32

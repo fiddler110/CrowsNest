@@ -152,10 +152,19 @@ type GameDef struct {
 	// variable is unset or empty are dropped.
 	ConnectSecrets []ConnectSecret
 
+	// Accent is the card's accent colour ("#rrggbb") from the game's module;
+	// empty keeps the dashboard's default.
+	Accent string
+
 	// RestartCooldown is the minimum time between stopping this game and
 	// starting it again; zero means no limit. Some servers (Palworld)
 	// crash if brought back up seconds after a shutdown.
 	RestartCooldown time.Duration
+
+	// RAMEstimate is the memory in bytes the game is declared to need, from
+	// its module (runtime.ram) or the instance's ram option. Zero means
+	// undeclared. Memory admission prefers the measured peak once known.
+	RAMEstimate uint64
 
 	Status       StatusChecker
 	Players      PlayerCounter

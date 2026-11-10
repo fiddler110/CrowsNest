@@ -111,8 +111,18 @@ func ClientIP(r *http.Request, trustedProxies []*net.IPNet) string {
 
 	if remoteIP != nil && isTrusted(remoteIP, trustedProxies) {
 		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if first := strings.TrimSpace(strings.Split(xff, ",")[0]); first != "" {
-				return first
+			// Walk from the right: a proxy appends the address it saw, so
+			// only the entries after the last untrusted hop are reliable;
+			// anything further left the client may have forged.
+			parts := strings.Split(xff, ",")
+			for i := len(parts) - 1; i >= 0; i-- {
+				ip := net.ParseIP(strings.TrimSpace(parts[i]))
+				if ip == nil {
+					break
+				}
+				if !isTrusted(ip, trustedProxies) {
+					return ip.String()
+				}
 			}
 		}
 	}

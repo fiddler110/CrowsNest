@@ -80,7 +80,7 @@ var (
 )
 
 // ParseGoogleUsers parses an allowlist of "name=email" pairs separated by
-// commas, spaces or newlines, e.g. "scott=scott@gmail.com,friend=f@gmail.com".
+// commas, spaces or newlines, e.g. "alex=alex@example.com,friend=f@gmail.com".
 // Names are CrowsNest usernames (lowercase letters, digits, '-' and '_'); one
 // name may have several emails, but each email maps to exactly one name.
 func ParseGoogleUsers(spec string) (GoogleUsers, error) {

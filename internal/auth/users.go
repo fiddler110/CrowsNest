@@ -7,8 +7,10 @@ package auth
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -98,7 +100,7 @@ type UserRecord struct {
 	// re-authenticate.
 	ValidAfter time.Time
 
-	// Role is "admin" or "player"; empty means admin (see EffectiveRole).
+	// Role is "admin" or "player"; empty means admin for a password account and player otherwise (see EffectiveRole).
 	Role Role
 
 	// GoogleEmail, when set, lets that Google account sign in as this user
@@ -271,10 +273,51 @@ func writeUsers(path string, users Users) error {
 		}
 	}
 
-	if err := os.WriteFile(path, []byte(b.String()), 0o600); err != nil {
+	// Temp file + rename so a crash never leaves a truncated users file.
+	tmp, err := os.CreateTemp(filepath.Dir(path), ".users-*.tmp")
+	if err != nil {
+		return fmt.Errorf("auth: write users file %s: %w", path, err)
+	}
+	_, werr := tmp.WriteString(b.String())
+	cerr := tmp.Close()
+	if err := errors.Join(werr, cerr, os.Chmod(tmp.Name(), 0o600)); err != nil {
+		os.Remove(tmp.Name())
+		return fmt.Errorf("auth: write users file %s: %w", path, err)
+	}
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		os.Remove(tmp.Name())
 		return fmt.Errorf("auth: write users file %s: %w", path, err)
 	}
 	return nil
+}
+
+// ClearPasswordHash removes username's password hash, so the stored hash can't be
+// used to sign in any more. otherLogin says the user can still sign in some other
+// way (Google); without it the call is refused, since the account would be locked
+// out. The user's effective role is written down first: a password account with no
+// role counts as an admin, and without the hash it would silently become a player.
+func ClearPasswordHash(path, username string, otherLogin bool) error {
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(username)
+	rec, ok := existing[key]
+	if !ok {
+		return fmt.Errorf("auth: no such user %q in %s", username, path)
+	}
+	if rec.Hash == "" {
+		return fmt.Errorf("auth: %q has no password to clear", username)
+	}
+	if !otherLogin && rec.GoogleEmail == "" {
+		return fmt.Errorf("auth: %q has no other way to sign in (no Google account), so clearing the password would lock them out", username)
+	}
+	rec.Role = rec.EffectiveRole()
+	rec.Hash = ""
+	existing[key] = rec
+	return writeUsers(path, existing)
 }
 
 // SetGoogleEmail sets (or, with "", clears) the Google account allowed to
@@ -294,4 +337,31 @@ func SetGoogleEmail(path, username, email string) error {
 	rec.GoogleEmail = strings.ToLower(email)
 	existing[key] = rec
 	return writeUsers(path, existing)
+}
+
+// ErrSetupDone is returned by CreateFirstAdmin once the file has any user.
+var ErrSetupDone = errors.New("auth: setup is already done")
+
+// CreateFirstAdmin adds the first user, an admin, and fails with ErrSetupDone
+// if any user exists. The check and the write share one lock, so two setup
+// requests cannot both win.
+func CreateFirstAdmin(path, username, hash, googleEmail string) error {
+	username = strings.ToLower(username)
+	if err := ValidateUsername(username); err != nil {
+		return err
+	}
+	googleEmail = strings.ToLower(googleEmail)
+	if hash == "" && googleEmail == "" {
+		return fmt.Errorf("auth: a user needs a password or a Google email")
+	}
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	if len(existing) > 0 {
+		return ErrSetupDone
+	}
+	return writeUsers(path, Users{username: {Hash: hash, Role: RoleAdmin, GoogleEmail: googleEmail}})
 }

@@ -52,7 +52,7 @@ func (a *App) userList(self string) []userView {
 		for _, name := range a.Google.Users {
 			v := byName[name]
 			if v == nil {
-				v = &userView{Username: name, Role: auth.RoleAdmin}
+				v = &userView{Username: name, Role: auth.UserRecord{}.EffectiveRole()}
 				byName[name] = v
 			}
 			v.Google = true

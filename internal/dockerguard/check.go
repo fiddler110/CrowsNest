@@ -210,8 +210,10 @@ func (g *Guard) containerInScope(c any) bool {
 	names, _ := m["Names"].([]any)
 	for _, n := range names {
 		s, ok := n.(string)
-		if ok && strings.HasPrefix(s, "/") && g.cur().byName[s[1:]] != nil {
-			return true
+		if ok && strings.HasPrefix(s, "/") {
+			if sc := g.cur().byName[s[1:]]; sc != nil && sc.ownedBy(m["Labels"]) {
+				return true
+			}
 		}
 	}
 	return false
@@ -237,7 +239,10 @@ func (g *Guard) networkView(net any) map[string]any {
 		kept := map[string]any{}
 		for id, c := range cs {
 			if cm, ok := c.(map[string]any); ok {
-				if n, _ := cm["Name"].(string); g.cur().byName[n] != nil {
+				n, _ := cm["Name"].(string)
+				sc := g.cur().byName[n]
+				// the network listing carries no labels, so a scope that needs the ownership label is checked on the container itself
+				if sc != nil && (!sc.needsOwner || sc.ownedBy(containerLabels(g.inspect(id)))) {
 					kept[id] = c
 				}
 			}
@@ -302,57 +307,97 @@ func filterList(doc any, keep func(any) bool) []any {
 
 // ---- scope lookups (through the engine)
 
-func (g *Guard) scopeOf(ref string) *Scope {
+var containerIDRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// resolved is a container ref as the engine resolved it, from one inspect: the
+// full id, its name without the "/", and the inspect document. Every decision
+// about a container ref is made on one resolved, and the engine is then sent
+// its id, never the client's ref: a name or id prefix the engine resolved
+// again could by then mean another container (a collision, or a container
+// replaced in between).
+type resolved struct {
+	id, name string
+	info     map[string]any
+}
+
+// resolve inspects ref once. It is nil when the container is missing or its
+// inspect has no plain full id and name.
+func (g *Guard) resolve(ref string) *resolved {
 	info := g.inspect(ref)
 	if info == nil {
 		return nil
 	}
+	id, _ := info["Id"].(string)
 	name, ok := info["Name"].(string)
-	if !ok {
+	if !ok || !containerIDRe.MatchString(id) {
 		return nil
 	}
-	return g.cur().byName[strings.TrimLeft(name, "/")]
+	return &resolved{id: id, name: strings.TrimLeft(name, "/"), info: info}
+}
+
+// path is /containers/<full id> followed by rest ("/json", "" ...).
+func (c *resolved) path(rest string) string { return "/containers/" + c.id + rest }
+
+// scopeOf is the scope whose container c is, or nil.
+func (g *Guard) scopeOf(c *resolved) *Scope {
+	if c == nil {
+		return nil
+	}
+	s := g.cur().byName[c.name]
+	if s != nil && !s.ownedBy(containerLabels(c.info)) {
+		return nil
+	}
+	return s
+}
+
+// containerLabels is the label map of an inspect document.
+func containerLabels(info map[string]any) any {
+	cfg, _ := info["Config"].(map[string]any)
+	return cfg["Labels"]
 }
 
 var tmpNameRe = regexp.MustCompile(`^([0-9a-f]{12})_(.+)$`)
 
 // tmpScopeOf is the scope of a container holding compose's temporary recreate
 // name "<first 12 of the old id>_<scope name>".
-func (g *Guard) tmpScopeOf(ref string) *Scope {
-	info := g.inspect(ref)
-	if info == nil {
+func (g *Guard) tmpScopeOf(c *resolved) *Scope {
+	if c == nil {
 		return nil
 	}
-	name, ok := info["Name"].(string)
-	if !ok {
-		return nil
-	}
-	m := tmpNameRe.FindStringSubmatch(strings.TrimLeft(name, "/"))
+	m := tmpNameRe.FindStringSubmatch(c.name)
 	if m == nil {
 		return nil
 	}
-	return g.cur().byName[m[2]]
+	s := g.cur().byName[m[2]]
+	if s != nil && !s.ownedBy(containerLabels(c.info)) {
+		return nil
+	}
+	return s
 }
 
 // recreateCopy is true for the container compose created under its temporary
 // name "<old id12>_<scope>" while the scope's current container still has that id.
-func (g *Guard) recreateCopy(ref string) bool {
-	info := g.inspect(ref)
-	if info == nil {
+func (g *Guard) recreateCopy(c *resolved) bool {
+	if c == nil {
 		return false
 	}
-	name, _ := info["Name"].(string)
-	m := tmpNameRe.FindStringSubmatch(strings.TrimLeft(name, "/"))
+	m := tmpNameRe.FindStringSubmatch(c.name)
 	if m == nil || g.cur().byName[m[2]] == nil {
 		return false
 	}
-	old := g.inspect(m[2])
+	return g.currentHasID(m[2], m[1])
+}
+
+// currentHasID is true while the container named name (by that name, not as
+// an id prefix) has an id starting with id12.
+func (g *Guard) currentHasID(name, id12 string) bool {
+	old := g.inspect(name)
 	if old == nil {
 		return false
 	}
 	id, _ := old["Id"].(string)
 	oldName, _ := old["Name"].(string)
-	return strings.HasPrefix(id, m[1]) && strings.TrimLeft(oldName, "/") == m[2]
+	return strings.HasPrefix(id, id12) && strings.TrimLeft(oldName, "/") == name
 }
 
 var netIDRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -400,13 +445,8 @@ func (g *Guard) checkCreate(q query, body any) error {
 	if m := tmpNameRe.FindStringSubmatch(name); scope == nil && m != nil && g.cur().byName[m[2]] != nil {
 		// compose's recreate: the replacement is made as <old id12>_<scope> and renamed once the old one is gone.
 		// Only while the current container of that name really has that id (and is that container, not an id prefix).
-		old := g.inspect(m[2])
-		if old != nil {
-			id, _ := old["Id"].(string)
-			oldName, _ := old["Name"].(string)
-			if strings.HasPrefix(id, m[1]) && strings.TrimLeft(oldName, "/") == m[2] {
-				scope = g.cur().byName[m[2]]
-			}
+		if g.currentHasID(m[2], m[1]) {
+			scope = g.cur().byName[m[2]]
 		}
 	}
 	if scope == nil {
@@ -419,9 +459,18 @@ func (g *Guard) checkCreate(q query, body any) error {
 	if err != nil {
 		return err
 	}
+	if !scope.ownedBy(obj["Labels"]) {
+		return deny(403, "%s must be created with the label %s=true", quote(name), OwnerLabel)
+	}
 	image := obj["Image"]
 	if repo := repoOrNone(image); repo == "" || !scope.Images[repo] {
 		return deny(403, "image %s is not allowed for %s", quote(image), quote(name))
+	}
+	if scope.pinDigest {
+		// repoOrNone accepted it, so it is a string that parses
+		if _, tag, digest, _ := parseRef(image.(string)); digest == "" || tag != "" {
+			return deny(403, "image %s for %s must be pinned by digest (repo@sha256:<64 hex>, no tag): the policy sets pin_digests", quote(image), quote(name))
+		}
 	}
 	host, err := checkObject(obj["HostConfig"], hostConfigRules(scope), "HostConfig")
 	if err != nil {
@@ -520,53 +569,65 @@ var (
 
 func noSuchContainer(ref string) error { return deny(404, "No such container: %s", quote(ref)) }
 
-// check decides one request. A nil hook with a nil error passes it on as it
-// is. Any error is a refusal; anything check does not foresee is one too.
-func (g *Guard) check(method, path string, q query, body any) (*hook, error) {
+// check decides one request. A nil error passes it on with the path fwd (the
+// checked path, with a container ref replaced by the full id it was checked
+// as) and the hook, if any, applied to the answer. Any error is a refusal;
+// anything check does not foresee is one too.
+func (g *Guard) check(method, path string, q query, body any) (hk *hook, fwd string, err error) {
+	fwd = path
 	switch method {
 	case "HEAD":
 		if path == "/_ping" {
-			return nil, nil
+			return nil, fwd, nil
 		}
-		return nil, deny(405, "method not allowed")
+		return nil, "", deny(405, "method not allowed")
 	case "GET":
-		return g.checkGet(path, q)
+		hk, err = g.checkGet(path, q, &fwd)
 	case "POST":
-		return g.checkPost(path, q, body)
-	case "DELETE": // a stopped scope container (or compose's temporary copy), never its volumes or links
-		m := containerRe.FindStringSubmatch(path)
-		if m == nil {
-			return nil, deny(403, "delete not allowed")
-		}
-		if g.scopeOf(m[1]) == nil && g.tmpScopeOf(m[1]) == nil {
-			return nil, noSuchContainer(m[1])
-		}
-		if err := q.onlyParams([]string{"v", "force", "link"}, "remove"); err != nil {
-			return nil, err
-		}
-		for _, key := range []string{"v", "link"} {
-			v, err := q.one(key, "0")
-			if err != nil {
-				return nil, err
-			}
-			if v != "0" && v != "false" {
-				return nil, deny(403, "remove: %s is not allowed", key)
-			}
-		}
-		info := g.inspect(m[1])
-		if info == nil {
-			return nil, deny(403, "could not inspect the container")
-		}
-		state, _ := info["State"].(map[string]any)
-		if running, _ := state["Running"].(bool); running || state == nil {
-			return nil, deny(403, "stop the container before removing it")
-		}
-		return nil, nil
+		hk, err = g.checkPost(path, q, body, &fwd)
+	case "DELETE":
+		err = g.checkDelete(path, q, &fwd)
+	default:
+		err = deny(405, "method not allowed")
 	}
-	return nil, deny(405, "method not allowed")
+	if err != nil {
+		return nil, "", err
+	}
+	return hk, fwd, nil
 }
 
-func (g *Guard) checkGet(path string, q query) (*hook, error) {
+// checkDelete allows a stopped scope container (or compose's temporary copy),
+// never its volumes or links.
+func (g *Guard) checkDelete(path string, q query, fwd *string) error {
+	m := containerRe.FindStringSubmatch(path)
+	if m == nil {
+		return deny(403, "delete not allowed")
+	}
+	c := g.resolve(m[1])
+	if g.scopeOf(c) == nil && g.tmpScopeOf(c) == nil {
+		return noSuchContainer(m[1])
+	}
+	if err := q.onlyParams([]string{"v", "force", "link"}, "remove"); err != nil {
+		return err
+	}
+	for _, key := range []string{"v", "link"} {
+		v, err := q.one(key, "0")
+		if err != nil {
+			return err
+		}
+		if v != "0" && v != "false" {
+			return deny(403, "remove: %s is not allowed", key)
+		}
+	}
+	state, _ := c.info["State"].(map[string]any)
+	if running, _ := state["Running"].(bool); running || state == nil {
+		return deny(403, "stop the container before removing it")
+	}
+	*fwd = c.path("")
+	return nil
+}
+
+func (g *Guard) checkGet(path string, q query, fwd *string) (*hook, error) {
 	switch path {
 	case "/_ping", "/version":
 		return nil, nil
@@ -636,9 +697,11 @@ func (g *Guard) checkGet(path string, q query) (*hook, error) {
 	if m := containerReadRe.FindStringSubmatch(path); m != nil {
 		// missing and out-of-scope look the same: neither is there for this client. The one extra thing visible, to inspect
 		// only, is compose's replacement while it is being recreated (compose reads it back right after creating it).
-		if g.scopeOf(m[1]) == nil && !(m[2] == "json" && g.recreateCopy(m[1])) {
+		c := g.resolve(m[1])
+		if g.scopeOf(c) == nil && !(m[2] == "json" && g.recreateCopy(c)) {
 			return nil, noSuchContainer(m[1])
 		}
+		*fwd = c.path("/" + m[2])
 		if m[2] == "top" {
 			args, err := q.one("ps_args", "")
 			if err != nil {
@@ -656,7 +719,7 @@ func (g *Guard) checkGet(path string, q query) (*hook, error) {
 	return nil, deny(403, "read not allowed")
 }
 
-func (g *Guard) checkPost(path string, q query, body any) (*hook, error) {
+func (g *Guard) checkPost(path string, q query, body any, fwd *string) (*hook, error) {
 	if path == "/containers/create" {
 		return nil, g.checkCreate(q, body)
 	}
@@ -664,10 +727,12 @@ func (g *Guard) checkPost(path string, q query, body any) (*hook, error) {
 		return nil, g.checkPull(q)
 	}
 	if m := containerPostRe.FindStringSubmatch(path); m != nil {
-		scope := g.scopeOf(m[1])
+		c := g.resolve(m[1])
+		scope := g.scopeOf(c)
 		if scope == nil {
 			return nil, noSuchContainer(m[1])
 		}
+		*fwd = c.path("/" + m[2])
 		switch m[2] {
 		case "start":
 			return nil, q.onlyParams([]string{"detachKeys"}, "start") // never checkpoint / checkpoint-dir
@@ -696,10 +761,12 @@ func (g *Guard) checkPost(path string, q query, body any) (*hook, error) {
 		}}, nil
 	}
 	if m := renameRe.FindStringSubmatch(path); m != nil { // only the last step of compose's recreate: <old id12>_<scope> -> <scope>
-		scope := g.tmpScopeOf(m[1])
+		c := g.resolve(m[1])
+		scope := g.tmpScopeOf(c)
 		if scope == nil {
 			return nil, noSuchContainer(m[1])
 		}
+		*fwd = c.path("/rename")
 		if err := q.onlyParams([]string{"name"}, "rename"); err != nil {
 			return nil, err
 		}

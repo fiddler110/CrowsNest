@@ -12,6 +12,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/memadmit"
 )
 
 // newRegistry builds a registry of docker-ps-status-checked GameDefs, one
@@ -417,8 +418,8 @@ esac
 	}
 	m.Wait()
 	r, ok := m.LastStart("a")
-	if !ok || !strings.Contains(r.Err, "boom") {
-		t.Fatalf("LastStart(a) = %+v, %v, want the docker error recorded", r, ok)
+	if !ok || r.Err == "" || strings.Contains(r.Err, "boom") || !strings.Contains(r.Detail, "boom") {
+		t.Fatalf("LastStart(a) = %+v, %v, want a public Err and the raw docker error in Detail", r, ok)
 	}
 	if m.Starting("a") {
 		t.Fatal("Starting(a) still true after the start failed")
@@ -609,8 +610,8 @@ esac
 	}
 	m.Wait()
 	got := n.messages()
-	if len(got) != 1 || !strings.Contains(got[0], "failed to start") || !strings.Contains(got[0], "boom: no such image") {
-		t.Fatalf("messages = %q, want one failure message with the error tail", got)
+	if len(got) != 1 || !strings.Contains(got[0], "failed to start") || strings.Contains(got[0], "boom") || strings.Contains(got[0], "noise") {
+		t.Fatalf("messages = %q, want one failure message without raw docker output", got)
 	}
 	if strings.Contains(got[0], "\n") || len(got[0]) > 400 {
 		t.Fatalf("failure message not trimmed to one short line (len %d): %q", len(got[0]), got[0])
@@ -664,7 +665,7 @@ esac
 	}
 	m.Wait()
 	res, ok := m.LastStart("a")
-	if !ok || !strings.HasPrefix(res.Err, "stop failed:") {
+	if !ok || !strings.HasPrefix(res.Err, "stop failed:") || strings.Contains(res.Err, "boom") || !strings.Contains(res.Detail, "boom") {
 		t.Fatalf("LastStart(a) = %+v, %v; want a recorded stop failure", res, ok)
 	}
 }
@@ -779,15 +780,15 @@ func TestHistory_RecordsUserActionsButNotAutoStops(t *testing.T) {
 	if got := rec.kinds(); got != "" {
 		t.Fatalf("an actor-less stop recorded %q; idle/night record their own", got)
 	}
-	if err := m.RequestStart(WithActor(context.Background(), "scott"), "a"); err != nil {
+	if err := m.RequestStart(WithActor(context.Background(), "alex"), "a"); err != nil {
 		t.Fatal(err)
 	}
 	m.Wait()
-	if err := m.ConfirmSwitch(WithActor(context.Background(), "scott"), "a", "b"); err != nil {
+	if err := m.ConfirmSwitch(WithActor(context.Background(), "alex"), "a", "b"); err != nil {
 		t.Fatal(err)
 	}
 	m.Wait()
-	if got, want := rec.kinds(), "start:a:scott,stop:a:scott,start:b:scott"; got != want {
+	if got, want := rec.kinds(), "start:a:alex,stop:a:alex,start:b:alex"; got != want {
 		t.Fatalf("recorded %q, want %q", got, want)
 	}
 }
@@ -822,5 +823,114 @@ func TestStop_BacksUpBeforeStopWhenConfigured(t *testing.T) {
 	}
 	if len(fb.calls) != 1 || fb.calls[0] != "a:" {
 		t.Fatalf("backup calls = %v, want only a (before_stop)", fb.calls)
+	}
+}
+
+// A switch to a target still in its restart cooldown must be refused up
+// front; stopping `from` first would leave nothing running.
+func TestRequestSwitch_TargetInCooldownStopsNothing(t *testing.T) {
+	docker := newStaticFakeDocker(t, []string{"a", "b"}, []string{"a"})
+	reg := newRegistry(t, docker, "a", "b")
+	def, _ := reg.Get("b")
+	def.RestartCooldown = time.Hour
+	adef, _ := reg.Get("a")
+	reg, err := games.NewRegistry([]games.GameDef{adef, def})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(t, reg, docker)
+	m.lastStop["b"] = time.Now()
+
+	var cd *CooldownError
+	if err := m.RequestSwitch(context.Background(), "a", "b"); !errors.As(err, &cd) {
+		t.Fatalf("RequestSwitch = %v, want *CooldownError", err)
+	}
+	if m.Stopping("a") {
+		t.Fatal("source was stopped despite the refused switch")
+	}
+	if _, reserved := m.incoming["b"]; reserved {
+		t.Fatal("target left reserved after refusal")
+	}
+}
+
+func TestPublicFailure(t *testing.T) {
+	if got := publicFailure("stop failed: ", errors.New("secret path /x")); strings.Contains(got, "secret") || !strings.HasPrefix(got, "stop failed: ") {
+		t.Fatalf("publicFailure leaked or lost prefix: %q", got)
+	}
+	cd := &CooldownError{Game: "a", Remaining: time.Minute}
+	if got := publicFailure("", cd); got != cd.Error() {
+		t.Fatalf("cooldown text changed: %q", got)
+	}
+}
+
+func newBudget(avail uint64, need map[string]uint64) *memadmit.Budget {
+	b := memadmit.New("")
+	b.Available = func() uint64 { return avail }
+	b.Declared = func(id string) uint64 { return need[id] }
+	return b
+}
+
+func TestRequestStart_MemoryAdmission(t *testing.T) {
+	const gib = 1 << 30
+	docker := newStaticFakeDocker(t, []string{"a", "b"}, nil)
+	reg := newRegistry(t, docker, "a", "b")
+
+	m := newTestManager(t, reg, docker)
+	m.Memory = newBudget(6*gib, map[string]uint64{"a": 8 * gib, "b": 2 * gib})
+	var mem *memadmit.Error
+	if err := m.RequestStart(context.Background(), "a"); !errors.As(err, &mem) || mem.Need != 8*gib {
+		t.Fatalf("RequestStart(a) = %v, want a memory refusal needing 8 GiB", err)
+	}
+	if m.Starting("a") {
+		t.Fatal("a refused start must not be left in flight")
+	}
+	if err := m.RequestStart(context.Background(), "b"); err != nil {
+		t.Fatalf("RequestStart(b) = %v, want it admitted", err)
+	}
+	m.Wait()
+}
+
+func TestRequestStart_MemoryUnknownIsAdmitted(t *testing.T) {
+	docker := newStaticFakeDocker(t, []string{"a"}, nil)
+	m := newTestManager(t, newRegistry(t, docker, "a"), docker)
+	m.Memory = newBudget(0, map[string]uint64{"a": 99 << 30}) // host memory unreadable
+	if err := m.RequestStart(context.Background(), "a"); err != nil {
+		t.Fatalf("unreadable host memory must not block a start: %v", err)
+	}
+	m.Wait()
+}
+
+func TestConfirmSwitch_MemoryCountsWhatTheSourceFrees(t *testing.T) {
+	const gib = 1 << 30
+	docker := newStatefulFakeDocker(t, []string{"palworld"}, []string{"valheim"})
+	reg := newRegistry(t, docker, "valheim", "palworld")
+	mgr := newTestManager(t, reg, docker)
+	mgr.StopPollInterval, mgr.StopPollTimeout = time.Millisecond, time.Second
+
+	// 3 GiB free + 4 GiB freed by valheim covers palworld's 6. Host memory
+	// really does rise once valheim is down, which the fake mimics.
+	b := newBudget(3*gib, map[string]uint64{"valheim": 4 * gib, "palworld": 6 * gib})
+	b.Available = func() uint64 {
+		if active, _ := mgr.ActiveGames(context.Background()); len(active) == 0 {
+			return 7 * gib
+		}
+		return 3 * gib
+	}
+	mgr.Memory = b
+	// Without the freed memory the switch would be refused up front; with it, it must go through.
+	if err := mgr.ConfirmSwitch(context.Background(), "valheim", "palworld"); err != nil {
+		t.Fatalf("ConfirmSwitch() = %v", err)
+	}
+
+	// A target bigger than free plus freed is refused before anything stops.
+	docker2 := newStatefulFakeDocker(t, []string{"palworld"}, []string{"valheim"})
+	m2 := newTestManager(t, newRegistry(t, docker2, "valheim", "palworld"), docker2)
+	m2.Memory = newBudget(1*gib, map[string]uint64{"valheim": 2 * gib, "palworld": 6 * gib})
+	var mem *memadmit.Error
+	if err := m2.ConfirmSwitch(context.Background(), "valheim", "palworld"); !errors.As(err, &mem) {
+		t.Fatalf("ConfirmSwitch() = %v, want a memory refusal", err)
+	}
+	if id, ok, _ := m2.ActiveGame(context.Background()); !ok || id != "valheim" {
+		t.Fatalf("the source must keep running after a refused switch, active = %q", id)
 	}
 }

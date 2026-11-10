@@ -22,9 +22,9 @@ func newStore(t *testing.T, retention time.Duration) (*Store, *time.Time, string
 
 func TestRecordPersistsAndReloads(t *testing.T) {
 	s, clock, path := newStore(t, 0)
-	s.Record(KindStart, "palworld", "scott", "")
+	s.Record(KindStart, "palworld", "alex", "")
 	*clock = clock.Add(time.Minute)
-	s.Record(KindStop, "palworld", "scott", "")
+	s.Record(KindStop, "palworld", "alex", "")
 
 	re, err := Open(path, 0)
 	if err != nil {
@@ -78,7 +78,7 @@ func TestPlaytime(t *testing.T) {
 	at(30)
 	s.Record(KindLeave, "g", "ann", "") // ann: 30m
 	at(50)
-	s.Record(KindStop, "g", "scott", "") // closes bob: 50m
+	s.Record(KindStop, "g", "alex", "") // closes bob: 50m
 	at(55)
 	s.Record(KindJoin, "g", "cat", "")
 	at(60) // cat still aboard: 5m to now
@@ -101,4 +101,35 @@ func TestPlaytime(t *testing.T) {
 func TestNilStoreIsSafe(t *testing.T) {
 	var s *Store
 	s.Record(KindStart, "g", "a", "")
+}
+
+func TestRecentExcludingStillFillsLimit(t *testing.T) {
+	s, _, _ := newStore(t, 0)
+	s.Record(KindJoin, "g", "ann", "")
+	s.Record(KindSettings, "", "root", "x")
+	s.Record(KindConsole, "g", "root", "y")
+	s.Record(KindLeave, "g", "ann", "")
+	s.Record(KindUsers, "", "root", "z")
+	got := s.RecentExcluding(2, "", KindSettings, KindConsole, KindUsers)
+	if len(got) != 2 || got[0].Kind != KindLeave || got[1].Kind != KindJoin {
+		t.Fatalf("RecentExcluding = %+v", got)
+	}
+}
+
+func TestPlaytimeCacheInvalidates(t *testing.T) {
+	s, clock, _ := newStore(t, 0)
+	s.Record(KindJoin, "g", "ann", "")
+	*clock = clock.Add(10 * time.Minute)
+	if got := s.Playtime(); len(got) != 1 || got[0].Seconds != 600 {
+		t.Fatalf("open visit = %+v", got)
+	}
+	*clock = clock.Add(5 * time.Minute) // cached: open visit keeps accruing
+	if got := s.Playtime(); got[0].Seconds != 900 {
+		t.Fatalf("cached open visit = %+v", got)
+	}
+	s.Record(KindLeave, "g", "ann", "") // Record must invalidate
+	*clock = clock.Add(time.Hour)
+	if got := s.Playtime(); got[0].Seconds != 900 {
+		t.Fatalf("after leave = %+v", got)
+	}
 }

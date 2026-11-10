@@ -25,8 +25,10 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/hoststats"
+	"github.com/fiddler110/crowsnest/internal/memadmit"
 	"github.com/fiddler110/crowsnest/internal/memo"
 	"github.com/fiddler110/crowsnest/internal/settings"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
 // App holds the dependencies HTTP handlers need.
@@ -36,9 +38,14 @@ type App struct {
 	Exclusivity *exclusivity.Manager
 	Auth        *auth.Service
 	// Google, when set, adds "Sign in with Google" (see auth.GoogleLogin).
+	// Setup, when set, offers first-run setup while there are no users.
+	Setup  *auth.Setup
 	Google *auth.GoogleLogin
 	// Settings backs the dashboard's settings dialog (/api/settings).
 	Settings *settings.Store
+	// TimeZone is the server's time zone name (server.tz), shown beside the
+	// overnight-shutdown hours, which are local to it. Optional.
+	TimeZone string
 	// IdleTimer, when set, supplies each game's idle-shutdown countdown.
 	IdleTimer IdleTimer
 	// History backs the activity feed (/api/activity) and records settings
@@ -65,15 +72,32 @@ type App struct {
 	MaxConcurrentStreams int
 	streamCount          atomic.Int32
 
-	// StatusTTL is how long a game's checked status, player count, stats and
-	// info are shared between requests; however many tabs poll, the docker
-	// and game-API probes behind them run at most once per TTL per game. Zero
-	// means defaultStatusTTL; negative disables sharing (tests).
+	// MaxEventStreams caps concurrent /api/events connections. Zero means
+	// defaultMaxEventStreams.
+	MaxEventStreams int
+	eventStreams    atomic.Int32
+	// MaxEventStreamsPerUser caps one user's concurrent /api/events
+	// connections. Zero means defaultMaxEventStreamsPerUser.
+	MaxEventStreamsPerUser int
+	userEventStreams       userStreams
+
+	// EventsMinGap overrides the minimum spacing of /api/events sends
+	// (tests). Zero means defaultEventsMinGap.
+	EventsMinGap time.Duration
+
+	// StatusTTL is how long a game's stats and info and the docker health
+	// check are shared between requests; however many tabs poll, the probes
+	// behind them run at most once per TTL per game. Zero means
+	// defaultStatusTTL; negative disables sharing (tests). Status and player
+	// counts come from Hub instead.
 	StatusTTL time.Duration
+
+	// Hub observes every game (status and players) for every handler, and
+	// drives /api/events. Without one, each request probes directly.
+	Hub *statehub.Hub
 
 	hostMemo   memo.Memo[hoststats.Snapshot]
 	healthMemo memo.Memo[bool]
-	snapshots  memo.Memo[snapshot]
 	statsMemo  memo.Memo[statsResponse]
 	infoMemo   memo.Memo[infoResult]
 }
@@ -87,42 +111,20 @@ func (a *App) statusTTL() time.Duration {
 	return a.StatusTTL
 }
 
-// snapshot is one game's observed state: what its StatusChecker and
-// PlayerCounter reported at the same moment.
-type snapshot struct {
-	Status    games.Status
-	Count     int
-	Names     []string
-	PlayersOK bool
-}
-
-// observe returns d's snapshot, sharing one probe among concurrent and
-// near-in-time callers. Players are only asked for when the game could be
-// up, so an offline or booting game doesn't cost a failing HTTP call.
-func (a *App) observe(ctx context.Context, d games.GameDef) snapshot {
-	snap, err := a.snapshots.Do(ctx, d.ID, a.statusTTL(), func(ctx context.Context) snapshot {
-		var s snapshot
-		s.Status = games.StatusUnknown
-		if d.Status != nil {
-			if st, err := d.Status.Check(ctx, d.ContainerName); err == nil {
-				s.Status = st
-			}
-		}
-		if d.Players != nil && (s.Status == games.StatusOnline || s.Status == games.StatusUnknown) {
-			s.Count, s.Names, s.PlayersOK = d.Players.PlayerCount(ctx)
-		}
-		return s
-	})
-	if err != nil {
-		return snapshot{Status: games.StatusUnknown}
+// observe returns d's current observation from the hub (waiting for the
+// first one, or for a fresher one after an action poked the game), or a
+// direct probe when there is no hub.
+func (a *App) observe(ctx context.Context, d games.GameDef) statehub.Observation {
+	if a.Hub == nil {
+		return statehub.Probe(ctx, d)
 	}
-	return snap
+	return a.Hub.Current(ctx, d)
 }
 
 // observeAll observes every game in parallel (a slow probe on one game must
 // not delay the rest), preserving order.
-func (a *App) observeAll(ctx context.Context, defs []games.GameDef) []snapshot {
-	out := make([]snapshot, len(defs))
+func (a *App) observeAll(ctx context.Context, defs []games.GameDef) []statehub.Observation {
+	out := make([]statehub.Observation, len(defs))
 	var wg sync.WaitGroup
 	for i, d := range defs {
 		wg.Add(1)
@@ -135,10 +137,13 @@ func (a *App) observeAll(ctx context.Context, defs []games.GameDef) []snapshot {
 	return out
 }
 
-// forgetGame drops a game's shared observations after an action that changes
-// them, so the next poll reflects it.
-func (a *App) forgetGame(id string) {
-	a.snapshots.Forget(id)
+// pokeGame asks for a fresh observation of a game after an action that
+// changes it, and drops its shared stats and info, so the next read
+// reflects the action.
+func (a *App) pokeGame(id string) {
+	if a.Hub != nil {
+		a.Hub.Poke(id)
+	}
 	a.statsMemo.Forget(id)
 	a.infoMemo.Forget(id)
 }
@@ -157,6 +162,8 @@ const maxSwitchBodyBytes = 4096
 // Routes registers the dashboard, login/logout, and game-control API on
 // mux.
 func (a *App) Routes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /setup", a.handleSetupPage)
+	mux.HandleFunc("POST /setup", a.handleSetup)
 	mux.HandleFunc("GET /login", a.handleLoginPage)
 	mux.HandleFunc("POST /login", a.Auth.ServeLogin)
 	mux.HandleFunc("POST /logout", a.Auth.ServeLogout)
@@ -169,8 +176,9 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /settings", a.requireSessionHTML(http.HandlerFunc(a.handleSettingsPage)))
 	mux.Handle("GET /games", a.requireSessionHTML(http.HandlerFunc(a.handleGamesPage)))
 	mux.Handle("GET /api/games", a.requireSession(http.HandlerFunc(a.handleListGames)))
+	mux.Handle("GET /api/events", a.requireSession(http.HandlerFunc(a.handleEvents)))
 	mux.Handle("GET /api/games/{id}/status", a.requireSession(http.HandlerFunc(a.handleStatus)))
-	mux.Handle("GET /api/games/{id}/logs", a.requireSession(http.HandlerFunc(a.handleLogs)))
+	mux.Handle("GET /api/games/{id}/logs", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleLogs)))) // S8: logs can carry secrets an image prints
 	mux.Handle("GET /api/games/{id}/startup-progress", a.requireSession(http.HandlerFunc(a.handleStartupProgress)))
 	mux.Handle("GET /api/games/{id}/stats", a.requireSession(http.HandlerFunc(a.handleStats)))
 	mux.Handle("GET /api/games/{id}/players", a.requireSession(http.HandlerFunc(a.handlePlayers)))
@@ -188,12 +196,14 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/managed/modules", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedModules))))
 	mux.Handle("GET /api/managed/configured", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedConfigured))))
 	mux.Handle("GET /api/managed/policy", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedPolicy))))
+	mux.Handle("PUT /api/managed/modules/{id}/allow", a.requireAdmin(http.HandlerFunc(a.handleManagedAllow)))
 	mux.Handle("PUT /api/managed/policy", a.requireAdmin(http.HandlerFunc(a.handleManagedSetPolicy)))
 	mux.Handle("GET /api/managed/games", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedList))))
 	mux.Handle("POST /api/managed/preview", a.requireAdmin(http.HandlerFunc(a.handleManagedPreview)))
 	mux.Handle("POST /api/managed/games", a.requireAdmin(http.HandlerFunc(a.handleManagedEnable)))
 	mux.Handle("PUT /api/managed/games/{id}", a.requireAdmin(http.HandlerFunc(a.handleManagedUpdate)))
 	mux.Handle("POST /api/managed/games/{id}/refresh", a.requireAdmin(http.HandlerFunc(a.handleManagedRefresh)))
+	mux.Handle("POST /api/managed/games/{id}/rollback", a.requireAdmin(http.HandlerFunc(a.handleManagedRollback)))
 	mux.Handle("DELETE /api/managed/games/{id}", a.requireAdmin(http.HandlerFunc(a.handleManagedDisable)))
 	mux.Handle("GET /api/users", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleListUsers))))
 	mux.Handle("POST /api/users", a.requireAdmin(http.HandlerFunc(a.handleCreateUser)))
@@ -296,13 +306,15 @@ var loginErrors = map[string]string{
 }
 
 func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
+	if a.setupNeeded() {
+		http.Redirect(w, r, "/setup", http.StatusSeeOther)
+		return
+	}
 	page := loginPage{PasswordLogin: !a.Auth.DisablePasswordLogin, Error: loginErrors[r.URL.Query().Get("error")]}
 	if a.Google != nil {
 		page.GoogleStartURL = a.Google.StartURL()
 	}
-	if err := a.Templates.Login.Execute(w, page); err != nil {
-		log.Printf("web: render login page: %v", err)
-	}
+	render(w, a.Templates.Login, page, "login page")
 }
 
 type dashboardGame struct {
@@ -323,30 +335,47 @@ type dashboardGame struct {
 
 	// HasConsole is true for admins on games that offer console actions.
 	HasConsole bool
+
+	// HasInfo is true when the game has an info provider; otherwise the card
+	// has no Info tab.
+	HasInfo bool
+
+	// Accent is the card's "#rrggbb" accent from the game's module, or empty.
+	Accent string
 }
 
+// dashboardData is the data of every signed-in page. Page names the page
+// ("dashboard", "games", "settings") so the shared top bar can mark it.
 type dashboardData struct {
+	Page      string
 	Username  string
 	IsAdmin   bool
 	CSRFToken string
 	Games     []dashboardGame
+	// NeedsPassword: an admin with no stored password sees a banner, because
+	// widening the guard asks for one.
+	NeedsPassword bool
 }
 
 func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	session, _ := auth.FromContext(r.Context())
 	defs := a.Registry.All()
 	data := dashboardData{
-		Username:  session.Username,
-		IsAdmin:   a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
-		CSRFToken: session.CSRFToken,
+		Page:          "dashboard",
+		Username:      session.Username,
+		IsAdmin:       a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
+		NeedsPassword: a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin && !a.Auth.HasPassword(session.Username),
+		CSRFToken:     session.CSRFToken,
 	}
 	// First paint must not wait on game probes (a booting game's API can
-	// take seconds to time out): use the last shared snapshot if any, else
-	// "unknown"; the page's JS refreshes statuses immediately on load.
+	// take seconds to time out): use the hub's latest observation if any,
+	// else "unknown"; the page's JS refreshes statuses immediately on load.
 	for _, d := range defs {
-		snap, ok := a.snapshots.Peek(d.ID)
-		if !ok {
-			snap = snapshot{Status: games.StatusUnknown}
+		snap := statehub.Observation{Status: games.StatusUnknown}
+		if a.Hub != nil {
+			if o, ok := a.Hub.Get(d.ID); ok {
+				snap = o
+			}
 		}
 		data.Games = append(data.Games, dashboardGame{
 			ID:          d.ID,
@@ -359,17 +388,24 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			ConnectSecrets: d.ConnectSecrets,
 			HasBackup:      data.IsAdmin && d.Backup != nil && a.Backups != nil,
 			HasConsole:     data.IsAdmin && d.Console != nil,
+			HasInfo:        d.Info != nil,
+			Accent:         d.Accent,
 		})
 	}
-	if err := a.Templates.Dashboard.Execute(w, data); err != nil {
-		log.Printf("web: render dashboard: %v", err)
-	}
+	render(w, a.Templates.Dashboard, data, "dashboard")
 }
 
 func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.listGames(r))
+}
+
+// listGames builds the /api/games body for r's user (admins see raw error
+// detail); /api/events sends the same.
+func (a *App) listGames(r *http.Request) []gameSummary {
 	defs := a.Registry.All()
 	out := make([]gameSummary, len(defs))
 	snaps := a.observeAll(r.Context(), defs)
+	admin := a.Auth.Sessions.RoleFor(actor(r)) == auth.RoleAdmin
 	for i, d := range defs {
 		out[i] = gameSummary{
 			ID:          d.ID,
@@ -390,11 +426,14 @@ func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
 		if a.Exclusivity != nil {
 			if res, ok := a.Exclusivity.LastStart(d.ID); ok && res.Err != "" {
 				out[i].StartError = res.Err
+				if admin && res.Detail != "" {
+					out[i].StartError = shortDetail(res.Detail)
+				}
 				out[i].StartErrorAt = res.At.Unix()
 			}
 		}
 	}
-	writeJSON(w, http.StatusOK, out)
+	return out
 }
 
 // playersResponse is the /api/games/{id}/players shape. Available is false
@@ -423,6 +462,16 @@ func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, playersResponse{Available: true, Count: snap.Count, Names: names})
 }
 
+// shortDetail keeps the tail of raw error text (where the cause usually is)
+// on one line, for admins.
+func shortDetail(msg string) string {
+	msg = strings.Join(strings.Fields(msg), " ")
+	if r := []rune(msg); len(r) > 400 {
+		msg = "…" + string(r[len(r)-400:])
+	}
+	return msg
+}
+
 const (
 	defaultActivityLimit = 40
 	maxActivityLimit     = 500
@@ -439,8 +488,12 @@ func (a *App) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
 		limit = min(n, maxActivityLimit)
 	}
+	var hide []string
+	if a.Auth.Sessions.RoleFor(actor(r)) != auth.RoleAdmin {
+		hide = []string{history.KindUsers, history.KindConsole, history.KindSettings, history.KindGames}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"events":   a.History.Recent(limit, r.URL.Query().Get("game")),
+		"events":   a.History.RecentExcluding(limit, r.URL.Query().Get("game"), hide...),
 		"playtime": a.History.Playtime(),
 	})
 }
@@ -511,14 +564,19 @@ func (a *App) handleHost(w http.ResponseWriter, r *http.Request) {
 // daemon, so liveness stays green while this goes red and the dashboard warns.
 // The reason is logged, not returned.
 func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
-	ok, err := a.healthMemo.Do(r.Context(), "docker", a.statusTTL(), func(ctx context.Context) bool {
+	writeJSON(w, http.StatusOK, a.health(r.Context()))
+}
+
+// health is the /api/health body; /api/events sends the same.
+func (a *App) health(ctx context.Context) map[string]bool {
+	ok, err := a.healthMemo.Do(ctx, "docker", a.statusTTL(), func(ctx context.Context) bool {
 		if err := a.Docker.Ping(ctx); err != nil {
 			log.Printf("web: docker unreachable: %v", err)
 			return false
 		}
 		return true
 	})
-	writeJSON(w, http.StatusOK, map[string]bool{"docker": err == nil && ok})
+	return map[string]bool{"docker": err == nil && ok}
 }
 
 type infoResult struct {
@@ -647,7 +705,7 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	err := a.Exclusivity.RequestStart(exclusivity.WithActor(r.Context(), actor(r)), d.ID)
 	if err == nil {
-		a.forgetGame(d.ID)
+		a.pokeGame(d.ID)
 		log.Printf("audit: %s started %s", actor(r), d.ID)
 		w.WriteHeader(http.StatusAccepted)
 		return
@@ -660,6 +718,12 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	var busy *exclusivity.BusyError
 	if errors.As(err, &busy) {
 		writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
+		return
+	}
+	var mem *memadmit.Error
+	if errors.As(err, &mem) {
+		log.Printf("audit: %s start %s refused: %v", actor(r), d.ID, err)
+		writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": mem.Error()})
 		return
 	}
 	var cooldown *exclusivity.CooldownError
@@ -684,7 +748,7 @@ func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, publicError(err), http.StatusBadGateway)
 		return
 	}
-	a.forgetGame(d.ID)
+	a.pokeGame(d.ID)
 	log.Printf("audit: %s requested stop of %s", actor(r), d.ID)
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -719,11 +783,22 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
 			return
 		}
+		var mem *memadmit.Error
+		if errors.As(err, &mem) {
+			writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": mem.Error()})
+			return
+		}
+		var cooldown *exclusivity.CooldownError
+		if errors.As(err, &cooldown) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(cooldown.Remaining.Seconds())+1))
+			http.Error(w, cooldown.Error(), http.StatusTooManyRequests)
+			return
+		}
 		http.Error(w, publicError(err), http.StatusBadGateway)
 		return
 	}
-	a.forgetGame(from)
-	a.forgetGame(to.ID)
+	a.pokeGame(from)
+	a.pokeGame(to.ID)
 	log.Printf("audit: %s requested switch %q->%q", actor(r), from, to.ID)
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -735,7 +810,16 @@ func (a *App) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, a.Settings.Get())
+	// tz rides along for display only; PUT decodes settings.Values alone (and
+	// refuses unknown fields), so the page must not send it back.
+	writeJSON(w, http.StatusOK, settingsResponse{Values: a.Settings.Get(), TZ: a.TimeZone})
+}
+
+// settingsResponse is GET /api/settings: the values plus the server's time
+// zone, which the overnight hours are local to.
+type settingsResponse struct {
+	settings.Values
+	TZ string `json:"tz,omitempty"`
 }
 
 func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request) {
@@ -787,7 +871,8 @@ func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request) {
 // details (docker command lines, compose paths, stderr) stay in the log.
 func publicError(err error) string {
 	var busy *exclusivity.BusyError
-	if errors.As(err, &busy) {
+	var mem *memadmit.Error
+	if errors.As(err, &busy) || errors.As(err, &mem) {
 		return err.Error()
 	}
 	return "the request could not be completed; see the CrowsNest log for details"

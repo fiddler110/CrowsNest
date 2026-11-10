@@ -129,9 +129,7 @@ func TestPolicyExceptionParse(t *testing.T) {
 
 func TestPolicyParseRefusesLooseness(t *testing.T) {
 	for name, y := range map[string]string{
-		"no names":   strings.Replace(testPolicy, "names: [valheim, palworld, \"gs-*\"]", "", 1),
 		"star name":  strings.Replace(testPolicy, "valheim,", "\"*\",", 1),
-		"no ports":   strings.Replace(testPolicy, "ports: [\"27000-27999/udp\", \"25565/tcp\"]", "", 1),
 		"no proto":   strings.Replace(testPolicy, "25565/tcp", "25565", 1),
 		"host net":   strings.Replace(testPolicy, "crowsnest-games-net", "host", 1),
 		"relative":   strings.Replace(testPolicy, "/srv/games", "games", 1),

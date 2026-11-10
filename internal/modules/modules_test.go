@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -116,5 +117,37 @@ func TestForConfig_NoDirIsBundledOnly(t *testing.T) {
 	set, err := ForConfig(&config.Config{}, nil)
 	if err != nil || len(set.IDs()) != 6 {
 		t.Fatalf("%v %v", set.IDs(), err)
+	}
+}
+
+func TestRAMEstimate(t *testing.T) {
+	m := &Manifest{Runtime: Runtime{RAM: "6g", Memory: "10g"}}
+	if got := ramEstimate(m, nil); got != 6<<30 {
+		t.Fatalf("runtime.ram should win over the limit, got %d", got)
+	}
+	if got := ramEstimate(&Manifest{Runtime: Runtime{Memory: "10g"}}, nil); got != 10<<30 {
+		t.Fatalf("the limit is the fallback, got %d", got)
+	}
+	if got := ramEstimate(m, map[string]string{"ram": "512m"}); got != 512<<20 {
+		t.Fatalf("the instance's ram option should win, got %d", got)
+	}
+	if got := ramEstimate(&Manifest{}, nil); got != 0 {
+		t.Fatalf("no figure means no check, got %d", got)
+	}
+	if got := ramEstimate(m, map[string]string{"ram": "x"}); got != 0 {
+		t.Fatalf("a bad instance value skips the check, got %d", got)
+	}
+}
+
+func TestPolicyDefaults(t *testing.T) {
+	d := PolicyDefaults(Platform{})
+	if d.Network != DefaultNetwork {
+		t.Errorf("network %q", d.Network)
+	}
+	if !slices.Contains(d.Images, "lloesche/valheim-server") {
+		t.Errorf("the valheim module's image is missing: %v", d.Images)
+	}
+	if d := PolicyDefaults(Platform{Network: "mine"}); d.Network != "mine" {
+		t.Errorf("configured network ignored: %q", d.Network)
 	}
 }
