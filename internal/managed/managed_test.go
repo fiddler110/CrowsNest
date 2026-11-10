@@ -124,7 +124,7 @@ func TestEnableAndDisable(t *testing.T) {
 	if !strings.Contains(env, "RCON_PASSWORD=hunter2") || !strings.Contains(env, "EULA=TRUE") || !strings.Contains(env, "MOTD=hi") {
 		t.Errorf("env not resolved: %s", env)
 	}
-	if fd.created[0].Binds[0] != "/srv/games/Minecraft-minecraft:/data" {
+	if fd.created[0].Binds[0] != "/srv/games/minecraft:/data" {
 		t.Errorf("binds = %v", fd.created[0].Binds)
 	}
 	if _, ok := m.Registry.Get("minecraft"); !ok {

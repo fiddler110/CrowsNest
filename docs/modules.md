@@ -144,6 +144,10 @@ labels: []                             # extra labels they may require (the watc
 max_scopes: 32
 ```
 
+- Point `games_root` at a folder that holds only game data, such as `<your data mount>/crowsnest/games`, not at a
+  mount shared with other services: every dashboard-added game's folder is `<games_root>/<id>`, and the policy
+  lets the panel bind anything inside `games_root`. Create it once, owned by you, before the first game.
+  `platform.games_root` in config.yaml must be the same path. Servers you set up by hand keep their own paths.
 - `names` matters: the guard lets a scope manage the container of the same name, so without it a scope called
   `caddy` would let the panel stop your reverse proxy.
 - A managed scope can never carry volumes, capabilities, aliases, host networking, or exec unless the policy allows
@@ -311,7 +315,7 @@ for the operator to approve outside the dashboard. Steps, each shippable on its 
 
 ## Several servers from one module
 
-You can enable the same module more than once (for example two Valheim worlds) as long as each game has its own id and title. Every game gets its own data folder, named `<module folder>-<id>`, unless you set **Data folder name** under *More settings*. Host ports must differ: a clash with another managed game is refused with a message naming it, and you set different ones in **Published ports** (`host:container/proto`, comma-separated). The operator's policy must allow the names and ports, and memory limits still apply.
+You can enable the same module more than once (for example two Valheim worlds) as long as each game has its own id and title. Every game gets its own data folder, named after its id (`<games_root>/<id>`), unless you set **Data folder name** under *More settings*. Host ports must differ: a clash with another managed game is refused with a message naming it, and you set different ones in **Published ports** (`host:container/proto`, comma-separated). The operator's policy must allow the names and ports, and memory limits still apply.
 
 ## Showing join details on the card
 

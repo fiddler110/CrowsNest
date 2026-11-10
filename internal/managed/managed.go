@@ -417,23 +417,18 @@ func (m *Manager) renderAndFit(g config.GameConfig, mf *modules.Manifest) (*modu
 	return r, pol.Admit(sc[0])
 }
 
-// withDefaults gives a new game its own data folder: <module folder>-<id>. Two games from one module must
-// never share a folder (they would write the same world), and a new game must not land in a folder an
-// existing hand-set-up server already uses. A folder typed in the form is kept.
+// withDefaults gives a new game its own data folder, named after its id, directly under games_root (which
+// the operator points at a folder that holds only game data). Two games from one module must never share a
+// folder (they would write the same world). A folder typed in the form is kept.
 func (m *Manager) withDefaults(r Request) Request {
-	mf, ok := m.Modules.Manifest(r.Module)
-	if !ok || r.Options["data_dir"] != "" || r.ID == "" {
+	if _, ok := m.Modules.Manifest(r.Module); !ok || r.Options["data_dir"] != "" || r.ID == "" {
 		return r
-	}
-	base := mf.Runtime.DataDir
-	if base == "" {
-		base = mf.Name
 	}
 	opts := make(map[string]string, len(r.Options)+1)
 	for k, v := range r.Options {
 		opts[k] = v
 	}
-	opts["data_dir"] = base + "-" + r.ID
+	opts["data_dir"] = r.ID
 	r.Options = opts
 	return r
 }
