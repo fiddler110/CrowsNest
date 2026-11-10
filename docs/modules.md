@@ -372,7 +372,7 @@ for the operator to approve outside the dashboard. Steps, each shippable on its 
 3. The dashboard enables, installs and removes games itself, admin only (done, below).
 4. A Games page: pick a module, fill in its options, see the rendered compose and what falls outside the policy,
    enable.
-5. Remote module sources with signature checks.
+5. Remote module sources: hash-pinned install is done (below); signed catalogs are not built.
 
 ## Several servers from one module
 
@@ -381,3 +381,28 @@ You can enable the same module more than once (for example two Valheim worlds) a
 ## Showing join details on the card
 
 A module can list `connect:` entries (a `label` and the `option` whose value to show), such as the Palworld and Valheim server passwords. They appear on the game's card for admins and are never part of the list API.
+
+## Installing a module from a URL
+
+```
+crowsnest module install https://example.com/mygame/module.yaml [--sha256 HASH] [--yes]
+crowsnest module update mygame
+crowsnest module remove mygame
+crowsnest module list
+```
+
+Needs `modules_dir` in `config.yaml`. Install downloads the manifest (https only, 256 KiB cap, nothing is run),
+validates it, and prints what it would let the module do: the image, ports, env, security options, the backup
+command, admin actions, RCON and API addresses and host commands it asks you to run. You approve by typing the
+module's id. Give `--sha256` when the author published a hash and the download must match it exactly.
+
+What is recorded: `<modules_dir>/modules.lock.json` holds each installed module's source, SHA-256 and date.
+At startup a locked module is loaded only if its `module.yaml` still has that hash. If the file was edited or
+swapped, it is left out with a log line, and its games fall back to the baseline until you re-approve it.
+`update` re-downloads from the recorded source and shows what changed in that summary (new image, new port,
+newly loosened security option) before you approve; if the source is byte-identical to what you approved it just
+restores that copy. Update refuses if the source now serves a different module id.
+
+Limits: a module cannot replace a bundled one or a hand-placed one, and the policy envelope still applies
+(a module only runs what `policy.yaml` allows). This pins what you approved; it does not prove who wrote it.
+A signed catalog would, and is deferred until someone needs it.

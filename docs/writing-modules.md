@@ -135,7 +135,9 @@ is below it, and once the game has run it uses the measured peak instead. A game
    up on the Games page if the operator's policy allows its image, ports and names; the page says why if not.
 2. To share it, publish the folder (the `module.yaml` and a trimmed `sample.log`) and say which image and tag you
    tested it with. Whoever installs it should run `crowsnest module check` on it and read it.
-3. To add it to CrowsNest itself, open a pull request adding the folder under `internal/modules/bundled/` with a
+3. Someone else can install it from a URL: `crowsnest module install https://…/module.yaml`. See
+   [modules.md](modules.md#installing-a-module-from-a-url).
+4. To add it to CrowsNest itself, open a pull request adding the folder under `internal/modules/bundled/` with a
    real-log test.
 
 The full list of keys is in `internal/modules/manifest.go`; the policy and guard are explained in

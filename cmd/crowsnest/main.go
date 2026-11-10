@@ -62,11 +62,20 @@ func main() {
 			os.Exit(2)
 		}
 	case "module":
-		if len(os.Args) < 3 || os.Args[2] != "check" {
-			fmt.Fprintln(os.Stderr, "usage: crowsnest module check <module.yaml|dir> [--log container.log]")
+		if len(os.Args) >= 3 && os.Args[2] == "check" {
+			os.Exit(runModuleCheck(os.Args[3:], os.Stdout))
+		}
+		if len(os.Args) < 3 {
+			fmt.Fprintln(os.Stderr, moduleUsage)
 			os.Exit(2)
 		}
-		os.Exit(runModuleCheck(os.Args[3:], os.Stdout))
+		cfg, err := config.Load(configPath())
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FAIL  config does not load:", err)
+			os.Exit(1)
+		}
+		t := &moduleTool{dir: cfg.ModulesDir, in: os.Stdin, out: os.Stdout}
+		os.Exit(t.run(os.Args[2:]))
 	case "doctor":
 		cfg, err := config.Load(configPath())
 		if err != nil {

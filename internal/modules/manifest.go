@@ -472,9 +472,17 @@ func (s *Set) LoadDir(dir string) error {
 	if err != nil {
 		return err
 	}
+	bad, err := verifyLocked(dir)
+	if err != nil {
+		return err
+	}
 	var ms []*Manifest
 	for _, e := range entries {
 		if !e.IsDir() {
+			continue
+		}
+		if why, no := bad[e.Name()]; no {
+			log.Printf("modules: %q not loaded: %s", e.Name(), why)
 			continue
 		}
 		b, err := os.ReadFile(filepath.Join(dir, e.Name(), "module.yaml")) // #nosec G304 -- dir is the operator-set modules_dir and e.Name() comes from listing it
