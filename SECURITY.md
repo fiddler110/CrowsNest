@@ -5,7 +5,7 @@ CrowsNest controls Docker on the host it runs on, so security reports are taken 
 ## Reporting a vulnerability
 
 Please **do not open a public issue**. Use GitHub's private reporting instead: on the repository page choose
-**Security -> Report a vulnerability**. Include what you found, the version (`docker compose images`), and the
+**Security -> Report a vulnerability**. If that is not available to you, email scottymacleod110@gmail.com. Include what you found, the version (`docker compose images`), and the
 steps to reproduce it. You will get an answer as soon as the maintainer can give one; this is a small project, so
 please allow a few days.
 
