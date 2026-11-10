@@ -33,6 +33,8 @@ type Manifest struct {
 	Name       string `yaml:"name"`
 	// Description is one or two sentences the dashboard shows in the catalogue.
 	Description string `yaml:"description"`
+	// Accent is an optional "#rrggbb" colour for the game's dashboard card.
+	Accent string `yaml:"accent"`
 
 	Runtime Runtime `yaml:"runtime"`
 
@@ -167,6 +169,8 @@ type StartupStep struct {
 
 var idRe = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
 
+var accentRe = regexp.MustCompile(`^#[0-9a-fA-F]{6}$`)
+
 // supportedPlayers lists the probe types an engine exists for. Declared types
 // beyond these are refused until their engine lands.
 var supportedPlayers = map[string]bool{"": true, "none": true, "log_markers": true, "http_json": true, "source_rcon": true}
@@ -254,6 +258,9 @@ func (m *Manifest) validate() error {
 	}
 	if m.Name == "" {
 		return fmt.Errorf("module %q: name is required", m.ID)
+	}
+	if m.Accent != "" && !accentRe.MatchString(m.Accent) {
+		return fmt.Errorf("module %q: accent %q must be a colour like \"#60a5fa\"", m.ID, m.Accent)
 	}
 	if m.Backup != nil {
 		if len(m.Backup.Exec) == 0 || m.Backup.Exec[0] == "" {
@@ -355,6 +362,9 @@ func (m *Manifest) validate() error {
 func (m *Manifest) Wire() WireFunc {
 	return func(def *games.GameDef, env Env) []Runner {
 		var runners []Runner
+		if m.Accent != "" {
+			def.Accent = m.Accent
+		}
 		if m.Players.Type == "log_markers" {
 			spec := logtrack.Spec{
 				Name:  m.ID,

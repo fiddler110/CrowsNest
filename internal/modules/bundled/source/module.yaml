@@ -1,6 +1,7 @@
 api_version: 1
 id: source
 name: Source engine
+accent: "#f97316"
 # One module for the whole Source family. A game picks it with "module: source"
 # in config.yaml, so TF2, CS2, CSS, L4D2, DoD:S, HL2DM and the GoldSrc/Source 1
 # servers (CS 1.6 included, where RCON `status` has the same shape) each get

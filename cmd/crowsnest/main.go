@@ -228,6 +228,7 @@ func serve() error {
 		Auth:        authSvc,
 		Google:      google,
 		Settings:    settingsStore,
+		TimeZone:    cfg.Server.TZ,
 		History:     activity,
 		HostPaths:   cfg.Server.HostDiskPaths,
 		Backups:     backups,

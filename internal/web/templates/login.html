@@ -5,9 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
 <title>Sign in · CrowsNest</title>
-<link rel="icon" type="image/png" href="/static/brand.png">
-<link rel="stylesheet" href="/static/style.css">
-<link rel="stylesheet" href="/static/login.css">
+<link rel="icon" type="image/png" href="{{asset "brand.png"}}">
+<link rel="stylesheet" href="{{asset "style.css"}}">
+<link rel="stylesheet" href="{{asset "login.css"}}">
 </head>
 <body>
 <div class="backdrop" aria-hidden="true"><span class="grid"></span><span class="glow glow-a"></span><span class="glow glow-b"></span></div>
@@ -15,7 +15,7 @@
 
 <main class="login-stage">
   <section class="login-card" id="login-card" aria-labelledby="title">
-    <img class="login-art" src="/static/emblem.webp" alt="CrowsNest: game server launcher and controller" width="280" height="320">
+    <img class="login-art" src="{{asset "emblem.webp"}}" alt="CrowsNest: game server launcher and controller" width="280" height="320">
 
     <p class="chip"><span class="beacon"></span>Lookout online</p>
     <h1 id="title">Welcome aboard</h1>
@@ -66,6 +66,6 @@
 
   <p class="prompt" aria-hidden="true"><span class="ps">$</span> crowsnest --watch <span class="ok">horizon</span><span class="caret"></span></p>
 </main>
-{{if .PasswordLogin}}<script src="/static/login.js"></script>{{end}}
+{{if .PasswordLogin}}<script src="{{asset "login.js"}}"></script>{{end}}
 </body>
 </html>

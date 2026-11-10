@@ -1,21 +1,6 @@
-// Settings page: a sidebar of panes (General, Users, Game policy). The pane is chosen by the URL hash.
-const CSRF_TOKEN = document.querySelector("meta[name=csrf-token]").content;
+// Settings page: a sidebar of panes (General, Users, Game policy, Game modules). The pane is chosen by the URL hash.
+// callAPI, errorText, toast and confirmAction come from api.js.
 const $ = (id) => document.getElementById(id);
-
-let toastTimer;
-function toast(message) {
-  $("toast-text").textContent = message;
-  $("toast").hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 6000);
-}
-
-function callAPI(path, options = {}) {
-  return fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF_TOKEN, ...(options.headers || {}) },
-  });
-}
 
 // ---------- navigation ----------
 const loaded = {};
@@ -40,11 +25,16 @@ loaders.general = () => {
   const input = (n) => form.elements[n];
   (async () => {
     const res = await callAPI("/api/settings");
-    if (!res.ok) { toast(`Could not load settings: ${(await res.text()).trim()}`); return; }
+    if (!res.ok) { toast(await errorText(res, "Loading settings"), "error"); return; }
     const v = await res.json();
     fields.forEach((n) => {
       if (input(n).type === "checkbox") input(n).checked = !!v[n]; else input(n).value = v[n];
     });
+    // tz is for display only; the body sent back is built from fields alone.
+    if (v.tz) {
+      $("night-tz").textContent = `Hours are in the server's time zone, ${v.tz}.`;
+      $("night-tz").hidden = false;
+    }
   })();
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
@@ -53,9 +43,9 @@ loaders.general = () => {
       body[n] = input(n).type === "checkbox" ? input(n).checked : parseInt(input(n).value, 10);
     });
     const res = await callAPI("/api/settings", { method: "PUT", body: JSON.stringify(body) });
-    if (!res.ok) { errorEl.textContent = (await res.text()).trim(); errorEl.hidden = false; return; }
+    if (!res.ok) { errorEl.textContent = await errorText(res); errorEl.hidden = false; return; }
     errorEl.hidden = true;
-    toast("Settings saved.");
+    toast("Settings saved.", "ok");
   });
 };
 
@@ -101,7 +91,7 @@ loaders.users = () => {
   };
   const request = async (path, method, body) => {
     const res = await callAPI(path, { method, body: body ? JSON.stringify(body) : undefined });
-    if (!res.ok) { showError((await res.text()).trim()); return null; }
+    if (!res.ok) { showError(await errorText(res)); return null; }
     showError("");
     const data = await res.json();
     if ("google_enabled" in data) googleEnabled = data.google_enabled;
@@ -135,10 +125,17 @@ loaders.users = () => {
         if (!u.self) {
           actions.append(mk("Sign out", async () => {
             const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "PUT", { revoke_sessions: true });
-            if (r) toast(`Signed ${u.username} out everywhere.`);
+            if (r) toast(`Signed ${u.username} out everywhere.`, "ok");
           }));
           actions.append(mk("Delete", async () => {
-            if (!confirm(`Delete user ${u.username}? They will be signed out.`)) return;
+            const ok = await confirmAction({
+              eyebrow: "// crew list",
+              title: `Delete ${u.username}?`,
+              message: "They are signed out everywhere and can no longer sign in. This can't be undone.",
+              confirmLabel: "Delete user",
+              danger: true,
+            });
+            if (!ok) return;
             const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "DELETE");
             if (r) { render(r); if (editing === u.username) resetForm(); }
           }, true));
@@ -151,7 +148,7 @@ loaders.users = () => {
 
   (async () => {
     const res = await callAPI("/api/users");
-    if (!res.ok) { toast(`Could not load users: ${(await res.text()).trim()}`); return; }
+    if (!res.ok) { toast(await errorText(res, "Loading users"), "error"); return; }
     const data = await res.json();
     googleEnabled = !!data.google_enabled;
     resetForm();
@@ -176,7 +173,7 @@ loaders.users = () => {
     if (!users) return;
     f.role.disabled = false;
     render(users);
-    toast(editing ? "User updated." : "User added.");
+    toast(editing ? "User updated." : "User added.", "ok");
     resetForm();
   });
 };
@@ -224,7 +221,7 @@ loaders.policy = () => {
   (async () => {
     const res = await callAPI("/api/managed/policy");
     if (res.status === 404) { $("policy-off").hidden = false; pf.hidden = true; return; }
-    if (!res.ok) { $("policy-note").textContent = "The policy could not be read: " + (await res.text()).trim(); return; }
+    if (!res.ok) { $("policy-note").textContent = "The policy could not be read: " + await errorText(res); return; }
     state = await res.json();
     fill();
   })();
@@ -237,10 +234,10 @@ loaders.policy = () => {
       max_scopes: parseInt(pf.elements.max_scopes.value, 10) || 0 };
     listFields.forEach((k) => { body[k] = lines(pf.elements[k].value); });
     const res = await callAPI("/api/managed/policy", { method: "PUT", body: JSON.stringify(body) });
-    if (!res.ok) { $("policy-error").textContent = (await res.text()).trim(); $("policy-error").hidden = false; return; }
+    if (!res.ok) { $("policy-error").textContent = await errorText(res); $("policy-error").hidden = false; return; }
     state = await res.json();
     fill();
-    toast("Policy saved.");
+    toast("Policy saved.", "ok");
   });
 };
 
@@ -249,12 +246,14 @@ loaders.modules = async () => {
   const list = $("modules-list");
   const res = await callAPI("/api/managed/modules");
   if (res.status === 404) { $("modules-off").hidden = false; return; }
-  if (!res.ok) { toast(`Could not load modules: ${(await res.text()).trim()}`); return; }
+  if (!res.ok) { toast(await errorText(res, "Loading modules"), "error"); return; }
   (await res.json()).forEach((m) => {
     const li = document.createElement("li");
     li.className = "user-row";
-    const name = document.createElement("span");
-    name.className = "user-name";
+    // Each entry opens that game's card on the Games page.
+    const name = document.createElement("a");
+    name.className = "user-name module-link";
+    name.href = `/games#module-${encodeURIComponent(m.id)}`;
     name.textContent = m.name;
     const tags = document.createElement("span");
     tags.className = "user-tags";

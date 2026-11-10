@@ -3,7 +3,6 @@ package web
 import (
 	"encoding/json"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 
@@ -57,10 +56,8 @@ func (a *App) handleGamesPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	data := dashboardData{Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
-	if err := a.Templates.Games.Execute(w, data); err != nil {
-		log.Printf("web: render games page: %v", err)
-	}
+	data := dashboardData{Page: "games", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
+	render(w, a.Templates.Games, data, "games page")
 }
 
 // handleSettingsPage serves the Settings page (admins only).
@@ -70,10 +67,8 @@ func (a *App) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	data := dashboardData{Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
-	if err := a.Templates.Settings.Execute(w, data); err != nil {
-		log.Printf("web: render settings page: %v", err)
-	}
+	data := dashboardData{Page: "settings", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
+	render(w, a.Templates.Settings, data, "settings page")
 }
 
 // handleManagedConfigured lists the games that come from config.yaml (everything

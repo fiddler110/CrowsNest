@@ -1,6 +1,7 @@
 api_version: 1
 id: windrose
 name: Windrose
+accent: "#f5b942"
 # Status, startup and player tracking come from the game's own log (the
 # container's stdout), so none of it needs the Windrose+ mod. The Windrose+
 # dashboard API only adds the rich info panel (time, weather, positions); see

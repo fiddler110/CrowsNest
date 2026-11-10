@@ -1,6 +1,7 @@
 api_version: 1
 id: minecraft
 name: Minecraft
+accent: "#4ade80"
 description: "Java edition server (itzg/minecraft-server): vanilla, Paper, Fabric or Forge. Needs the EULA accepted. Saves the world on stop; backups pause writes over RCON."
 # Java edition, itzg/minecraft-server (vanilla, Paper, Fabric and Forge print the
 # same vanilla server lines). Everything here is declarative: no Go code.

@@ -1,5 +1,5 @@
 // Games page: fleet, catalogue, one-page setup form with a live summary, and an install progress view.
-const CSRF_TOKEN = document.querySelector("meta[name=csrf-token]").content;
+// callAPI, errorText, toast and confirmAction come from api.js.
 const $ = (id) => document.getElementById(id);
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
@@ -7,21 +7,6 @@ const el = (tag, cls, text) => {
   if (text !== undefined) n.textContent = text;
   return n;
 };
-
-let toastTimer;
-function toast(message) {
-  $("toast-text").textContent = message;
-  $("toast").hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { $("toast").hidden = true; }, 6000);
-}
-
-function callAPI(path, options = {}) {
-  return fetch(path, {
-    ...options,
-    headers: { "Content-Type": "application/json", "X-CSRF-Token": CSRF_TOKEN, ...(options.headers || {}) },
-  });
-}
 
 const form = $("setup");
 let modules = [];
@@ -74,19 +59,35 @@ function renderFleet(configured) {
     const upd = el("button", "btn btn-ghost", "Update image");
     upd.type = "button"; upd.disabled = busy;
     upd.addEventListener("click", async () => {
+      const name = g.display_name || g.id;
+      const ok = await confirmAction({
+        eyebrow: "// refit",
+        title: `Update ${name}?`,
+        message: "This pulls the latest image and recreates the container, so a running server restarts and players are disconnected. The data folder is kept.",
+        confirmLabel: "Update image",
+      });
+      if (!ok) return;
       upd.disabled = true;
-      const res = await callAPI(`/api/managed/games/${g.id}/refresh`, { method: "POST" });
-      if (!res.ok) toast((await res.text()).trim()); else toast(`${g.display_name || g.id}: pulling the latest image…`);
+      const res = await callAPI(`/api/managed/games/${encodeURIComponent(g.id)}/refresh`, { method: "POST" });
+      if (!res.ok) toast(await errorText(res, "Update"), "error"); else toast(`${name}: pulling the latest image…`, "info");
       await loadGames();
     });
     const del = el("button", "btn btn-danger", "Disable");
     del.type = "button"; del.disabled = busy;
     del.addEventListener("click", async () => {
-      if (!confirm(`Disable ${g.display_name || g.id}? The container is removed; its data folder is kept.`)) return;
+      const name = g.display_name || g.id;
+      const ok = await confirmAction({
+        eyebrow: "// decommission",
+        title: `Disable ${name}?`,
+        message: "The container is removed and the game leaves the dashboard. Its data folder is kept, so it can be enabled again later.",
+        confirmLabel: "Disable",
+        danger: true,
+      });
+      if (!ok) return;
       del.disabled = true;
-      const res = await callAPI(`/api/managed/games/${g.id}`, { method: "DELETE" });
-      if (!res.ok) { toast((await res.text()).trim()); del.disabled = false; return; }
-      toast(`${g.display_name || g.id} disabled.`);
+      const res = await callAPI(`/api/managed/games/${encodeURIComponent(g.id)}`, { method: "DELETE" });
+      if (!res.ok) { toast(await errorText(res, "Disable"), "error"); del.disabled = false; return; }
+      toast(`${name} disabled.`, "ok");
       await loadGames();
     });
     row.append(edit, upd, del);
@@ -102,7 +103,13 @@ function renderFleet(configured) {
 }
 
 async function loadGames() {
-  const [gr, cr] = await Promise.all([callAPI("/api/managed/games"), callAPI("/api/managed/configured")]);
+  let gr, cr;
+  try {
+    [gr, cr] = await Promise.all([callAPI("/api/managed/games"), callAPI("/api/managed/configured")]);
+  } catch (err) {
+    return; // transient; the install poll (if any) retries
+  }
+  if (gr.status === 401) { window.location.href = "/login"; return; }
   if (gr.ok) games = await gr.json();
   const configured = cr.ok ? await cr.json() : [];
   // A game that was installing and is now ready or failed finishes the progress view.
@@ -124,6 +131,7 @@ function renderCatalogue() {
   modules.forEach((m) => {
     const b = el("button", "pick");
     b.type = "button";
+    b.id = `module-${m.id}`;
     b.setAttribute("role", "radio");
     b.setAttribute("aria-checked", String(m.id === selected));
     b.dataset.module = m.id;
@@ -263,7 +271,7 @@ async function runPreview() {
   dl.replaceChildren();
   $("tech").hidden = true;
   if (!res.ok) {
-    const msg = (await res.text()).trim();
+    const msg = await errorText(res);
     $("sum-status").className = "sum-status wait";
     $("sum-status").textContent = "Almost there: " + msg;
     sumRow(dl, "Image", m.needs_image ? [] : [m.image]);
@@ -289,8 +297,8 @@ async function runPreview() {
 
 // Host-side steps the dashboard cannot do for the operator (policy exception, network, firewall).
 function renderSetup(steps) {
-  $("setup").hidden = steps.length === 0;
-  const ol = $("setup-list");
+  $("host-setup").hidden = steps.length === 0;
+  const ol = $("host-setup-list");
   ol.replaceChildren();
   steps.forEach((st) => {
     const li = el("li", st.done ? "setup-step done" : "setup-step");
@@ -320,7 +328,7 @@ form.addEventListener("submit", async (e) => {
   const res = editing
     ? await callAPI(`/api/managed/games/${editing}`, { method: "PUT", body: JSON.stringify(req) })
     : await callAPI("/api/managed/games", { method: "POST", body: JSON.stringify(req) });
-  if (!res.ok) { showError((await res.text()).trim()); $("enable").disabled = false; return; }
+  if (!res.ok) { showError(await errorText(res)); $("enable").disabled = false; return; }
   installId = req.id;
   seenInstalling[req.id] = true;
   showProgress(editing ? "Applying your changes…" : `Setting up ${req.display_name || req.id}…`);
@@ -408,8 +416,20 @@ $("cancel-edit").addEventListener("click", () => {
     $("setup-section").hidden = true;
     return;
   }
-  if (mres.status === 401) { window.location.href = "/login"; return; }
   if (mres.ok) modules = await mres.json();
+  else { toast(await errorText(mres, "Loading the games"), "error"); return; }
   renderCatalogue();
   await loadGames();
+  selectFromHash();
 })();
+
+// /games#module-<id> (linked from Settings → Game modules) picks that game.
+function selectFromHash() {
+  const m = /^#module-(.+)$/.exec(location.hash);
+  if (!m || editing || !moduleById(decodeURIComponent(m[1]))) return;
+  const id = decodeURIComponent(m[1]);
+  choose(id);
+  const card = document.getElementById(`module-${id}`);
+  if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
+}
+window.addEventListener("hashchange", selectFromHash);

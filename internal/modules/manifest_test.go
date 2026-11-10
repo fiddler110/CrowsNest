@@ -34,6 +34,25 @@ func TestParseAndWire(t *testing.T) {
 	}
 }
 
+func TestAccentWired(t *testing.T) {
+	m, err := Parse(strings.NewReader("api_version: 1\nid: a\nname: A\naccent: '#60A5fa'\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := &games.GameDef{ID: "a"}
+	m.Wire()(def, Env{})
+	if def.Accent != "#60A5fa" {
+		t.Fatalf("accent %q", def.Accent)
+	}
+	for _, id := range Bundled().IDs() {
+		var d games.GameDef
+		Bundled().wire[id](&d, Env{})
+		if !accentRe.MatchString(d.Accent) {
+			t.Errorf("bundled module %s: accent %q", id, d.Accent)
+		}
+	}
+}
+
 func TestParseRejects(t *testing.T) {
 	cases := map[string]string{
 		"version":       "api_version: 2\nid: a\nname: A\n",
@@ -46,6 +65,8 @@ func TestParseRejects(t *testing.T) {
 		"lm-incomplete": "api_version: 1\nid: a\nname: A\nplayers: {type: log_markers}\n",
 		"lm-nogroup":    "api_version: 1\nid: a\nname: A\nstatus: {ready_log: ok}\nplayers: {type: log_markers, join: x, leave: 'y(.)'}\n",
 		"negative":      "api_version: 1\nid: a\nname: A\nruntime: {restart_cooldown: -1s}\n",
+		"accent-name":   "api_version: 1\nid: a\nname: A\naccent: blue\n",
+		"accent-short":  "api_version: 1\nid: a\nname: A\naccent: '#abc'\n",
 	}
 	for name, y := range cases {
 		if _, err := Parse(strings.NewReader(y)); err == nil {
