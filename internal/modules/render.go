@@ -138,7 +138,10 @@ type GuardScope struct {
 type Rendered struct {
 	ID      string
 	Service Service
-	Scope   GuardScope
+	// Repo and Tag are the image as the module and options name it. Service.Image
+	// is Repo:Tag until Pin names one exact image by digest.
+	Repo, Tag string
+	Scope     GuardScope
 	// EnvVars are the .env variables the service reads, name -> default
 	// ("" for secrets and unset values), in a stable order.
 	EnvVars []EnvVar
@@ -200,7 +203,7 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		return nil, fmt.Errorf("game %q: data_dir %q must be a plain relative folder name", g.ID, dataDir)
 	}
 
-	r := &Rendered{ID: g.ID}
+	r := &Rendered{ID: g.ID, Repo: image, Tag: tag}
 	svc := Service{
 		Image: image + ":" + tag, Profiles: []string{g.ID}, ContainerName: g.ContainerName,
 		Restart:  "unless-stopped",
@@ -402,6 +405,21 @@ func ComposeFile(rs []*Rendered, network string) ([]byte, error) {
 	}
 	out.WriteString("\nnetworks:\n  " + network + ":\n    external: true\n")
 	return []byte(out.String()), nil
+}
+
+// Ref is the tag reference a pull resolves (repo:tag).
+func (r *Rendered) Ref() string { return r.Repo + ":" + r.Tag }
+
+// Pin makes the service (and the container Spec creates) run exactly the image
+// with this digest (sha256:...) instead of whatever the tag points at now. An
+// empty digest goes back to the tag. The guard scope is unchanged: it names
+// repositories, never tags or digests.
+func (r *Rendered) Pin(digest string) {
+	if digest == "" {
+		r.Service.Image = r.Ref()
+		return
+	}
+	r.Service.Image = r.Repo + "@" + digest
 }
 
 // ScopesJSON renders GUARD_SCOPES for the given games.

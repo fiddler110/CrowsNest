@@ -38,6 +38,11 @@ type Scope struct {
 	// something outside Docker keys on the address, e.g. a firewall rule for a
 	// macvlan container.
 	IPv4 map[string][]string
+
+	// pinDigest is set on a managed scope loaded under a policy with
+	// pin_digests: its creates must name the image by digest. It cannot be
+	// written in a scope's JSON, so only the policy turns it on.
+	pinDigest bool
 }
 
 var (

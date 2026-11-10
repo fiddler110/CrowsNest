@@ -20,6 +20,7 @@ type ManagedGames interface {
 	Enable(managed.Request) error
 	Update(managed.Request) error
 	Refresh(id string) error
+	Rollback(id string) error
 	Disable(id string) error
 	Policy() (managed.PolicyState, error)
 	SetPolicy(managed.PolicyDoc) error
@@ -199,6 +200,21 @@ func (a *App) handleManagedRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	a.record(r, id, "updating image")
 	a.pokeGame(id) // re-observe; an id the hub lacks prompts a registry reconcile
+	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": managed.StateInstalling})
+}
+
+// handleManagedRollback recreates a stopped game on its previous image digest.
+// Every refusal (no previous image, running, starting or stopping) is a 409.
+func (a *App) handleManagedRollback(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	id := r.PathValue("id")
+	if err := a.Managed.Rollback(id); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	a.record(r, id, "rolling back to the previous image")
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": managed.StateInstalling})
 }
 

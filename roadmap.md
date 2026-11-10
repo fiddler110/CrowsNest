@@ -55,9 +55,14 @@ derived from it.
   compose and guard scopes; per-game secrets in `secrets.json` (0600, never rendered);
   the guard reads a managed scopes file and reloads; `policy.yaml` envelope with
   per-game exceptions; guard forwards resolved container ids; fuzz targets for path
-  and body parsing (2026-11-10). Remaining: exec rules derived from manifests,
-  image pinning by digest/version, privilege approval + lock file, dedicated
-  security review.) Generate guard scopes, execguard rules and
+  and body parsing (2026-11-10); dashboard games pinned by image digest, with
+  `pin_digests` in `policy.yaml` making the guard refuse a managed create by tag,
+  and one-step rollback to the previous digest; exec rules derived at runtime
+  (execguard builds them from config.yaml backups plus each managed game's
+  module, reloaded from the managed dir, so they cannot drift); privilege
+  approval is covered by operator-only policy exceptions (only policy.yaml on
+  the host can grant one), and the lock file moves to Phase 5 with remote module
+  sources. Remaining: dedicated security review.) Generate guard scopes, execguard rules and
   compose fragments from manifests; per-module secrets (the panel stops
   reading every game's `.env` values); guard reads a scopes file and reloads;
   `policy.yaml` envelope, privilege approval (`crowsnest module apply`) and a
@@ -72,7 +77,8 @@ derived from it.
 - [ ] **Phase 5: modules in the UI.** (done: the Games page enables, edits,
   refreshes and disables games from bundled modules inside the policy envelope,
   with preview, host-setup steps and install progress; Settings shows the policy.
-  Remaining: profiles, installing modules from signed remote sources.) Install, enable, configure and remove
+  Remaining: profiles, installing modules from signed remote sources with a
+  lock file of what was installed, moved here from Phase 3.) Install, enable, configure and remove
   modules and profiles from the dashboard (inside the policy envelope);
   signed remote sources. Done when a profile is created and started with no
   file edits.
@@ -108,7 +114,9 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
 - [ ] **Backup retention, restore button and offsite copy** (restic/rclone).
   Backups and the admin panel exist; restore and retention do not.
 - [ ] **"Update available" and one-click rollback** to the last-known-good
-  image (needs the digest pinning from Phase 3).
+  image. (done: Roll back on the Games page recreates a dashboard game on its
+  previous digest, and Update image says whether anything changed. Not built:
+  an "update available" check that asks the registry without pulling.)
 - [ ] **Crash-loop detection** with a Discord/ntfy alert; **Prometheus
   `/metrics`**.
 - [ ] **Mod and config file editing**, files declared in the manifest.

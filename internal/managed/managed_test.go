@@ -3,6 +3,7 @@ package managed
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net"
 	"net/http"
 	"os"
@@ -36,6 +37,27 @@ type fakeDocker struct {
 	pulled  []string
 	have    map[string]bool
 	running map[string]bool
+	digests map[string]string // repo:tag -> what it resolves to now (default: one per ref)
+	removed []string
+}
+
+func defaultDigest(ref string) string {
+	return "sha256:" + strings.Repeat(fmt.Sprintf("%02x", len(ref)), 32)
+}
+
+// ImageDigests answers as the engine does: a tag's image carries repo@digest; a digest ref is there or not.
+func (f *fakeDocker) ImageDigests(_ context.Context, ref string) ([]string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if _, _, byDigest := strings.Cut(ref, "@"); byDigest {
+		return []string{ref}, nil
+	}
+	d := f.digests[ref]
+	if d == "" {
+		d = defaultDigest(ref)
+	}
+	repo := ref[:strings.LastIndex(ref, ":")]
+	return []string{"other/mirror@sha256:" + strings.Repeat("0", 64), repo + "@" + d}, nil
 }
 
 func (f *fakeDocker) Create(_ context.Context, s dockerctl.CreateSpec) error {
@@ -55,6 +77,7 @@ func (f *fakeDocker) Remove(_ context.Context, n string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	delete(f.have, n)
+	f.removed = append(f.removed, n)
 	return nil
 }
 func (f *fakeDocker) Exists(_ context.Context, n string) (bool, error) {
@@ -76,7 +99,7 @@ func newManager(t *testing.T) (*Manager, *fakeDocker) {
 		t.Fatal(err)
 	}
 	reg, _ := games.NewRegistry(nil)
-	fd := &fakeDocker{have: map[string]bool{}, running: map[string]bool{}}
+	fd := &fakeDocker{have: map[string]bool{}, running: map[string]bool{}, digests: map[string]string{}}
 	m := &Manager{
 		Dir: filepath.Join(dir, "managed"), PolicyFile: pol,
 		Platform: modules.Platform{GamesRoot: "/srv/games", HostIP: "10.0.0.2"},
@@ -188,7 +211,7 @@ func TestEnableAndDisable(t *testing.T) {
 func newManagerAt(t *testing.T, old *Manager) (*Manager, *fakeDocker) {
 	t.Helper()
 	reg, _ := games.NewRegistry(nil)
-	fd := &fakeDocker{have: map[string]bool{"minecraft": true}, running: map[string]bool{}}
+	fd := &fakeDocker{have: map[string]bool{"minecraft": true}, running: map[string]bool{}, digests: map[string]string{}}
 	m := &Manager{Dir: old.Dir, PolicyFile: old.PolicyFile, Platform: old.Platform, Modules: old.Modules, Config: old.Config,
 		Docker: fd, Wire: &dockerctl.Client{}, Registry: reg, Settle: time.Second}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -349,7 +372,10 @@ func TestUpdateAndRefresh(t *testing.T) {
 		t.Error("game missing from the dashboard after an update")
 	}
 
-	// refresh: pulls again and recreates, same settings
+	// refresh: pulls again and, the tag now pointing at a new image, recreates with the same settings
+	fd.mu.Lock()
+	fd.digests["itzg/minecraft-server:latest"] = "sha256:" + strings.Repeat("2", 64)
+	fd.mu.Unlock()
 	pulls := len(fd.pulled)
 	if err := m.Refresh("minecraft"); err != nil {
 		t.Fatal(err)

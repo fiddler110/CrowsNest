@@ -79,6 +79,7 @@ func (s Sources) Load() (*Result, error) {
 				res.Rejected = append(res.Rejected, fmt.Errorf("managed scope %s: %w", m.Name, err))
 				continue
 			}
+			m.pinDigest = pol.PinDigests
 			taken[m.Name] = true
 			res.Scopes = append(res.Scopes, m)
 			res.Managed++

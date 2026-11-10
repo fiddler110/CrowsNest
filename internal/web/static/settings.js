@@ -195,6 +195,7 @@ loaders.policy = () => {
     listFields.forEach((k) => { pf.elements[k].value = (p[k] || []).join("\n"); pf.elements[k].rows = Math.max(2, (p[k] || []).length); });
     pf.elements.max_scopes.value = p.max_scopes;
     pf.elements.exec.checked = !!p.exec;
+    pf.elements.pin_digests.checked = !!p.pin_digests;
     $("policy-note").textContent = state.editable
       ? "What the panel may create when you add a game. Saved changes apply within a few seconds, and a game that no longer fits is dropped by the guard."
       : "What the panel may create when you add a game. It is read-only here on purpose: it lives in policy.yaml on the host, so a compromised panel cannot widen its own limits.";
@@ -230,7 +231,7 @@ loaders.policy = () => {
   $("policy-cancel").addEventListener("click", () => { $("policy-error").hidden = true; fill(); });
   pf.addEventListener("submit", async (e) => {
     e.preventDefault();
-    const body = { games_root: pf.elements.games_root.value.trim(), exec: pf.elements.exec.checked,
+    const body = { games_root: pf.elements.games_root.value.trim(), exec: pf.elements.exec.checked, pin_digests: pf.elements.pin_digests.checked,
       max_scopes: parseInt(pf.elements.max_scopes.value, 10) || 0 };
     listFields.forEach((k) => { body[k] = lines(pf.elements[k].value); });
     const res = await callAPI("/api/managed/policy", { method: "PUT", body: JSON.stringify(body) });
