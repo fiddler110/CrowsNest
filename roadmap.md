@@ -51,7 +51,13 @@ derived from it.
   bundled modules; adapter-sidecar contract v0 (Windrose+ first); remove the
   typed per-game fields from `config`. Done when a fourth game (Minecraft or a
   Source game) is added with a manifest only, in under 30 minutes.
-- [ ] **Phase 3: derived security.** Generate guard scopes, execguard rules and
+- [ ] **Phase 3: derived security.** (done: `runtime:` + `crowsnest render` generate
+  compose and guard scopes; per-game secrets in `secrets.json` (0600, never rendered);
+  the guard reads a managed scopes file and reloads; `policy.yaml` envelope with
+  per-game exceptions; guard forwards resolved container ids; fuzz targets for path
+  and body parsing (2026-11-10). Remaining: exec rules derived from manifests,
+  image pinning by digest/version, privilege approval + lock file, dedicated
+  security review.) Generate guard scopes, execguard rules and
   compose fragments from manifests; per-module secrets (the panel stops
   reading every game's `.env` values); guard reads a scopes file and reloads;
   `policy.yaml` envelope, privilege approval (`crowsnest module apply`) and a
@@ -60,7 +66,10 @@ derived from it.
 - [ ] **Phase 4: state hub.** One poller per game on an adaptive cadence, one
   SSE stream to browsers, memory-budget admission instead of
   `max_active_games` as a RAM proxy.
-- [ ] **Phase 5: modules in the UI.** Install, enable, configure and remove
+- [ ] **Phase 5: modules in the UI.** (done: the Games page enables, edits,
+  refreshes and disables games from bundled modules inside the policy envelope,
+  with preview, host-setup steps and install progress; Settings shows the policy.
+  Remaining: profiles, installing modules from signed remote sources.) Install, enable, configure and remove
   modules and profiles from the dashboard (inside the policy envelope);
   signed remote sources. Done when a profile is created and started with no
   file edits.
