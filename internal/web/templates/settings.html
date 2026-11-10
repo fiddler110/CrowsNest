@@ -1,42 +1,12 @@
 <!doctype html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark">
-<meta name="csrf-token" content="{{.CSRFToken}}">
+{{template "head" .}}
 <title>CrowsNest · Settings</title>
-<link rel="icon" type="image/png" href="/static/brand.png">
-<link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
-<svg xmlns="http://www.w3.org/2000/svg" class="sr-only" aria-hidden="true" focusable="false">
-  <symbol id="i-play" viewBox="0 0 24 24"><path d="M7 4.5v15l12-7.5z"/></symbol>
-  <symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/></symbol>
-  <symbol id="i-terminal" viewBox="0 0 24 24"><path d="M4 6l6 6-6 6M12 19h8"/></symbol>
-  <symbol id="i-chart" viewBox="0 0 24 24"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></symbol>
-  <symbol id="i-info" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7.5v.01"/></symbol>
-  <symbol id="i-user" viewBox="0 0 24 24"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></symbol>
-  <symbol id="i-users" viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9.5" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9M16 3.1a4 4 0 0 1 0 7.8"/></symbol>
-  <symbol id="i-logout" viewBox="0 0 24 24"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></symbol>
-  <symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></symbol>
-  <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></symbol>
-  <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 8v5M12 16.5v.01"/></symbol>
-</svg>
-
-<div class="backdrop" aria-hidden="true"><span class="grid"></span><span class="glow glow-a"></span><span class="glow glow-b"></span></div>
-
-<header class="topbar">
-  <a class="brand" href="/">
-    <img src="/static/brand.png" alt="" width="38" height="38">
-    <span class="brand-text"><strong>CrowsNest</strong><small>// settings</small></span>
-  </a>
-  <div class="user-bar">
-    <a class="btn btn-ghost" href="/">Dashboard</a>
-    <a class="btn btn-ghost" href="/games"><svg class="icon"><use href="#i-play"/></svg>Games</a>
-    <span class="user-chip"><svg class="icon"><use href="#i-user"/></svg><b>{{.Username}}</b></span>
-  </div>
-</header>
+<body data-page="settings" data-admin>
+{{template "sprite"}}
+{{template "topbar" .}}
 
 <main class="shell settings-shell">
   <nav class="settings-nav" aria-label="Settings sections">
@@ -65,6 +35,7 @@
           <label class="field">Until hour (0-23)
             <input type="number" name="night_end_hour" min="0" max="23" required></label>
         </div>
+        <p class="settings-help field-note" id="night-tz" hidden></p>
 
         <h3>Capacity</h3>
         <label class="field">Servers allowed at once
@@ -144,10 +115,8 @@
   </div>
 </main>
 
-<div id="toast" class="toast" role="status" hidden>
-  <svg class="icon"><use href="#i-alert"/></svg><span id="toast-text"></span>
-</div>
+{{template "chrome" .}}
 
-<script src="/static/settings.js"></script>
+<script src="{{asset "settings.js"}}"></script>
 </body>
 </html>

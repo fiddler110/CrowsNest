@@ -152,6 +152,10 @@ type GameDef struct {
 	// variable is unset or empty are dropped.
 	ConnectSecrets []ConnectSecret
 
+	// Accent is the card's accent colour ("#rrggbb") from the game's module;
+	// empty keeps the dashboard's default.
+	Accent string
+
 	// RestartCooldown is the minimum time between stopping this game and
 	// starting it again; zero means no limit. Some servers (Palworld)
 	// crash if brought back up seconds after a shutdown.

@@ -1,6 +1,7 @@
 api_version: 1
 id: valheim
 name: Valheim
+accent: "#60a5fa"
 description: "Valheim dedicated server (lloesche/valheim-server) with its own world backups and status port."
 # Markers verified 2026-11-07 against a real player session
 # (internal/logtrack/testdata/valheim_session.log).

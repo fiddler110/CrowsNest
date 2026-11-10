@@ -1,6 +1,7 @@
 api_version: 1
 id: palworld
 name: Palworld
+accent: "#c084fc"
 description: "Palworld dedicated server (thijsvanloef/palworld-server-docker) with the REST API for status, players and save-on-stop."
 # Palworld's dedicated-server REST API
 # (https://docs.palworldgame.com/api/rest-api/) as served by

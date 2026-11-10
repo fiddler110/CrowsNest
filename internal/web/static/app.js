@@ -1,15 +1,20 @@
-const CSRF_TOKEN = document.querySelector('meta[name=csrf-token]').content;
+// Dashboard: vessel cards (status, start/stop/switch, panels), fleet banner,
+// logbook and host health. callAPI, checkOK, errorText, toast, openModal and
+// confirmAction come from api.js.
 const POLL_INTERVAL_MS = 5000;
+const HEALTH_POLL_MS = 30000;
 const STATS_POLL_MS = 3000;
 const INFO_POLL_MS = 30000; // the fact sheet barely changes; every poll is a call to the game server
+const BACKUPS_POLL_MS = 5000;
 const MAX_LOG_LINES = 300;
+const MAX_CONSOLE_LINES = 300;
 
 const logSources = {};
 const progressSources = {};
 const progressDone = {};      // id -> true once a run's progress hit 100%
 const shownStartErrors = {};  // id -> start_error_at already toasted
-const statsTimers = {};
-const infoTimers = {};
+const panelTimers = {};       // id -> poll handle of the open tab (stats, info, backups)
+const openTab = {};           // id -> name of the card's open tab, if any
 
 // poll runs fn every ms like setInterval, but skips ticks while the tab is
 // hidden and fires once immediately when it becomes visible again. Returns a
@@ -30,17 +35,19 @@ function cardFor(id) {
   return document.querySelector(`.game-card[data-id="${CSS.escape(id)}"]`);
 }
 
-function setPressed(btn, pressed) {
-  btn.setAttribute("aria-pressed", String(pressed));
-}
+const isOffline = (card) => card.dataset.status === "offline";
 
 function setStatus(id, status) {
   const card = cardFor(id);
   if (!card) return;
-  const badge = card.querySelector(".status");
   const prevStatus = card.dataset.status;
-  badge.className = `status status-${status}`;
-  badge.querySelector(".status-text").textContent = status;
+  // Until the first poll answers, a server-rendered "unknown" keeps its
+  // neutral "checking…" badge rather than flashing the red unknown one.
+  if (!(prevStatus === "" && status === "unknown")) {
+    const badge = card.querySelector(".status");
+    badge.className = `status status-${status}`;
+    badge.querySelector(".status-text").textContent = status;
+  }
   card.dataset.status = status;
 
   // Start makes sense only for a stopped/unknown game; Stop only for one
@@ -58,14 +65,27 @@ function setStatus(id, status) {
     delete progressDone[id];
     stopProgressTracking(id);
   }
+  if (prevStatus && prevStatus !== status) {
+    const tab = openTab[id] && TABS[openTab[id]];
+    if (tab && tab.onStatus) tab.onStatus(id, card, status);
+  }
   updateFleet();
 }
+
+// listNames joins names as "A", "A and B", "A, B and C".
+function listNames(names) {
+  if (names.length < 2) return names.join("");
+  return `${names.slice(0, -1).join(", ")} and ${names[names.length - 1]}`;
+}
+
+const playersOf = (c) => parseInt(c.dataset.players, 10) || 0;
+const aboard = (n) => (n === 1 ? "1 player aboard" : `${n} players aboard`);
 
 // updateFleet refreshes the hero banner from what the cards currently show.
 function updateFleet() {
   const cards = [...document.querySelectorAll(".game-card")];
   const active = cards.filter((c) => ["online", "starting"].includes(c.dataset.status));
-  const crew = cards.reduce((n, c) => n + (parseInt(c.dataset.players, 10) || 0), 0);
+  const crew = active.reduce((n, c) => n + playersOf(c), 0);
 
   const hero = document.getElementById("fleet");
   const title = document.getElementById("fleet-title");
@@ -74,11 +94,13 @@ function updateFleet() {
 
   if (cards.length === 0) {
     title.textContent = "No vessels charted";
-    sub.textContent = "Add a game to config.yaml to see it here.";
+    sub.textContent = document.body.hasAttribute("data-admin")
+      ? "Add a game on the Games page to see it here."
+      : "Ask an admin to add a game.";
   } else if (active.length === 0) {
     title.textContent = "All quiet on the horizon";
     sub.textContent = "No server is running. Pick a vessel below and start it when the crew is ready.";
-  } else {
+  } else if (active.length === 1) {
     const c = active[0];
     const name = c.dataset.name;
     if (c.dataset.status === "starting") {
@@ -86,22 +108,19 @@ function updateFleet() {
       sub.textContent = "The server is starting up. It will appear online once it's ready for the crew.";
     } else {
       title.textContent = `${name} is under sail`;
-      sub.textContent = crew === 1 ? "1 player aboard." : `${crew} players aboard.`;
+      sub.textContent = `${aboard(crew)}.`;
     }
+  } else {
+    title.textContent = `${active.length} vessels under way: ${listNames(active.map((c) => c.dataset.name))}`;
+    const starting = active.filter((c) => c.dataset.status === "starting").map((c) => c.dataset.name);
+    const parts = [`${aboard(crew)} across them.`];
+    if (starting.length) parts.push(`${listNames(starting)} ${starting.length === 1 ? "is" : "are"} still getting under way.`);
+    sub.textContent = parts.join(" ");
   }
 
   document.getElementById("stat-vessels").textContent = cards.length;
   document.getElementById("stat-active").textContent = active.length;
   document.getElementById("stat-crew").textContent = crew;
-}
-
-let toastTimer;
-function toast(message) {
-  const el = document.getElementById("toast");
-  document.getElementById("toast-text").textContent = message;
-  el.hidden = false;
-  clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => { el.hidden = true; }, 6000);
 }
 
 function startProgressTracking(id) {
@@ -112,7 +131,7 @@ function startProgressTracking(id) {
   const bar = card.querySelector(".progress-bar");
   const label = card.querySelector(".progress-label");
 
-  const es = new EventSource(`/api/games/${id}/startup-progress`);
+  const es = new EventSource(`/api/games/${encodeURIComponent(id)}/startup-progress`);
   progressSources[id] = es;
 
   es.addEventListener("progress", (e) => {
@@ -143,11 +162,7 @@ function closeProgressSource(id) {
 }
 
 function stopProgressTracking(id) {
-  const es = progressSources[id];
-  if (es) {
-    es.close();
-    delete progressSources[id];
-  }
+  closeProgressSource(id);
   const card = cardFor(id);
   if (card) card.querySelector(".progress-wrap").hidden = true;
 }
@@ -168,6 +183,70 @@ function setPlayerCount(id, count) {
   updateFleet();
 }
 
+// ---------- card tabs ----------
+// Each card's panels are one tab group: at most one is open. Opening a tab
+// starts its stream or poll; closing it, or switching to another, stops it.
+// Clicking the open tab closes it.
+
+const tabButton = (card, name) => card.querySelector(`.tab[data-tab="${name}"]`);
+const tabPanel = (card, name) => card.querySelector(`[role="tabpanel"][data-panel="${name}"]`);
+
+function stopPanelTimer(id) {
+  if (panelTimers[id]) {
+    stopPoll(panelTimers[id]);
+    delete panelTimers[id];
+  }
+}
+
+function selectTab(id, name) {
+  const card = cardFor(id);
+  if (!card) return;
+  const current = openTab[id];
+  if (current) {
+    TABS[current].stop(id, card);
+    tabPanel(card, current).hidden = true;
+    tabButton(card, current).setAttribute("aria-selected", "false");
+    delete openTab[id];
+  }
+  if (!name || name === current || !TABS[name]) return;
+  openTab[id] = name;
+  tabPanel(card, name).hidden = false;
+  const btn = tabButton(card, name);
+  btn.setAttribute("aria-selected", "true");
+  focusableTab(card, btn);
+  TABS[name].start(id, card);
+}
+
+// focusableTab makes btn the tab group's single Tab stop (roving tabindex).
+function focusableTab(card, btn) {
+  card.querySelectorAll(".tab").forEach((t) => { t.tabIndex = t === btn ? 0 : -1; });
+}
+
+function wireTabs(card) {
+  const id = card.dataset.id;
+  const tabs = [...card.querySelectorAll(".tab")];
+  if (!tabs.length) return;
+  focusableTab(card, tabs[0]);
+  tabs.forEach((btn) => {
+    btn.addEventListener("click", () => selectTab(id, openTab[id] === btn.dataset.tab ? null : btn.dataset.tab));
+  });
+  // Arrow keys move between tabs; Enter or Space opens one. (Moving does not
+  // open: every tab starts a stream or a poll.)
+  card.querySelector(".tabs").addEventListener("keydown", (e) => {
+    const i = tabs.indexOf(document.activeElement);
+    if (i < 0) return;
+    let next;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = tabs[(i + 1) % tabs.length];
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = tabs[(i - 1 + tabs.length) % tabs.length];
+    else if (e.key === "Home") next = tabs[0];
+    else if (e.key === "End") next = tabs[tabs.length - 1];
+    if (!next) return;
+    e.preventDefault();
+    focusableTab(card, next);
+    next.focus();
+  });
+}
+
 // Game containers often colour their output with ANSI escapes, which a
 // <div> would show as garbage boxes.
 const ANSI_RE = /\u001b\[[0-9;?]*[A-Za-z]/g;
@@ -175,50 +254,51 @@ function stripAnsi(text) {
   return text.replace(ANSI_RE, "");
 }
 
-function toggleLogs(id) {
-  const card = cardFor(id);
-  if (!card) return;
-  const panel = card.querySelector(".log-panel");
+// appendLines adds one row per line to out, follows the newest line unless
+// the reader has scrolled back (scroller is the scrolling box), and keeps at
+// most max rows.
+function appendLines(out, scroller, text, kind, max) {
+  const atBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 24;
+  String(text).split("\n").forEach((t) => {
+    const line = document.createElement("div");
+    if (kind) line.className = `ln-${kind}`;
+    line.textContent = t;
+    out.appendChild(line);
+  });
+  while (out.childElementCount > max) out.firstElementChild.remove();
+  if (atBottom) scroller.scrollTop = scroller.scrollHeight;
+}
+
+// startLogs follows the container's log. With resume the lines already shown
+// stay (a stream that ended is picking up again).
+function startLogs(id, card, resume) {
+  const panel = tabPanel(card, "logs");
   const output = card.querySelector(".log-output");
-  const btn = card.querySelector(".logs-btn");
-
-  if (logSources[id]) {
-    logSources[id].close();
-    delete logSources[id];
-    panel.hidden = true;
-    setPressed(btn, false);
-    return;
+  if (!resume) {
+    output.replaceChildren();
+    panel.scrollTop = 0; // empty panel counts as "at the bottom", so it follows
   }
-
-  output.textContent = "";
-  panel.hidden = false;
-  panel.scrollTop = 0; // empty panel counts as "at the bottom", so it follows
-  setPressed(btn, true);
-
-  const es = new EventSource(`/api/games/${id}/logs`);
+  const es = new EventSource(`/api/games/${encodeURIComponent(id)}/logs`);
   logSources[id] = es;
   // Plain lines arrive as default "message" events; games with a log
   // formatter tag lines warn/error/verbose, which only named listeners see.
-  // Follow the newest line unless the reader has scrolled back; scrolling
-  // back down to the end resumes following. The scroller is the panel.
-  const addLine = (kind) => (e) => {
-    const atBottom = panel.scrollHeight - panel.scrollTop - panel.clientHeight < 24;
-    const line = document.createElement("div");
-    if (kind) line.className = `ln-${kind}`;
-    line.textContent = stripAnsi(e.data);
-    output.appendChild(line);
-    while (output.children.length > MAX_LOG_LINES) {
-      output.removeChild(output.firstChild);
-    }
-    if (atBottom) panel.scrollTop = panel.scrollHeight;
-  };
+  const addLine = (kind) => (e) => appendLines(output, panel, stripAnsi(e.data), kind, MAX_LOG_LINES);
   es.onmessage = addLine("");
   ["warn", "error", "verbose"].forEach((kind) => es.addEventListener(kind, addLine(kind)));
   es.onerror = () => {
     es.close();
+    if (logSources[id] !== es) return;
     delete logSources[id];
-    setPressed(btn, false);
+    appendLines(output, panel, "— stream ended (container stopped?) —", "muted", MAX_LOG_LINES);
   };
+}
+
+function stopLogs(id) {
+  const es = logSources[id];
+  if (es) {
+    delete logSources[id];
+    es.close();
+  }
 }
 
 function setStatBar(fillEl, valueEl, pct, text) {
@@ -235,17 +315,25 @@ function clearStatBar(fillEl, valueEl) {
   valueEl.textContent = "N/A";
 }
 
+function clearStats(card) {
+  clearStatBar(card.querySelector(".stat-cpu-fill"), card.querySelector(".stat-cpu-val"));
+  clearStatBar(card.querySelector(".stat-mem-fill"), card.querySelector(".stat-mem-val"));
+  card.querySelector(".stat-gpu-row").hidden = true;
+  card.querySelector(".stat-gpu-mem-row").hidden = true;
+}
+
 async function fetchStats(id) {
   const card = cardFor(id);
-  if (!card) return;
+  if (!card || isOffline(card)) return;
   let res;
   try {
-    res = await fetch(`/api/games/${id}/stats`);
+    res = await fetch(`/api/games/${encodeURIComponent(id)}/stats`);
   } catch (err) {
     return; // transient network hiccup; next poll retries
   }
   if (!res.ok) return;
   const d = await res.json();
+  if (openTab[id] !== "stats" || isOffline(card)) return; // closed or stopped meanwhile
 
   if (d.cpu != null) {
     const pct = parseFloat(d.cpu);
@@ -282,24 +370,18 @@ async function fetchStats(id) {
   }
 }
 
-function toggleStats(id) {
-  const card = cardFor(id);
-  if (!card) return;
-  const panel = card.querySelector(".stats-panel");
-  const btn = card.querySelector(".stats-btn");
-
-  if (statsTimers[id]) {
-    stopPoll(statsTimers[id]);
-    delete statsTimers[id];
-    panel.hidden = true;
-    setPressed(btn, false);
+// startStats polls the container's figures, or, while the game is offline,
+// shows N/A without polling (the status poll restarts it when it comes up).
+function startStats(id, card) {
+  stopPanelTimer(id);
+  const offline = isOffline(card);
+  card.querySelector(".stats-note").hidden = !offline;
+  if (offline) {
+    clearStats(card);
     return;
   }
-
-  panel.hidden = false;
-  setPressed(btn, true);
   fetchStats(id);
-  statsTimers[id] = poll(() => fetchStats(id), STATS_POLL_MS);
+  panelTimers[id] = poll(() => fetchStats(id), STATS_POLL_MS);
 }
 
 // fetchInfo fills the info panel's key/value list from
@@ -310,18 +392,20 @@ async function fetchInfo(id) {
   if (!card) return;
   let res;
   try {
-    res = await fetch(`/api/games/${id}/info`);
+    res = await fetch(`/api/games/${encodeURIComponent(id)}/info`);
   } catch (err) {
     return; // transient network hiccup; next poll retries
   }
   if (!res.ok) return;
   const data = await res.json();
+  if (openTab[id] !== "info") return;
 
   const emptyEl = card.querySelector(".info-empty");
   const fieldsEl = card.querySelector(".info-fields");
-  fieldsEl.innerHTML = "";
+  fieldsEl.replaceChildren();
 
   if (!data.available) {
+    emptyEl.textContent = "No info right now. The server may still be starting.";
     emptyEl.hidden = false;
     return;
   }
@@ -332,37 +416,70 @@ async function fetchInfo(id) {
     dt.textContent = key.replace(/_/g, " ");
     const dd = document.createElement("dd");
     dd.textContent = String(value);
-    fieldsEl.appendChild(dt);
-    fieldsEl.appendChild(dd);
+    fieldsEl.append(dt, dd);
   }
 }
 
-function toggleInfo(id) {
-  const card = cardFor(id);
-  if (!card) return;
-  const panel = card.querySelector(".info-panel");
-  const btn = card.querySelector(".info-btn");
-
-  if (infoTimers[id]) {
-    stopPoll(infoTimers[id]);
-    delete infoTimers[id];
-    panel.hidden = true;
-    setPressed(btn, false);
+function startInfo(id, card) {
+  stopPanelTimer(id);
+  if (isOffline(card)) {
+    const emptyEl = card.querySelector(".info-empty");
+    card.querySelector(".info-fields").replaceChildren();
+    emptyEl.textContent = "Offline: start the server to see its info.";
+    emptyEl.hidden = false;
     return;
   }
-
-  panel.hidden = false;
-  setPressed(btn, true);
   fetchInfo(id);
-  infoTimers[id] = poll(() => fetchInfo(id), INFO_POLL_MS);
+  panelTimers[id] = poll(() => fetchInfo(id), INFO_POLL_MS);
 }
+
+// TABS: what opening and closing each tab does. onStatus runs when the
+// card's status changes while that tab is open.
+const TABS = {
+  logs: {
+    start: (id, card) => startLogs(id, card, false),
+    stop: (id) => stopLogs(id),
+    // A stream that ended (container stopped, or not created yet) picks up
+    // again once the game is coming up or running.
+    onStatus: (id, card, status) => {
+      if (!logSources[id] && (status === "starting" || status === "online")) startLogs(id, card, true);
+    },
+  },
+  stats: {
+    start: startStats,
+    stop: stopPanelTimer,
+    onStatus: (id, card, status) => {
+      if ((status === "offline") !== !panelTimers[id]) startStats(id, card);
+    },
+  },
+  info: {
+    start: startInfo,
+    stop: stopPanelTimer,
+    onStatus: (id, card, status) => {
+      if ((status === "offline") !== !panelTimers[id]) startInfo(id, card);
+    },
+  },
+  backups: {
+    start: (id) => {
+      stopPanelTimer(id);
+      fetchBackups(id);
+      panelTimers[id] = poll(() => fetchBackups(id), BACKUPS_POLL_MS);
+    },
+    stop: stopPanelTimer,
+  },
+  console: {
+    // Reload each time it opens so a Settings change takes effect.
+    start: (id) => loadConsole(id),
+    stop: (id, card) => { card.querySelector(".console-form").hidden = true; },
+  },
+};
 
 // Idle countdown: the server reports seconds left on each poll; between polls
 // a 1s ticker counts down locally. Hidden once players are aboard.
 function setIdleTimer(id, secsLeft) {
   const card = cardFor(id);
   if (!card) return;
-  const hasPlayers = (parseInt(card.dataset.players, 10) || 0) > 0;
+  const hasPlayers = playersOf(card) > 0;
   if (secsLeft == null || hasPlayers) {
     delete card.dataset.idleDeadline;
   } else {
@@ -387,6 +504,8 @@ function renderIdleTimer(card) {
 
 setInterval(() => document.querySelectorAll(".game-card").forEach(renderIdleTimer), 1000);
 
+// Docker reachability: checked every 30s, and straight away whenever the
+// game list fails to load.
 async function refreshHealth() {
   try {
     const res = await fetch("/api/health");
@@ -397,14 +516,21 @@ async function refreshHealth() {
 }
 
 async function refreshStatuses() {
-  refreshHealth();
   let res;
   try {
     res = await fetch("/api/games");
   } catch (err) {
+    refreshHealth();
     return; // transient network hiccup; next poll retries
   }
-  if (!res.ok) return;
+  if (res.status === 401) {
+    window.location.href = "/login";
+    return;
+  }
+  if (!res.ok) {
+    refreshHealth();
+    return;
+  }
   const games = await res.json();
   games.forEach((g) => {
     setStatus(g.id, g.status);
@@ -418,27 +544,15 @@ async function refreshStatuses() {
       const card = cardFor(g.id);
       const name = card ? card.dataset.name : g.id;
       const isStartFailure = !/^(stop failed|switch from )/.test(g.start_error);
-      toast(`${name}${isStartFailure ? " failed to start" : ""}: ${g.start_error.slice(-300)}`);
+      toast(`${name}${isStartFailure ? " failed to start" : ""}: ${g.start_error.slice(-300)}`, "error");
     }
-  });
-}
-
-function callAPI(path, options = {}) {
-  return fetch(path, {
-    ...options,
-    headers: {
-      "Content-Type": "application/json",
-      "X-CSRF-Token": CSRF_TOKEN,
-      ...(options.headers || {}),
-    },
   });
 }
 
 // confirmSwitch asks which running game to stop in favour of targetId.
 // activeIds is every active game; with exactly one the dialog is a plain
 // confirm, with several the user picks one (radio group). Resolves to the
-// chosen game id, or null if cancelled. Focus is trapped in the dialog and
-// restored to the opener afterwards; Escape cancels.
+// chosen game id, or null if cancelled.
 function confirmSwitch(activeIds, targetId) {
   return new Promise((resolve) => {
     const dialog = document.getElementById("conflict-dialog");
@@ -446,7 +560,6 @@ function confirmSwitch(activeIds, targetId) {
     const choices = document.getElementById("conflict-choices");
     const confirmBtn = document.getElementById("conflict-confirm");
     const cancelBtn = document.getElementById("conflict-cancel");
-    const opener = document.activeElement;
 
     choices.querySelectorAll("label").forEach((l) => l.remove());
     const multiple = activeIds.length > 1;
@@ -462,8 +575,7 @@ function confirmSwitch(activeIds, targetId) {
         input.name = "conflict-from";
         input.value = id;
         input.checked = i === 0;
-        label.appendChild(input);
-        label.appendChild(document.createTextNode(nameOf(id)));
+        label.append(input, document.createTextNode(nameOf(id)));
         choices.appendChild(label);
       });
       confirmBtn.textContent = "Stop and start";
@@ -472,34 +584,19 @@ function confirmSwitch(activeIds, targetId) {
         `${nameOf(activeIds[0])} is currently running. Stop it and start ${nameOf(targetId)}?`;
       confirmBtn.textContent = "Switch";
     }
-    dialog.hidden = false;
-    (multiple ? choices.querySelector("input:checked") : confirmBtn).focus();
 
+    let close;
     const done = (answer) => {
-      dialog.hidden = true;
       confirmBtn.removeEventListener("click", onConfirm);
       cancelBtn.removeEventListener("click", onCancel);
-      document.removeEventListener("keydown", onKey);
-      if (opener && opener.focus) opener.focus();
+      close();
       resolve(answer);
     };
-    const onConfirm = () => {
-      const picked = multiple ? choices.querySelector("input:checked").value : activeIds[0];
-      done(picked);
-    };
+    const onConfirm = () => done(multiple ? choices.querySelector("input:checked").value : activeIds[0]);
     const onCancel = () => done(null);
-    const onKey = (e) => {
-      if (e.key === "Escape") { done(null); return; }
-      if (e.key !== "Tab") return;
-      const focusable = [...dialog.querySelectorAll("input, button")].filter((el) => !el.disabled && el.offsetParent !== null);
-      const first = focusable[0];
-      const last = focusable[focusable.length - 1];
-      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
-      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
-    };
     confirmBtn.addEventListener("click", onConfirm);
     cancelBtn.addEventListener("click", onCancel);
-    document.addEventListener("keydown", onKey);
+    close = openModal(dialog, multiple ? choices.querySelector("input:checked") : confirmBtn, onCancel);
   });
 }
 
@@ -516,33 +613,26 @@ async function withBusy(btn, fn) {
   }
 }
 
-async function checkOK(res, action) {
-  if (res.ok) return true;
-  if (res.status === 403) toast(`${action} rejected — reload the page and try again.`);
-  else if (res.status === 401) window.location.href = "/login";
-  else toast(`${action} failed (HTTP ${res.status}).`);
-  return false;
-}
-
 async function startGame(id, btn) {
   await withBusy(btn, async () => {
-    const res = await callAPI(`/api/games/${id}/start`, { method: "POST" });
+    const path = `/api/games/${encodeURIComponent(id)}`;
+    const res = await callAPI(`${path}/start`, { method: "POST" });
     if (res.status === 409) {
       const body = await res.json();
       if (body.busy) {
-        toast(body.message.replace(/^exclusivity: /, ""));
+        toast(body.message.replace(/^exclusivity: /, ""), "info");
         return;
       }
       const active = body.active_games && body.active_games.length ? body.active_games : [body.active_game];
       const from = await confirmSwitch(active, id);
       if (from) {
-        const sw = await callAPI(`/api/games/${id}/switch`, {
+        const sw = await callAPI(`${path}/switch`, {
           method: "POST",
           body: JSON.stringify({ from }),
         });
         if (sw.status === 409) {
           const b = await sw.json();
-          toast((b.message || "That game is busy.").replace(/^exclusivity: /, ""));
+          toast((b.message || "That game is busy.").replace(/^exclusivity: /, ""), "info");
         } else {
           await checkOK(sw, "Switch");
         }
@@ -550,7 +640,7 @@ async function startGame(id, btn) {
       return;
     }
     if (res.status === 429) {
-      toast((await res.text()).replace(/^exclusivity: /, ""));
+      toast(await errorText(res), "info");
       return;
     }
     await checkOK(res, "Start");
@@ -559,23 +649,21 @@ async function startGame(id, btn) {
 
 async function stopGame(id, btn) {
   await withBusy(btn, async () => {
-    await checkOK(await callAPI(`/api/games/${id}/stop`, { method: "POST" }), "Stop");
+    await checkOK(await callAPI(`/api/games/${encodeURIComponent(id)}/stop`, { method: "POST" }), "Stop");
   });
 }
 
+const ACCENT_RE = /^#[0-9a-f]{6}$/i;
+
 document.querySelectorAll(".game-card").forEach((card) => {
   const id = card.dataset.id;
+  // The module's accent colour; the CSP allows setting it through the CSSOM.
+  if (ACCENT_RE.test(card.dataset.accent || "")) card.style.setProperty("--vessel", card.dataset.accent);
   const startBtn = card.querySelector(".start-btn");
   const stopBtn = card.querySelector(".stop-btn");
   startBtn.addEventListener("click", () => startGame(id, startBtn));
   stopBtn.addEventListener("click", () => stopGame(id, stopBtn));
-  card.querySelector(".logs-btn").addEventListener("click", () => toggleLogs(id));
-  card.querySelector(".stats-btn").addEventListener("click", () => toggleStats(id));
-  card.querySelector(".info-btn").addEventListener("click", () => toggleInfo(id));
-  const backupsBtn = card.querySelector(".backups-btn");
-  if (backupsBtn) backupsBtn.addEventListener("click", () => toggleBackups(id));
-  const consoleBtn = card.querySelector(".console-btn");
-  if (consoleBtn) consoleBtn.addEventListener("click", () => toggleConsole(id));
+  wireTabs(card);
   const backupNow = card.querySelector(".backup-now-btn");
   if (backupNow) backupNow.addEventListener("click", () => backupGame(id, backupNow));
 
@@ -587,6 +675,7 @@ document.querySelectorAll(".game-card").forEach((card) => {
 });
 
 refreshStatuses();
+refreshHealth();
 
 document.querySelectorAll(".copy-btn").forEach((btn) => {
   btn.addEventListener("click", async () => {
@@ -595,24 +684,19 @@ document.querySelectorAll(".copy-btn").forEach((btn) => {
       btn.textContent = "Copied";
       setTimeout(() => { btn.textContent = "Copy"; }, 1500);
     } catch (err) {
-      toast("Couldn't copy automatically. Select the text and copy it by hand.");
+      toast("Couldn't copy automatically. Select the text and copy it by hand.", "info");
     }
   });
-});
-
-document.getElementById("logout-btn").addEventListener("click", async () => {
-  await callAPI("/logout", { method: "POST" });
-  window.location.href = "/login";
 });
 
 window.addEventListener("beforeunload", () => {
   Object.values(logSources).forEach((es) => es.close());
   Object.values(progressSources).forEach((es) => es.close());
-  Object.values(statsTimers).forEach(stopPoll);
-  Object.values(infoTimers).forEach(stopPoll);
+  Object.values(panelTimers).forEach(stopPoll);
 });
 
 poll(refreshStatuses, POLL_INTERVAL_MS);
+poll(refreshHealth, HEALTH_POLL_MS);
 
 
 // Logbook: recent activity plus playtime per player.
@@ -737,14 +821,12 @@ poll(refreshStatuses, POLL_INTERVAL_MS);
 
 
 // Backups panel (admins only): list the game's backup files, take a new one.
-const backupTimers = {};
-
 async function fetchBackups(id) {
   const card = cardFor(id);
   if (!card) return;
   let data;
   try {
-    const res = await fetch(`/api/games/${id}/backups`);
+    const res = await fetch(`/api/games/${encodeURIComponent(id)}/backups`);
     if (!res.ok) return;
     data = await res.json();
   } catch (err) {
@@ -767,60 +849,52 @@ async function fetchBackups(id) {
   });
 }
 
-function toggleBackups(id) {
-  const card = cardFor(id);
-  if (!card) return;
-  const panel = card.querySelector(".backups-panel");
-  const btn = card.querySelector(".backups-btn");
-  if (backupTimers[id]) {
-    stopPoll(backupTimers[id]);
-    delete backupTimers[id];
-    panel.hidden = true;
-    setPressed(btn, false);
-    return;
-  }
-  panel.hidden = false;
-  setPressed(btn, true);
-  fetchBackups(id);
-  backupTimers[id] = poll(() => fetchBackups(id), 5000);
-}
-
 async function backupGame(id, btn) {
   btn.disabled = true;
-  const res = await callAPI(`/api/games/${id}/backup`, { method: "POST" });
-  if (res.status === 409) toast((await res.text()).trim());
-  else await checkOK(res, "Backup");
+  const res = await callAPI(`/api/games/${encodeURIComponent(id)}/backup`, { method: "POST" });
+  if (res.status === 409) toast(await errorText(res), "info");
+  else if (await checkOK(res, "Backup")) toast(`${cardFor(id).dataset.name}: backup started.`, "ok");
   fetchBackups(id);
 }
 
 
 // Console panel (admins only): fixed actions per game, plus a raw RCON box
 // when an admin has enabled it in Settings. Output is shown as text only.
-const consoleLoaded = {};
-
-function consoleLog(card, line) {
+function consoleLog(card, text, kind) {
   const out = card.querySelector(".console-output");
-  out.textContent += line + "\n";
-  out.scrollTop = out.scrollHeight;
+  appendLines(out, out, text, kind, MAX_CONSOLE_LINES);
 }
 
 async function consoleCall(id, kind, payload, label) {
   const card = cardFor(id);
-  consoleLog(card, `> ${label}`);
+  consoleLog(card, `> ${label}`, "cmd");
   try {
-    const res = await callAPI(`/api/games/${id}/console/${kind}`, { method: "POST", body: JSON.stringify(payload) });
+    const res = await callAPI(`/api/games/${encodeURIComponent(id)}/console/${kind}`, { method: "POST", body: JSON.stringify(payload) });
     if (res.ok) consoleLog(card, (await res.json()).output || "(no output)");
-    else consoleLog(card, `! ${(await res.text()).trim() || res.statusText}`);
+    else consoleLog(card, `! ${await errorText(res)}`, "error");
   } catch (err) {
-    consoleLog(card, "! request failed");
+    consoleLog(card, "! request failed", "error");
   }
+}
+
+// confirmDanger asks before a console action marked danger (kick, ban,
+// shut down…). Resolves true for actions that are not dangerous.
+function confirmDanger(card, action, detail) {
+  if (!action.danger) return Promise.resolve(true);
+  return confirmAction({
+    eyebrow: "// console",
+    title: `${action.label} on ${card.dataset.name}?`,
+    message: detail ? `This runs “${action.label} ${detail}” on the game server.` : `This runs “${action.label}” on the game server.`,
+    confirmLabel: action.label,
+    danger: true,
+  });
 }
 
 async function loadConsole(id) {
   const card = cardFor(id);
   let data;
   try {
-    const res = await fetch(`/api/games/${id}/console`);
+    const res = await fetch(`/api/games/${encodeURIComponent(id)}/console`);
     if (!res.ok) return;
     data = await res.json();
   } catch (err) {
@@ -839,9 +913,10 @@ async function loadConsole(id) {
     b.type = "button";
     b.className = "btn btn-ghost" + (a.danger ? " btn-danger" : "");
     b.textContent = a.label;
-    b.addEventListener("click", () => {
+    b.addEventListener("click", async () => {
       if (!a.fields || a.fields.length === 0) {
         form.hidden = true;
+        if (!(await confirmDanger(card, a))) return;
         consoleCall(id, "action", { action: a.id }, a.label);
         return;
       }
@@ -864,13 +939,15 @@ async function loadConsole(id) {
     });
     bar.appendChild(b);
   });
-  form.onsubmit = (e) => {
+  form.onsubmit = async (e) => {
     e.preventDefault();
     if (!current) return;
+    const action = current;
     const args = {};
     new FormData(form).forEach((v, k) => { args[k] = String(v); });
-    if (current.danger && !confirm(`${current.label}: are you sure?`)) return;
-    consoleCall(id, "action", { action: current.id, args }, `${current.label} ${Object.values(args).filter(Boolean).join(" ")}`.trim());
+    const detail = Object.values(args).filter(Boolean).join(" ");
+    if (!(await confirmDanger(card, action, detail))) return;
+    consoleCall(id, "action", { action: action.id, args }, `${action.label} ${detail}`.trim());
     form.hidden = true;
   };
   card.querySelector(".console-cancel").onclick = () => { form.hidden = true; };
@@ -884,16 +961,4 @@ async function loadConsole(id) {
     consoleCall(id, "raw", { command }, command);
   };
   note.textContent = data.raw_available && !data.raw_enabled ? "The raw console is off. An admin can enable it in Settings." : "";
-  consoleLoaded[id] = true;
-}
-
-function toggleConsole(id) {
-  const card = cardFor(id);
-  if (!card) return;
-  const panel = card.querySelector(".console-panel");
-  const btn = card.querySelector(".console-btn");
-  panel.hidden = !panel.hidden;
-  setPressed(btn, !panel.hidden);
-  // Reload each time it opens so a Settings change takes effect.
-  if (!panel.hidden) loadConsole(id);
 }

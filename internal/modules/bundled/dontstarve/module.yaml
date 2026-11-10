@@ -1,6 +1,7 @@
 api_version: 1
 id: dontstarve
 name: Don't Starve Together
+accent: "#e07a5f"
 # Dedicated server images (jamesits/dst-server, mathielo/dst-dedicated-server)
 # print the master shard's server log to the container log. Join/leave come
 # from the announcements the game writes for every player. If you also run a

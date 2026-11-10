@@ -39,6 +39,9 @@ type App struct {
 	Google *auth.GoogleLogin
 	// Settings backs the dashboard's settings dialog (/api/settings).
 	Settings *settings.Store
+	// TimeZone is the server's time zone name (server.tz), shown beside the
+	// overnight-shutdown hours, which are local to it. Optional.
+	TimeZone string
 	// IdleTimer, when set, supplies each game's idle-shutdown countdown.
 	IdleTimer IdleTimer
 	// History backs the activity feed (/api/activity) and records settings
@@ -300,9 +303,7 @@ func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 	if a.Google != nil {
 		page.GoogleStartURL = a.Google.StartURL()
 	}
-	if err := a.Templates.Login.Execute(w, page); err != nil {
-		log.Printf("web: render login page: %v", err)
-	}
+	render(w, a.Templates.Login, page, "login page")
 }
 
 type dashboardGame struct {
@@ -323,9 +324,19 @@ type dashboardGame struct {
 
 	// HasConsole is true for admins on games that offer console actions.
 	HasConsole bool
+
+	// HasInfo is true when the game has an info provider; otherwise the card
+	// has no Info tab.
+	HasInfo bool
+
+	// Accent is the card's "#rrggbb" accent from the game's module, or empty.
+	Accent string
 }
 
+// dashboardData is the data of every signed-in page. Page names the page
+// ("dashboard", "games", "settings") so the shared top bar can mark it.
 type dashboardData struct {
+	Page      string
 	Username  string
 	IsAdmin   bool
 	CSRFToken string
@@ -336,6 +347,7 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	session, _ := auth.FromContext(r.Context())
 	defs := a.Registry.All()
 	data := dashboardData{
+		Page:      "dashboard",
 		Username:  session.Username,
 		IsAdmin:   a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
 		CSRFToken: session.CSRFToken,
@@ -359,11 +371,11 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 			ConnectSecrets: d.ConnectSecrets,
 			HasBackup:      data.IsAdmin && d.Backup != nil && a.Backups != nil,
 			HasConsole:     data.IsAdmin && d.Console != nil,
+			HasInfo:        d.Info != nil,
+			Accent:         d.Accent,
 		})
 	}
-	if err := a.Templates.Dashboard.Execute(w, data); err != nil {
-		log.Printf("web: render dashboard: %v", err)
-	}
+	render(w, a.Templates.Dashboard, data, "dashboard")
 }
 
 func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
@@ -759,7 +771,16 @@ func (a *App) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
-	writeJSON(w, http.StatusOK, a.Settings.Get())
+	// tz rides along for display only; PUT decodes settings.Values alone (and
+	// refuses unknown fields), so the page must not send it back.
+	writeJSON(w, http.StatusOK, settingsResponse{Values: a.Settings.Get(), TZ: a.TimeZone})
+}
+
+// settingsResponse is GET /api/settings: the values plus the server's time
+// zone, which the overnight hours are local to.
+type settingsResponse struct {
+	settings.Values
+	TZ string `json:"tz,omitempty"`
 }
 
 func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request) {
