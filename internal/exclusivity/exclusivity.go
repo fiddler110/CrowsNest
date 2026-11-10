@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
 	"sync"
 	"time"
 
@@ -38,10 +37,6 @@ const prepareStopTimeout = 30 * time.Second
 // notifyTimeout bounds one notification so a slow webhook can't pile up
 // goroutines; notifications are best-effort and never affect the action.
 const notifyTimeout = 5 * time.Second
-
-// maxNotifyErrLen is how much of a failed start's error text a notification
-// carries (the tail, where docker/compose put the actual cause).
-const maxNotifyErrLen = 200
 
 // Notifier reports a message about a user-driven event. Same shape as
 // idleshutdown.Notifier and satisfied by *notify.Discord; optional.
@@ -99,8 +94,21 @@ func (e *BusyError) Error() string {
 // stop or switch) that finished for a game. Err is prefixed with the
 // operation when it wasn't a plain start.
 type StartResult struct {
-	Err string    // empty on success
-	At  time.Time // when the operation finished
+	Err    string    // empty on success; safe to show every user
+	Detail string    // raw error text (may hold docker/compose stderr); admins and the log only
+	At     time.Time // when the operation finished
+}
+
+// publicFailure builds the user-facing text for a failed operation: prefix
+// plus a generic phrase, since raw docker/compose output can leak paths and
+// config. Cooldown and busy errors are already safe and pass through.
+func publicFailure(prefix string, err error) string {
+	var cd *CooldownError
+	var busy *BusyError
+	if errors.As(err, &cd) || errors.As(err, &busy) {
+		return prefix + err.Error()
+	}
+	return prefix + "see the CrowsNest log for details"
 }
 
 // pendingStop is a stop (or the stop half of a switch) in progress. err is
@@ -215,16 +223,6 @@ func (m *Manager) displayName(id string) string {
 		return d.DisplayName
 	}
 	return id
-}
-
-// shortErr collapses err text onto one line and keeps its tail, so a
-// multi-line compose failure stays a readable one-line notification.
-func shortErr(msg string) string {
-	msg = strings.Join(strings.Fields(msg), " ")
-	if r := []rune(msg); len(r) > maxNotifyErrLen {
-		msg = "…" + string(r[len(r)-maxNotifyErrLen:])
-	}
-	return msg
 }
 
 func (m *Manager) maxActive() int {
@@ -467,13 +465,14 @@ func (m *Manager) launchStart(target games.GameDef, actor string, announce bool)
 			log.Printf("exclusivity: start of %s cancelled", target.ID)
 		default:
 			log.Printf("exclusivity: start %s failed: %v", target.ID, err)
-			res.Err = err.Error()
-			m.record(history.KindStartFailed, target.ID, actor, shortErr(res.Err))
+			res.Detail = err.Error()
+			res.Err = publicFailure("", err)
+			m.record(history.KindStartFailed, target.ID, actor, res.Err)
 			msg := fmt.Sprintf("**%s** failed to start", target.DisplayName)
 			if actor != "" {
 				msg += " (requested by " + actor + ")"
 			}
-			m.notify(msg + ": " + shortErr(res.Err))
+			m.notify(msg + ": " + res.Err)
 		}
 
 		m.stateMu.Lock()
@@ -533,9 +532,9 @@ func (m *Manager) RequestStop(ctx context.Context, id string) error {
 		err := m.finishOrJoinStop(m.baseContext(), d, p, true)
 		if err != nil {
 			log.Printf("exclusivity: stop %s failed: %v", id, err)
-			m.recordFailure(id, "stop failed: "+err.Error())
-			m.record(history.KindStopFailed, id, actor, shortErr(err.Error()))
-			m.notify(fmt.Sprintf("**%s** failed to stop: %s", d.DisplayName, shortErr(err.Error())))
+			m.recordFailure(id, publicFailure("stop failed: ", err), "stop failed: "+err.Error())
+			m.record(history.KindStopFailed, id, actor, publicFailure("", err))
+			m.notify(fmt.Sprintf("**%s** failed to stop: %s", d.DisplayName, publicFailure("", err)))
 			return
 		}
 		if actor != "" {
@@ -546,9 +545,9 @@ func (m *Manager) RequestStop(ctx context.Context, id string) error {
 	return nil
 }
 
-func (m *Manager) recordFailure(id, msg string) {
+func (m *Manager) recordFailure(id, msg, detail string) {
 	m.stateMu.Lock()
-	m.results[id] = StartResult{Err: msg, At: time.Now()}
+	m.results[id] = StartResult{Err: msg, Detail: detail, At: time.Now()}
 	m.stateMu.Unlock()
 }
 
@@ -681,6 +680,13 @@ func (m *Manager) beginSwitch(from, to string) (*switchOp, error) {
 	if m.Stopping(to) {
 		return nil, &BusyError{Game: to}
 	}
+	// Refuse before stopping anything: startLocked would reject the target
+	// after `from` was already down, leaving nothing running.
+	if toDef.RestartCooldown > 0 {
+		if rem := m.cooldownRemaining(context.Background(), toDef); rem > 0 {
+			return nil, &CooldownError{Game: to, Remaining: rem}
+		}
+	}
 	m.stateMu.Lock()
 	m.incoming[to] = true
 	m.stateMu.Unlock()
@@ -745,9 +751,10 @@ func (m *Manager) RequestSwitch(ctx context.Context, from, to string) error {
 		defer m.wg.Done()
 		if err := m.runSwitch(bg, op); err != nil {
 			log.Printf("exclusivity: switch %s->%s failed: %v", op.from.ID, op.to.ID, err)
-			m.recordFailure(op.to.ID, "switch from "+op.from.DisplayName+" failed: "+err.Error())
-			m.record(history.KindStartFailed, op.to.ID, actorFrom(bg), "switch from "+op.from.DisplayName+": "+shortErr(err.Error()))
-			m.notify(fmt.Sprintf("Switch from **%s** to **%s** failed: %s", op.from.DisplayName, op.to.DisplayName, shortErr(err.Error())))
+			pre := "switch from " + op.from.DisplayName + " failed: "
+			m.recordFailure(op.to.ID, publicFailure(pre, err), pre+err.Error())
+			m.record(history.KindStartFailed, op.to.ID, actorFrom(bg), publicFailure("switch from "+op.from.DisplayName+": ", err))
+			m.notify(fmt.Sprintf("Switch from **%s** to **%s** failed: %s", op.from.DisplayName, op.to.DisplayName, publicFailure("", err)))
 		}
 	}()
 	return nil

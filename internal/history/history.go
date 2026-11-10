@@ -12,8 +12,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"sync"
 	"time"
@@ -57,6 +59,12 @@ type Store struct {
 
 	mu     sync.Mutex
 	events []Event // chronological
+
+	// Playtime cache: closed totals plus the start of each open visit,
+	// rebuilt on demand after Record/Prune change events.
+	ptValid bool
+	ptTotal map[ptKey]time.Duration
+	ptOpen  map[ptKey]time.Time
 
 	// Now overrides time.Now (tests).
 	Now func() time.Time
@@ -120,6 +128,7 @@ func (s *Store) Record(kind, game, actor, detail string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.events = append(s.events, e)
+	s.ptValid = false
 	f, err := os.OpenFile(s.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600) // #nosec G304 -- operator-configured path
 	if err != nil {
 		log.Printf("history: write %s: %v", s.path, err)
@@ -133,12 +142,19 @@ func (s *Store) Record(kind, game, actor, detail string) {
 
 // Recent returns up to limit events, newest first, optionally only for game.
 func (s *Store) Recent(limit int, game string) []Event {
+	return s.RecentExcluding(limit, game)
+}
+
+// RecentExcluding is Recent skipping events of the given kinds; the filter
+// runs inside the scan so the result still holds up to limit events.
+func (s *Store) RecentExcluding(limit int, game string, kinds ...string) []Event {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := []Event{}
 	for i := len(s.events) - 1; i >= 0 && len(out) < limit; i-- {
-		if game == "" || s.events[i].Game == game {
-			out = append(out, s.events[i])
+		e := s.events[i]
+		if (game == "" || e.Game == game) && !slices.Contains(kinds, e.Kind) {
+			out = append(out, e)
 		}
 	}
 	return out
@@ -161,6 +177,7 @@ func (s *Store) Prune() error {
 		return nil
 	}
 	s.events = append([]Event(nil), s.events[keep:]...)
+	s.ptValid = false
 
 	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".history-*")
 	if err != nil {
@@ -220,31 +237,11 @@ func (s *Store) Playtime() []Playtime {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	type key struct{ game, player string }
-	open := map[key]time.Time{}
-	total := map[key]time.Duration{}
-	for _, e := range s.events {
-		switch e.Kind {
-		case KindJoin:
-			if _, ok := open[key{e.Game, e.Actor}]; !ok {
-				open[key{e.Game, e.Actor}] = e.Time
-			}
-		case KindLeave:
-			k := key{e.Game, e.Actor}
-			if st, ok := open[k]; ok {
-				total[k] += e.Time.Sub(st)
-				delete(open, k)
-			}
-		case KindStop, KindAutoStop:
-			for k, st := range open {
-				if k.game == e.Game {
-					total[k] += e.Time.Sub(st)
-					delete(open, k)
-				}
-			}
-		}
+	if !s.ptValid {
+		s.rebuildPlaytime()
 	}
-	for k, st := range open {
+	total := maps.Clone(s.ptTotal)
+	for k, st := range s.ptOpen {
 		total[k] += now.Sub(st)
 	}
 	out := make([]Playtime, 0, len(total))
@@ -260,4 +257,35 @@ func (s *Store) Playtime() []Playtime {
 		return out[i].Player+out[i].Game < out[j].Player+out[j].Game
 	})
 	return out
+}
+
+type ptKey struct{ game, player string }
+
+// rebuildPlaytime recomputes the closed totals and open visits from all
+// events. Caller holds s.mu.
+func (s *Store) rebuildPlaytime() {
+	open := map[ptKey]time.Time{}
+	total := map[ptKey]time.Duration{}
+	for _, e := range s.events {
+		switch e.Kind {
+		case KindJoin:
+			if _, ok := open[ptKey{e.Game, e.Actor}]; !ok {
+				open[ptKey{e.Game, e.Actor}] = e.Time
+			}
+		case KindLeave:
+			k := ptKey{e.Game, e.Actor}
+			if st, ok := open[k]; ok {
+				total[k] += e.Time.Sub(st)
+				delete(open, k)
+			}
+		case KindStop, KindAutoStop:
+			for k, st := range open {
+				if k.game == e.Game {
+					total[k] += e.Time.Sub(st)
+					delete(open, k)
+				}
+			}
+		}
+	}
+	s.ptTotal, s.ptOpen, s.ptValid = total, open, true
 }

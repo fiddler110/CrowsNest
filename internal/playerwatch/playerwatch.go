@@ -71,6 +71,11 @@ func (w *Watcher) check(ctx context.Context, d games.GameDef) {
 	status, err := d.Status.Check(ctx, d.ContainerName)
 	if err != nil || status != games.StatusOnline {
 		if err == nil { // confirmed not online: start over next time
+			// Close out everyone still listed so playtime doesn't
+			// depend on the stop event alone.
+			for _, n := range w.last[d.ID].names {
+				w.record(history.KindLeave, d.ID, n)
+			}
 			delete(w.last, d.ID)
 		}
 		return

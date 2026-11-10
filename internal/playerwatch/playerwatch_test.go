@@ -76,3 +76,33 @@ func TestCountOnlyAndUnreadable(t *testing.T) {
 		t.Fatalf("a fresh run announced %v", out.msgs)
 	}
 }
+
+type rec struct{ events []string }
+
+func (r *rec) Record(kind, game, actor, detail string) {
+	r.events = append(r.events, kind+":"+game+":"+actor)
+}
+
+// A game confirmed offline closes out everyone still listed, so playtime
+// doesn't rely on a stop event alone.
+func TestOfflineRecordsLeaves(t *testing.T) {
+	w, st, pl, out := setup(t)
+	h := &rec{}
+	w.History = h
+	ctx := context.Background()
+
+	pl.names = []string{"ann", "bob"}
+	w.Tick(ctx) // baseline
+	st.s = games.StatusOffline
+	w.Tick(ctx)
+	if len(h.events) != 2 || h.events[0] != "leave:g:ann" || h.events[1] != "leave:g:bob" {
+		t.Fatalf("events = %v, want leaves for ann and bob", h.events)
+	}
+	if len(out.msgs) != 0 {
+		t.Fatalf("offline announced %v", out.msgs)
+	}
+	w.Tick(ctx)
+	if len(h.events) != 2 {
+		t.Fatalf("leaves recorded twice: %v", h.events)
+	}
+}

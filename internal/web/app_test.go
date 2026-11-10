@@ -965,6 +965,7 @@ func TestActivity_FeedAndSettingsAudit(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.App.History = store
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
 	h.App.Settings, _ = settings.New(settings.Values{IdleMinutes: 15, MaxActiveGames: 1, NightStartHour: 23, NightEndHour: 5}, "")
 
 	rec := httptest.NewRecorder()
@@ -1171,5 +1172,77 @@ func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 		if c := do(p[0], p[1], []byte(`{}`)); c != http.StatusForbidden {
 			t.Errorf("player %s %s = %d, want 403", p[0], p[1], c)
 		}
+	}
+}
+
+func TestActivity_PlayersDoNotSeeAdminEvents(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	store, err := history.Open(filepath.Join(t.TempDir(), "events.jsonl"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.History = store
+	store.Record(history.KindJoin, "windrose", "ann", "")
+	store.Record(history.KindSettings, "", "root", "idle_minutes 15→30")
+	store.Record(history.KindConsole, "windrose", "root", "say hi")
+	store.Record(history.KindUsers, "", "root", "added x")
+	store.Record(history.KindGames, "", "root", "edited")
+
+	get := func(role auth.Role, limit string) []history.Event {
+		h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: role}}
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.req("GET", "/api/activity?limit="+limit, nil))
+		var out struct {
+			Events []history.Event `json:"events"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatal(err)
+		}
+		return out.Events
+	}
+	if ev := get(auth.RolePlayer, "1"); len(ev) != 1 || ev[0].Kind != history.KindJoin {
+		t.Fatalf("player events = %+v, want just the join (limit filled past hidden kinds)", ev)
+	}
+	if ev := get(auth.RoleAdmin, "10"); len(ev) != 5 {
+		t.Fatalf("admin events = %+v, want all 5", ev)
+	}
+}
+
+func TestListGames_StartErrorDetailAdminOnly(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\ncase \"$1\" in ps) if [ \"$2\" = \"-a\" ]; then echo windrose; fi ;; start) echo 'boom: secret path' >&2; exit 1 ;; esac\n")
+	if err := h.App.Exclusivity.RequestStart(context.Background(), "windrose"); err != nil {
+		t.Fatal(err)
+	}
+	h.App.Exclusivity.Wait()
+	get := func(role auth.Role) string {
+		h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: role}}
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.req("GET", "/api/games", nil))
+		return rec.Body.String()
+	}
+	if body := get(auth.RolePlayer); strings.Contains(body, "boom") || !strings.Contains(body, "start_error") {
+		t.Fatalf("player body leaks or lacks error: %s", body)
+	}
+	if body := get(auth.RoleAdmin); !strings.Contains(body, "boom: secret path") {
+		t.Fatalf("admin body lacks detail: %s", body)
+	}
+}
+
+func TestHandleSwitch_CooldownIs429(t *testing.T) {
+	script := "#!/bin/sh\ncase \"$1\" in ps) if [ \"$2\" = \"-a\" ]; then echo windrose; echo valheim; else echo valheim; fi ;; esac\n"
+	docker := fakeDockerClient(t, script)
+	mk := func(id string, cd time.Duration) games.GameDef {
+		return games.GameDef{ID: id, DisplayName: id, ContainerName: id, RestartCooldown: cd,
+			Status: &games.DockerStatusChecker{Docker: docker}, Players: games.UnknownPlayerCounter{}}
+	}
+	h := newHarnessFromDefs(t, docker, []games.GameDef{mk("windrose", time.Hour), mk("valheim", 0)})
+	if err := h.App.Exclusivity.Stop(context.Background(), "windrose"); err != nil {
+		t.Fatal(err)
+	}
+	body, _ := json.Marshal(switchRequest{From: "valheim"})
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPost, "/api/games/windrose/switch", body))
+	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
+		t.Fatalf("switch = %d (Retry-After %q), want 429", rec.Code, rec.Header().Get("Retry-After"))
 	}
 }

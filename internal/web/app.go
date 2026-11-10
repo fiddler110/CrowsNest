@@ -365,6 +365,7 @@ func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
 	defs := a.Registry.All()
 	out := make([]gameSummary, len(defs))
 	snaps := a.observeAll(r.Context(), defs)
+	admin := a.Auth.Sessions.RoleFor(actor(r)) == auth.RoleAdmin
 	for i, d := range defs {
 		out[i] = gameSummary{
 			ID:          d.ID,
@@ -385,6 +386,9 @@ func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
 		if a.Exclusivity != nil {
 			if res, ok := a.Exclusivity.LastStart(d.ID); ok && res.Err != "" {
 				out[i].StartError = res.Err
+				if admin && res.Detail != "" {
+					out[i].StartError = shortDetail(res.Detail)
+				}
 				out[i].StartErrorAt = res.At.Unix()
 			}
 		}
@@ -418,6 +422,16 @@ func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, playersResponse{Available: true, Count: snap.Count, Names: names})
 }
 
+// shortDetail keeps the tail of raw error text (where the cause usually is)
+// on one line, for admins.
+func shortDetail(msg string) string {
+	msg = strings.Join(strings.Fields(msg), " ")
+	if r := []rune(msg); len(r) > 400 {
+		msg = "…" + string(r[len(r)-400:])
+	}
+	return msg
+}
+
 const (
 	defaultActivityLimit = 40
 	maxActivityLimit     = 500
@@ -434,8 +448,12 @@ func (a *App) handleActivity(w http.ResponseWriter, r *http.Request) {
 	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
 		limit = min(n, maxActivityLimit)
 	}
+	var hide []string
+	if a.Auth.Sessions.RoleFor(actor(r)) != auth.RoleAdmin {
+		hide = []string{history.KindUsers, history.KindConsole, history.KindSettings, history.KindGames}
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"events":   a.History.Recent(limit, r.URL.Query().Get("game")),
+		"events":   a.History.RecentExcluding(limit, r.URL.Query().Get("game"), hide...),
 		"playtime": a.History.Playtime(),
 	})
 }
@@ -712,6 +730,12 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 		var busy *exclusivity.BusyError
 		if errors.As(err, &busy) {
 			writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
+			return
+		}
+		var cooldown *exclusivity.CooldownError
+		if errors.As(err, &cooldown) {
+			w.Header().Set("Retry-After", strconv.Itoa(int(cooldown.Remaining.Seconds())+1))
+			http.Error(w, cooldown.Error(), http.StatusTooManyRequests)
 			return
 		}
 		http.Error(w, publicError(err), http.StatusBadGateway)
