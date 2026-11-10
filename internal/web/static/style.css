@@ -636,3 +636,7 @@ a.btn { text-decoration: none; }
 .module-link:hover { color: var(--cyan); text-decoration: underline; }
 .field-note { margin-top: 0.4rem; color: var(--muted); }
 .page-head a, .hero-sub a { color: var(--cyan); }
+
+.host-choice { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.35rem; }
+.host-choice legend { padding: 0; margin-bottom: 0.3rem; }
+.host-choice input[type="text"] { margin-left: 0.5rem; max-width: 12rem; }

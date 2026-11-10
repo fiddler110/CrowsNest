@@ -109,8 +109,9 @@ derived from it.
      game gets the next free host port the policy admits; a typed clash is refused naming the game. Not done: a
      switch for URL-installed modules (needs the guard to read the lock file); the extra range is edited in
      `policy.yaml`; the clash on *start* is Docker's own error; a LAN-address check for macvlan games.
-  4. [ ] Host address as three plain choices (this machine, my network, a specific address); max active games as a
-     number field with arrows, starting at 1.
+  4. [x] Host address as three plain choices (my network, this machine only, a specific address) in the policy pane;
+     the dashboard can still only narrow it. "Servers allowed at once" was already a number field starting at 1
+     (Settings, General); the policy's `max_scopes` is now labelled "Most games that can be set up".
 
 ### B. Accounts and settings
 

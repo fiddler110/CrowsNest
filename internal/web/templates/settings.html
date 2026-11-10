@@ -87,9 +87,14 @@
           <textarea name="networks" rows="2" spellcheck="false" disabled></textarea></label>
         <label class="field">Published ports <small>e.g. 25565/tcp or 27000-28999/udp.</small>
           <textarea name="ports" rows="2" spellcheck="false" disabled></textarea></label>
-        <label class="field">Host addresses <small>Ports may only be published on these. Empty means any.</small>
-          <textarea name="host_ips" rows="2" spellcheck="false" disabled></textarea></label>
-        <label class="field">Most games at once
+        <fieldset class="field host-choice">
+          <legend>Where game ports are published</legend>
+          <label class="setting-check"><input type="radio" name="host_mode" value="any" disabled> My network <small>(any address on this machine, so other computers can join)</small></label>
+          <label class="setting-check"><input type="radio" name="host_mode" value="local" disabled> This machine only <small>(127.0.0.1, for a reverse proxy or tunnel on the same host)</small></label>
+          <label class="setting-check"><input type="radio" name="host_mode" value="specific" disabled> A specific address
+            <input type="text" name="host_specific" spellcheck="false" placeholder="e.g. 10.0.0.2" disabled></label>
+        </fieldset>
+        <label class="field">Most games that can be set up <small>How many games may exist here, running or not. How many may run at once is set under General.</small>
           <input type="number" name="max_scopes" min="1" max="1000" disabled></label>
         <label class="setting-check"><input type="checkbox" name="exec" disabled> Allow running commands inside the games (needed for backups)</label>
         <label class="setting-check"><input type="checkbox" name="pin_digests" disabled> Pin game images by digest (an upstream push changes nothing until you press Update image)</label>

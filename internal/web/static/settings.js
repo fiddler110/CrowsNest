@@ -181,16 +181,34 @@ loaders.users = () => {
 // ---------- Game policy ----------
 loaders.policy = () => {
   const pf = $("policy-form");
-  const listFields = ["names", "images", "networks", "ports", "host_ips"];
+  const listFields = ["names", "images", "networks", "ports"];
   let state = null;
   const setEditing = (on) => {
     [...pf.elements].forEach((f) => { if (f.name) f.disabled = !on; });
+    syncHost();
     $("policy-edit").hidden = on || !(state && state.editable);
     $("policy-cancel").hidden = !on;
     $("policy-save").hidden = !on;
   };
+  // Host addresses as three plain choices: any (an empty list in the file), this machine, or one address.
+  const hostMode = () => (pf.querySelector("input[name=host_mode]:checked") || {}).value;
+  const syncHost = () => { pf.elements.host_specific.disabled = pf.elements.host_specific.disabled || hostMode() !== "specific"; };
+  pf.querySelectorAll("input[name=host_mode]").forEach((r) => r.addEventListener("change", () => {
+    pf.elements.host_specific.disabled = hostMode() !== "specific";
+    if (hostMode() === "specific") pf.elements.host_specific.focus();
+  }));
+  const hostIPs = () => {
+    const m = hostMode();
+    if (m === "local") return ["127.0.0.1"];
+    if (m === "specific") return pf.elements.host_specific.value.split(/[\s,]+/).filter(Boolean);
+    return [];
+  };
   const fill = () => {
     const p = state.policy;
+    const ips = p.host_ips || [];
+    const mode = ips.length === 0 ? "any" : (ips.length === 1 && ips[0] === "127.0.0.1" ? "local" : "specific");
+    pf.querySelectorAll("input[name=host_mode]").forEach((r) => { r.checked = r.value === mode; });
+    pf.elements.host_specific.value = mode === "specific" ? ips.join(", ") : "";
     pf.elements.games_root.value = p.games_root;
     listFields.forEach((k) => { pf.elements[k].value = (p[k] || []).join("\n"); pf.elements[k].rows = Math.max(2, (p[k] || []).length); });
     pf.elements.max_scopes.value = p.max_scopes;
@@ -234,6 +252,8 @@ loaders.policy = () => {
     const body = { games_root: pf.elements.games_root.value.trim(), exec: pf.elements.exec.checked, pin_digests: pf.elements.pin_digests.checked,
       max_scopes: parseInt(pf.elements.max_scopes.value, 10) || 0 };
     listFields.forEach((k) => { body[k] = lines(pf.elements[k].value); });
+    body.host_ips = hostIPs();
+    if (hostMode() === "specific" && body.host_ips.length === 0) { $("policy-error").textContent = "Enter the address, or choose another option."; $("policy-error").hidden = false; return; }
     const res = await callAPI("/api/managed/policy", { method: "PUT", body: JSON.stringify(body) });
     if (!res.ok) { $("policy-error").textContent = await errorText(res); $("policy-error").hidden = false; return; }
     state = await res.json();
