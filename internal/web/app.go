@@ -170,7 +170,7 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /games", a.requireSessionHTML(http.HandlerFunc(a.handleGamesPage)))
 	mux.Handle("GET /api/games", a.requireSession(http.HandlerFunc(a.handleListGames)))
 	mux.Handle("GET /api/games/{id}/status", a.requireSession(http.HandlerFunc(a.handleStatus)))
-	mux.Handle("GET /api/games/{id}/logs", a.requireSession(http.HandlerFunc(a.handleLogs)))
+	mux.Handle("GET /api/games/{id}/logs", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleLogs)))) // S8: logs can carry secrets an image prints
 	mux.Handle("GET /api/games/{id}/startup-progress", a.requireSession(http.HandlerFunc(a.handleStartupProgress)))
 	mux.Handle("GET /api/games/{id}/stats", a.requireSession(http.HandlerFunc(a.handleStats)))
 	mux.Handle("GET /api/games/{id}/players", a.requireSession(http.HandlerFunc(a.handlePlayers)))

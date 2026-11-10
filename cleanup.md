@@ -65,6 +65,8 @@ are stable so commits and agents can refer to them.
 - [ ] **J2. Three independent pollers per game** (web snapshot memo, playerwatch, idle
   shutdown) each run `Status.Check` and the player probe. Phase 4's state hub is the full
   fix. Interim: share one memoised observation.
+  **Deferred to Phase 4:** the cost is one `docker inspect` per poller interval, and an
+  interim cache would be thrown away by the hub.
 - [x] **J3. Shutdown doesn't wait for backups** (`backups.Wait()` is never called).
 - [ ] **J4. CI only syntax-checks `app.js` and `login.js`** (`ci.yml:42`). `games.js` and
   `settings.js` are skipped, and nothing checks templates for duplicate ids (that check

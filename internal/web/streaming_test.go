@@ -4,6 +4,7 @@ import (
 	"context"
 	"runtime"
 
+	"github.com/fiddler110/crowsnest/internal/auth"
 	"github.com/fiddler110/crowsnest/internal/sse"
 	"net/http"
 	"net/http/httptest"
@@ -222,5 +223,15 @@ func TestStreamLines_ReaderStopsOnCancel(t *testing.T) {
 			t.Fatalf("reader goroutine leaked after cancel:\n%s", buf)
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestLogs_PlayerForbidden(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/logs", nil))
+	if rec.Code != http.StatusForbidden {
+		t.Errorf("player logs = %d, want 403", rec.Code)
 	}
 }
