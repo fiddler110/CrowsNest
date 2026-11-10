@@ -239,7 +239,10 @@ func (g *Guard) networkView(net any) map[string]any {
 		kept := map[string]any{}
 		for id, c := range cs {
 			if cm, ok := c.(map[string]any); ok {
-				if n, _ := cm["Name"].(string); g.cur().byName[n] != nil {
+				n, _ := cm["Name"].(string)
+				sc := g.cur().byName[n]
+				// the network listing carries no labels, so a scope that needs the ownership label is checked on the container itself
+				if sc != nil && (!sc.needsOwner || sc.ownedBy(containerLabels(g.inspect(id)))) {
 					kept[id] = c
 				}
 			}

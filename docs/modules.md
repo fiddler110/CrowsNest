@@ -174,8 +174,7 @@ max_scopes: 32
   carries the label `crowsnest.managed=true`, and with no `names` in the policy the guard only acts on a container
   that has it: a scope called `caddy` finds nothing, because your proxy has no such label. Name your games
   anything you like. If you do set `names`, it is the old behaviour: only those names, and the label is not
-  required (use this for containers created before the label existed). Games made by an earlier version have
-  no label, so they stay under a policy that lists their names, or you disable and re-enable them.
+  required.
 - A managed scope can never carry volumes, capabilities, aliases, host networking, or exec unless the policy allows
   it. Security options, extra networks and fixed addresses are only for a game the policy names in an
   [exception](#exceptions-one-game-beyond-the-envelope).

@@ -106,3 +106,21 @@ func TestOwnerScopeOnlyReachesLabelledContainers(t *testing.T) {
 		t.Errorf("create with the label: %s", r)
 	}
 }
+
+// The network listing names containers without labels, so a container that has a scope's name but not its label stays
+// out of the view; an owned one is listed.
+func TestNetworkViewHidesUnownedNamesakes(t *testing.T) {
+	pal := containers[0].(map[string]any)["Labels"].(map[string]any)
+	t.Cleanup(func() { delete(pal, OwnerLabel) })
+	pal[OwnerLabel] = "true"
+	h := newHarness(t, scopesJSON, needOwner("palworld"))
+	r := h.request("GET", "/networks/crowsnest-games-net", nil)
+	if !strings.Contains(string(r.raw), `"palworld"`) {
+		t.Errorf("the owned container is missing from the network view: %s", r)
+	}
+	delete(pal, OwnerLabel)
+	h = newHarness(t, scopesJSON, needOwner("palworld"))
+	if r := h.request("GET", "/networks/crowsnest-games-net", nil); strings.Contains(string(r.raw), `"palworld"`) {
+		t.Errorf("a namesake without the label is listed: %s", r)
+	}
+}
