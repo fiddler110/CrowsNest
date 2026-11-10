@@ -3,10 +3,12 @@ package idleshutdown
 import (
 	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/games"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
 // fakeStatus reports a fixed Status/error, optionally switching to a
@@ -327,5 +329,56 @@ func TestTick_StartupGraceExpiresWithNoPlayers(t *testing.T) {
 	m.Tick(ctx)
 	if len(stopper.stopped) != 1 {
 		t.Fatalf("stopped = %v, want stop after the startup grace with nobody joining", stopper.stopped)
+	}
+}
+
+type syncPlayers struct{ count atomic.Int32 }
+
+func (p *syncPlayers) PlayerCount(context.Context) (int, []string, bool) {
+	return int(p.count.Load()), nil, true
+}
+
+// With a hub, the decision reads the hub's observation, and a fresh one is
+// taken before stopping: a player who joined since the last reading saves
+// the game.
+func TestTick_HubReadingConfirmedBeforeStop(t *testing.T) {
+	players := &syncPlayers{}
+	def := games.GameDef{ID: "g", DisplayName: "g", ContainerName: "g", Status: &fakeStatus{status: games.StatusOnline}, Players: players}
+	registry, err := games.NewRegistry([]games.GameDef{def})
+	if err != nil {
+		t.Fatal(err)
+	}
+	hub := statehub.New(registry)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { hub.Run(ctx); close(done) }()
+	defer func() { cancel(); <-done }()
+	for {
+		if _, ok := hub.Get("g"); ok {
+			break
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	stopper := &fakeStopper{}
+	clock := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	m := New(registry, stopper, 15*time.Minute, time.Minute)
+	m.Now = func() time.Time { return clock }
+	m.StartupGrace = 0
+	m.Hub = hub
+
+	m.Tick(ctx) // seeds the grace period
+	clock = clock.Add(20 * time.Minute)
+	players.count.Store(1) // joined; the hub hasn't looked yet
+	m.Tick(ctx)
+	if len(stopper.stopped) != 0 {
+		t.Fatalf("stopped %v on a stale empty reading", stopper.stopped)
+	}
+	players.count.Store(0)
+	hub.Fresh(ctx, def)
+	clock = clock.Add(20 * time.Minute)
+	m.Tick(ctx)
+	if len(stopper.stopped) != 1 {
+		t.Fatalf("stopped = %v, want one stop once confirmed empty", stopper.stopped)
 	}
 }

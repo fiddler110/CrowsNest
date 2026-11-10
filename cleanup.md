@@ -62,11 +62,10 @@ are stable so commits and agents can refer to them.
   check `Running` and then remove or recreate (`managed.go:781`). A start still pulling
   (no container yet), or one that begins in between, races the removal. Refuse while
   the game is starting or stopping.
-- [ ] **J2. Three independent pollers per game** (web snapshot memo, playerwatch, idle
+- [x] **J2. Three independent pollers per game** (web snapshot memo, playerwatch, idle
   shutdown) each run `Status.Check` and the player probe. Phase 4's state hub is the full
   fix. Interim: share one memoised observation.
-  **Deferred to Phase 4:** the cost is one `docker inspect` per poller interval, and an
-  interim cache would be thrown away by the hub.
+  **Done by the Phase 4 hub** (`internal/statehub`).
 - [x] **J3. Shutdown doesn't wait for backups** (`backups.Wait()` is never called).
 - [x] **J4. CI only syntax-checks `app.js` and `login.js`** (`ci.yml:42`). `games.js` and
   `settings.js` are skipped, and nothing checks templates for duplicate ids (that check
@@ -128,4 +127,3 @@ are stable so commits and agents can refer to them.
 
 - The Games page catalogue doesn't show module accents yet; it needs an `Accent` field on
   `managed.ModuleInfo`.
-- J2 is waiting on the Phase 4 state hub.

@@ -31,6 +31,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/notify"
 	"github.com/fiddler110/crowsnest/internal/playerwatch"
 	"github.com/fiddler110/crowsnest/internal/settings"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 	"github.com/fiddler110/crowsnest/internal/web"
 )
 
@@ -223,7 +224,17 @@ func serve() error {
 	// Background starts (compose pull/up) belong to the process, not to the
 	// HTTP request that asked for them; shutdown cancels them.
 	exclusivityMgr.BaseContext = ctx
+
+	// One observer per game feeds the dashboard, its live stream, player
+	// announcements and both auto-stop loops. Every start/stop transition
+	// pokes it, so the change shows at once.
+	hub := statehub.New(registry)
+	hub.Busy = func(id string) bool { return exclusivityMgr.Starting(id) || exclusivityMgr.Stopping(id) }
+	exclusivityMgr.OnChange = func(id string) { hub.Poke(id); hub.Signal() }
+	go hub.Run(ctx)
+
 	app := &web.App{
+		Hub:         hub,
 		Registry:    registry,
 		Docker:      docker,
 		Exclusivity: exclusivityMgr,
@@ -280,6 +291,7 @@ func serve() error {
 	}
 	idle.Notifier = discordNotifier
 	idle.History = activity
+	idle.Hub = hub
 	app.IdleTimer = idle
 	go idle.Run(ctx)
 
@@ -301,6 +313,7 @@ func serve() error {
 	}
 	night.Notifier = discordNotifier
 	night.History = activity
+	night.Hub = hub
 	night.StartedAt = docker.StartedAt
 	night.MinUptime = time.Duration(cfg.NightShutdown.MinUptimeMinutes) * time.Minute
 	go night.Run(ctx)
@@ -313,6 +326,7 @@ func serve() error {
 	}
 	watcher := playerwatch.New(registry, joinLeave, 30*time.Second)
 	watcher.History = activity
+	watcher.Hub = hub // re-checks on every hub change
 	go watcher.Run(ctx)
 
 	// Header/idle timeouts bound slow or idle clients (slowloris). No

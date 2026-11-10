@@ -189,6 +189,18 @@ type Manager struct {
 	// and failed operations in the activity log. Automatic stops record
 	// themselves (idle/night), so only calls with an actor are logged here.
 	History history.Recorder
+
+	// OnChange, when set, is called with a game's ID whenever what Starting,
+	// Stopping or LastStart report for it changes. It is called with the
+	// decision lock possibly held, so it must not block or call back into
+	// the Manager's actions (wired to the state hub's Poke/Signal).
+	OnChange func(id string)
+}
+
+func (m *Manager) changed(id string) {
+	if m.OnChange != nil {
+		m.OnChange(id)
+	}
 }
 
 func (m *Manager) record(kind, game, actor, detail string) {
@@ -441,6 +453,7 @@ func (m *Manager) launchStart(target games.GameDef, actor string, announce bool)
 	m.pending[target.ID] = p
 	delete(m.results, target.ID)
 	m.stateMu.Unlock()
+	m.changed(target.ID)
 
 	m.wg.Add(1)
 	go func() {
@@ -483,6 +496,7 @@ func (m *Manager) launchStart(target games.GameDef, actor string, announce bool)
 			m.results[target.ID] = res
 		}
 		m.stateMu.Unlock()
+		m.changed(target.ID)
 	}()
 }
 
@@ -549,6 +563,7 @@ func (m *Manager) recordFailure(id, msg, detail string) {
 	m.stateMu.Lock()
 	m.results[id] = StartResult{Err: msg, Detail: detail, At: time.Now()}
 	m.stateMu.Unlock()
+	m.changed(id)
 }
 
 // beginStop registers a stop of id. owner is true when the caller must run
@@ -557,12 +572,14 @@ func (m *Manager) recordFailure(id, msg, detail string) {
 // precedes the stop (and is cancelled by it) or is refused while it runs.
 func (m *Manager) beginStop(id string) (p *pendingStop, owner bool) {
 	m.stateMu.Lock()
-	defer m.stateMu.Unlock()
 	if p, ok := m.stopping[id]; ok {
+		m.stateMu.Unlock()
 		return p, false
 	}
 	p = &pendingStop{done: make(chan struct{})}
 	m.stopping[id] = p
+	m.stateMu.Unlock()
+	m.changed(id)
 	return p, true
 }
 
@@ -581,6 +598,7 @@ func (m *Manager) finishOrJoinStop(ctx context.Context, d games.GameDef, p *pend
 	delete(m.stopping, d.ID)
 	m.stateMu.Unlock()
 	close(p.done)
+	m.changed(d.ID)
 	return p.err
 }
 
@@ -652,6 +670,7 @@ func (m *Manager) cancelPending(id string) bool {
 			delete(m.pending, id)
 		}
 		m.stateMu.Unlock()
+		m.changed(id)
 	}
 	return true
 }

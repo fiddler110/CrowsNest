@@ -21,6 +21,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
 // Stopper stops a registered game by ID — satisfied directly by
@@ -70,6 +71,11 @@ type Manager struct {
 	// Now overrides time.Now. Intended for tests; production callers should
 	// leave it unset.
 	Now func() time.Time
+
+	// Hub, when set, supplies each game's status and player count (and is
+	// asked for a fresh reading just before a stop). Nil means probe each
+	// game directly every tick.
+	Hub *statehub.Hub
 }
 
 // New builds a Manager that, every checkInterval, stops (via stopper) any
@@ -144,15 +150,23 @@ func (m *Manager) checkGame(ctx context.Context, d games.GameDef) {
 	if d.Status == nil {
 		return
 	}
-	status, err := d.Status.Check(ctx, d.ContainerName)
-	if err != nil || status != games.StatusOnline {
+	var o statehub.Observation
+	if m.Hub != nil {
+		var seen bool
+		if o, seen = m.Hub.Get(d.ID); !seen {
+			return
+		}
+	} else {
+		o = statehub.Probe(ctx, d)
+	}
+	if o.Status != games.StatusOnline {
 		return // nothing to shut down if it's not confirmedly online
 	}
 
 	if d.Players == nil {
 		return // can't tell who's connected -> never guess it's safe to stop
 	}
-	count, _, ok := d.Players.PlayerCount(ctx)
+	count, ok := o.Count, o.PlayersOK
 	if !ok {
 		log.Printf("nightshutdown: %s player count unavailable — skipping for safety", d.ID)
 		return
@@ -169,6 +183,13 @@ func (m *Manager) checkGame(ctx context.Context, d games.GameDef) {
 		}
 		if up := m.now().Sub(started); up < m.MinUptime {
 			return // freshly started: give the crew time to join
+		}
+	}
+
+	if m.Hub != nil {
+		// The hub's reading may be a cadence old; confirm before stopping.
+		if f := m.Hub.Fresh(ctx, d); f.Status != games.StatusOnline || !f.PlayersOK || f.Count > 0 {
+			return
 		}
 	}
 
