@@ -152,6 +152,10 @@ max_scopes: 32
   mount shared with other services: every dashboard-added game's folder is `<games_root>/<id>`, and the policy
   lets the panel bind anything inside `games_root`. Create it once, owned by you, before the first game.
   `platform.games_root` in config.yaml must be the same path. Servers you set up by hand keep their own paths.
+- Managed binds never nest: a managed scope whose bind is inside another bind in force (its own, another managed
+  game's, or one of your `GUARD_SCOPES`), or holds one, is not loaded. A container that can write a folder could
+  turn a path below it into a symlink, and Docker follows that symlink when it binds the path, so a nested bind
+  would reach the whole host. Sibling folders such as `<id>/config` and `<id>/data` are fine.
 - `names` matters: the guard lets a scope manage the container of the same name, so without it a scope called
   `caddy` would let the panel stop your reverse proxy.
 - A managed scope can never carry volumes, capabilities, aliases, host networking, or exec unless the policy allows

@@ -288,6 +288,22 @@ func (p *Policy) portOK(pt Port) error {
 	return nil
 }
 
+// NestedBinds is an error when one of the bind sources a and b is inside the
+// other. A container that can write a folder can replace any path below it
+// with a symlink (to / for instance), and the engine follows a symlink in a
+// bind source when it mounts it, so a bind below another bind is a way out to
+// the whole host. Equal paths are fine: a container cannot replace its own
+// mount point.
+func NestedBinds(a, b string) error {
+	switch {
+	case strings.HasPrefix(a, b+"/"):
+		return fmt.Errorf("bind %s is inside bind %s (a container that writes %s could make it a symlink to anywhere on the host)", a, b, b)
+	case strings.HasPrefix(b, a+"/"):
+		return fmt.Errorf("bind %s is inside bind %s (a container that writes %s could make it a symlink to anywhere on the host)", b, a, a)
+	}
+	return nil
+}
+
 // Admit reports why a scope does not fit the envelope, or nil if it does.
 // The same check backs the dashboard's "does this fit?" preview and the
 // guard's own enforcement when it loads managed scopes.
@@ -304,9 +320,14 @@ func (p *Policy) Admit(s *Scope) error {
 			return fmt.Errorf("image %s is not in the policy's images", img)
 		}
 	}
-	for _, b := range s.Binds {
+	for i, b := range s.Binds {
 		if !strings.HasPrefix(b, p.GamesRoot+"/") {
 			return fmt.Errorf("bind %s is not inside games_root %s", b, p.GamesRoot)
+		}
+		for _, o := range s.Binds[:i] {
+			if err := NestedBinds(b, o); err != nil {
+				return err
+			}
 		}
 	}
 	for n := range s.Networks {

@@ -79,6 +79,10 @@ func (s Sources) Load() (*Result, error) {
 				res.Rejected = append(res.Rejected, fmt.Errorf("managed scope %s: %w", m.Name, err))
 				continue
 			}
+			if err := nestsIn(m, res.Scopes); err != nil {
+				res.Rejected = append(res.Rejected, fmt.Errorf("managed scope %s: %w", m.Name, err))
+				continue
+			}
 			m.pinDigest = pol.PinDigests
 			taken[m.Name] = true
 			res.Scopes = append(res.Scopes, m)
@@ -86,6 +90,21 @@ func (s Sources) Load() (*Result, error) {
 		}
 	}
 	return &res, nil
+}
+
+// nestsIn is an error when a bind of s is inside a bind of a scope already in
+// force, or holds one (see NestedBinds). The operator's own scopes count too.
+func nestsIn(s *Scope, admitted []*Scope) error {
+	for _, o := range admitted {
+		for _, a := range s.Binds {
+			for _, b := range o.Binds {
+				if err := NestedBinds(a, b); err != nil {
+					return fmt.Errorf("%w; %s binds it", err, o.Name)
+				}
+			}
+		}
+	}
+	return nil
 }
 
 // loadManaged parses the managed file: a missing or empty file or "[]" is no
