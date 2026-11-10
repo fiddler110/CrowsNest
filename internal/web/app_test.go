@@ -1179,3 +1179,19 @@ func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 		}
 	}
 }
+
+func TestGamesPageIsAdminOnly(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/games", nil))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
+		t.Errorf("player /games = %d -> %q, want a redirect to /", rec.Code, rec.Header().Get("Location"))
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req("GET", "/games", nil))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "games.js") {
+		t.Errorf("admin /games = %d, want the page", rec.Code)
+	}
+}

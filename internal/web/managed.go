@@ -3,9 +3,11 @@ package web
 import (
 	"encoding/json"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 
+	"github.com/fiddler110/crowsnest/internal/auth"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/managed"
 )
@@ -44,6 +46,19 @@ func (a *App) handleManagedList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, a.Managed.List())
+}
+
+// handleGamesPage serves the Games page (admins only; players go back to the dashboard).
+func (a *App) handleGamesPage(w http.ResponseWriter, r *http.Request) {
+	session, _ := auth.FromContext(r.Context())
+	if a.Auth.Sessions.RoleFor(session.Username) != auth.RoleAdmin {
+		http.Redirect(w, r, "/", http.StatusSeeOther)
+		return
+	}
+	data := dashboardData{Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken}
+	if err := a.Templates.Games.Execute(w, data); err != nil {
+		log.Printf("web: render games page: %v", err)
+	}
 }
 
 // handleManagedConfigured lists the games that come from config.yaml (everything

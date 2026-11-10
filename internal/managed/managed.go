@@ -104,6 +104,12 @@ type Plan struct {
 	Env     []string `json:"env"`     // .env variables the service reads
 	Fits    bool     `json:"fits"`    // inside the operator's policy
 	Reason  string   `json:"reason,omitempty"`
+	// The plain-language summary the dashboard shows beside the form.
+	Container string   `json:"container,omitempty"`
+	Image     string   `json:"image,omitempty"`
+	Ports     []string `json:"ports,omitempty"`   // host_ip:port/proto -> container
+	Folders   []string `json:"folders,omitempty"` // host folders the game stores data in
+	Memory    string   `json:"memory,omitempty"`
 }
 
 // OptionInfo and ModuleInfo describe the catalogue to the dashboard.
@@ -329,7 +335,11 @@ func (m *Manager) Preview(r Request) (*Plan, error) {
 	}
 	svc, _ := yaml.Marshal(map[string]any{r.ID: rd.Service})
 	sc, _ := json.MarshalIndent(rd.Scope, "", "  ")
-	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil}
+	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil,
+		Container: rd.Service.ContainerName, Image: rd.Service.Image, Ports: rd.Service.Ports, Memory: rd.Service.MemLimit}
+	for _, v := range rd.Service.Volumes {
+		p.Folders = append(p.Folders, strings.SplitN(v, ":", 2)[0])
+	}
 	if fitErr != nil {
 		p.Reason = fitErr.Error()
 	}

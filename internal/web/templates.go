@@ -18,6 +18,7 @@ var staticFS embed.FS
 type Templates struct {
 	Dashboard *template.Template
 	Login     *template.Template
+	Games     *template.Template
 }
 
 // LoadTemplates parses the embedded HTML templates.
@@ -30,7 +31,11 @@ func LoadTemplates() (*Templates, error) {
 	if err != nil {
 		return nil, fmt.Errorf("web: parse login template: %w", err)
 	}
-	return &Templates{Dashboard: dashboard, Login: login}, nil
+	gamesPage, err := template.ParseFS(templateFS, "templates/games.html")
+	if err != nil {
+		return nil, fmt.Errorf("web: parse games template: %w", err)
+	}
+	return &Templates{Dashboard: dashboard, Login: login, Games: gamesPage}, nil
 }
 
 // staticHandler serves the embedded static assets (CSS/JS) rooted at "/".
