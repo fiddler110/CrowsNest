@@ -18,14 +18,18 @@ be useful to you too. The licence is noncommercial (see [License](#license)).
 
 ## How it fits together
 
-The panel never gets the raw Docker socket in the recommended setup. Every Docker call goes through two small
-filters that ship in the same binary, so a bug in the web app can't turn into control of the whole host.
+The panel never gets the raw Docker socket in the recommended setup. Every Docker call goes through a guard that
+ships in the same binary, so a bug in the web app can't turn into control of the whole host. The guard is its own
+container, and the panel is the only other one.
 
 ```mermaid
 flowchart LR
     B["Browser"] -->|"HTTPS"| P["Panel<br/>(crowsnest serve)"]
-    P -->|"Docker API"| E["execguard<br/>allows only the backup<br/>commands your games declare"]
-    E --> G["guard<br/>allows only the containers,<br/>images and ports in policy.yaml"]
+    subgraph GC ["Guard container (crowsnest guard --exec)"]
+        direction TB
+        E["exec allowlist<br/>only the backup commands<br/>your games declare"] --> G["Docker API filter<br/>only the containers, images<br/>and ports in policy.yaml"]
+    end
+    P -->|"Docker API"| E
     G --> D[("Docker socket")]
     D --> C["Game containers<br/>on the games network"]
     P -.->|"RCON and REST probes,<br/>private games network"| C
@@ -128,7 +132,7 @@ Images are published to `ghcr.io/fiddler110/crowsnest` (`:latest`, `:X.Y.Z`, `:X
 passes the CI and security gate before a release is cut. Images are scanned, signed with cosign and shipped with an
 SBOM; see [docs/publishing.md](docs/publishing.md). You don't need a Go toolchain.
 
-**The fastest start** is [`quickstart/`](quickstart/README.md): the panel plus the two guards, with no games
+**The fastest start** is [`quickstart/`](quickstart/README.md): the panel plus the guard, with no games
 configured. You add games from the web page. At any point,
 `docker compose exec crowsnest crowsnest doctor` checks Docker access, file permissions, the policy and a few safety
 settings, and tells you what to fix.
@@ -242,7 +246,8 @@ now" button and the list of backup files. Backups run inside the game's containe
 whatever the image provides (the Palworld example in `config.yaml.example` shows one).
 
 `exec` needs the Docker proxy to allow it, and a generic proxy can't limit which commands run. That's what the
-bundled exec guard is for (`crowsnest execguard`, and the `execguard` service in `compose.yaml.example`). It allows
+bundled exec guard is for. It runs inside the guard container with `crowsnest guard --exec` (the quickstart does
+this), or on its own as `crowsnest execguard` (the `execguard` service in `compose.yaml.example`). It allows
 exactly the commands your config implies (each `backup.exec`, the `list_dir` listing, Windrose's readiness check),
 refuses exec options such as `Privileged`, `User` and `Env`, and only lets `exec/<id>/start` through for ids it
 approved itself. Restart it after changing `backup:` settings.
@@ -333,7 +338,7 @@ host. I'd only use it on a machine where that's acceptable.
 
 The better options, in order:
 
-- The [quickstart](quickstart/README.md) stack, which puts `execguard` and `guard` in front of the socket and uses
+- The [quickstart](quickstart/README.md) stack, which puts the guard (with the exec allowlist built in) in front of the socket and uses
   the policy file. This is what I'd recommend.
 - The commented-out [docker-socket-proxy](https://github.com/Tecnativa/docker-socket-proxy) service in
   `compose.yaml.example`, allowing only the API calls CrowsNest makes. Point `server.docker_host` at it

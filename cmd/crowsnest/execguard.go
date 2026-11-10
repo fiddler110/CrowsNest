@@ -45,37 +45,50 @@ func runExecGuard(args []string) error {
 	if *upstream == "" {
 		return fmt.Errorf("execguard: --upstream or EXECGUARD_UPSTREAM is required")
 	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	srv, err := newExecProxy(ctx, *listen, *upstream)
+	if err != nil {
+		return err
+	}
+	return serveUntilDone(ctx, srv)
+}
+
+// newExecProxy builds the exec allowlist proxy from config.yaml (and, for
+// dashboard-enabled games, their modules' backup commands, reloaded live while
+// ctx lives). It forwards everything that is not an exec route to upstream.
+func newExecProxy(ctx context.Context, listen, upstream string) (*http.Server, error) {
 	cfg, err := config.Load(configPath())
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
+		return nil, fmt.Errorf("load config: %w", err)
 	}
 	rules := execRules(cfg)
 	var mods *modules.Set
 	if cfg.Managed.Dir != "" {
 		// Dashboard-enabled games: their module's backup command, reloaded as games come and go.
 		if mods, err = modules.ForConfig(cfg, log.Printf); err != nil {
-			return fmt.Errorf("load modules: %w", err)
+			return nil, fmt.Errorf("load modules: %w", err)
 		}
 		more, err := managed.ExecRules(cfg.Managed.Dir, cfg.Managed.PolicyFile, mods)
 		if err != nil {
-			return err
+			return nil, err
 		}
 		rules = append(rules, more...)
 	}
-	g, err := execguard.New(*upstream, rules)
+	g, err := execguard.New(upstream, rules)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	g.Logf = log.Printf
-	log.Printf("execguard: %d allowlisted command(s), listening on %q, upstream %q", len(rules), *listen, *upstream) // #nosec G706 -- operator-supplied command-line flags, not request data
-
-	srv := &http.Server{Addr: *listen, Handler: g, ReadHeaderTimeout: 10 * time.Second}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	log.Printf("execguard: %d allowlisted command(s), listening on %q, upstream %q", len(rules), listen, upstream) // #nosec G706 -- operator-supplied command-line flags, not request data
 	if mods != nil {
-		static := execRules(cfg)
-		go watchManagedRules(ctx, g, static, cfg.Managed.Dir, cfg.Managed.PolicyFile, mods)
+		go watchManagedRules(ctx, g, execRules(cfg), cfg.Managed.Dir, cfg.Managed.PolicyFile, mods)
 	}
+	return &http.Server{Addr: listen, Handler: g, ReadHeaderTimeout: 10 * time.Second}, nil
+}
+
+// serveUntilDone runs srv until ctx ends, then shuts it down.
+func serveUntilDone(ctx context.Context, srv *http.Server) error {
 	go func() {
 		<-ctx.Done()
 		sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)

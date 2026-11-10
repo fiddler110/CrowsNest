@@ -349,7 +349,8 @@ managed: {dir: /app/data/managed, policy_file: /etc/crowsnest/policy/policy.yaml
 - `mkdir -p ${USERDIR}/crowsnest/config/managed` and make it writable by the panel's uid (1000).
 - `policy.yaml` is parsed at every reload, so tightening it takes effect within seconds and drops any managed scope
   that no longer fits. The panel reads the same file for its preview.
-- **exec and backups.** Everything the panel does goes through execguard, whose allowlist for `config.yaml` games is
+- **exec and backups.** (`crowsnest guard --exec` runs this allowlist inside the guard container, in front of the
+  guard; the quickstart does. `crowsnest execguard` runs it as a separate container.) Everything the panel does goes through execguard, whose allowlist for `config.yaml` games is
   read at start. For dashboard-enabled games it is built from each module's `backup:` block (command, `list_dir`,
   `before_stop`) and **reloaded every 2 seconds** from the managed dir, so enabling a game adds its backup command
   and disabling removes it, with no restart. The command always comes from the installed module, never from the

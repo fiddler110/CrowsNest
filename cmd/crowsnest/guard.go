@@ -22,6 +22,7 @@ func runGuard(args []string) error {
 	fs := flag.NewFlagSet("guard", flag.ExitOnError)
 	listen := fs.String("listen", ":2375", "address to listen on")
 	socket := fs.String("socket", envOr("GUARD_SOCKET", "/var/run/docker.sock"), "Docker socket (or $GUARD_SOCKET)")
+	withExec := fs.Bool("exec", os.Getenv("GUARD_EXEC") == "1", "also run the exec allowlist (execguard) in front of the guard, in this process (or GUARD_EXEC=1)")
 	_ = fs.Parse(args)
 
 	src := dockerguard.Sources{Base: os.Getenv("GUARD_SCOPES"), ManagedFile: os.Getenv("GUARD_SCOPES_FILE"), PolicyFile: os.Getenv("GUARD_POLICY")}
@@ -54,13 +55,20 @@ func runGuard(args []string) error {
 			s.Name, sortedKeys(s.Images), s.Binds, s.Volumes, sortedKeys(s.Networks), s.IPv4, s.Ports, s.Exec, sortedKeys(s.SecOpts), sortedKeys(s.CapAdd)) // #nosec G705 G706 -- operator configuration, not request data
 	}
 
-	l, err := net.Listen("tcp", *listen)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	// With --exec the guard listens on loopback only, where nothing outside this container can reach it, and
+	// the exec allowlist takes the public address and forwards to it: the same two layers as running execguard
+	// as its own container, without the second container.
+	guardAddr := *listen
+	if *withExec {
+		guardAddr = "127.0.0.1:0"
+	}
+	l, err := net.Listen("tcp", guardAddr)
 	if err != nil {
 		return err
 	}
 	fmt.Printf("crowsnest guard on %s, %d scope(s), socket %s\n", l.Addr(), len(scopes), *socket) // #nosec G705 G706 -- operator-supplied command-line flags
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	if src.ManagedFile != "" {
 		kick := make(chan struct{}, 1)
 		hup := make(chan os.Signal, 1)
@@ -76,7 +84,20 @@ func runGuard(args []string) error {
 		go g.Watch(ctx, src, 2*time.Second, kick, res)
 		fmt.Printf("crowsnest guard watching %s inside policy %s (SIGHUP reloads at once)\n", src.ManagedFile, src.PolicyFile) // #nosec G705 G706 -- operator-supplied environment
 	}
-	return g.ServeContext(ctx, l)
+	if !*withExec {
+		return g.ServeContext(ctx, l)
+	}
+	execSrv, err := newExecProxy(ctx, *listen, "tcp://"+l.Addr().String())
+	if err != nil {
+		return err
+	}
+	errc := make(chan error, 2)
+	go func() { errc <- g.ServeContext(ctx, l) }()
+	go func() { errc <- serveUntilDone(ctx, execSrv) }()
+	err = <-errc
+	stop() // one side ending takes the other down with it
+	<-errc
+	return err
 }
 
 func envOr(key, def string) string {

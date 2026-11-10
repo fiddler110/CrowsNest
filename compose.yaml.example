@@ -151,6 +151,8 @@ services:
   # `crowsnest_front` (shared with crowsnest) and `crowsnest_back` (shared with
   # dockerproxy), put crowsnest on `crowsnest_front` only, dockerproxy on
   # `crowsnest_back` only, and set `server.docker_host: tcp://execguard:2375`.
+  # (To avoid a second container, run the guard below with `--exec` instead: it serves this allowlist in
+  # front of itself, in one process. It then needs config.yaml mounted, as execguard does. See quickstart/compose.yaml.)
   # execguard:
   #   image: ghcr.io/fiddler110/crowsnest:latest
   #   container_name: crowsnest-execguard

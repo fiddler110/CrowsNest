@@ -238,6 +238,9 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   Still open from the review list: scheduled starts and Discord slash commands
   (both deferred).
 
+- [x] **One guard container (2026-11-10).** `crowsnest guard --exec` runs the exec allowlist in front of the
+  guard in a single process (the guard on loopback, nothing else listening), so the quickstart is two
+  containers, the panel and the guard, instead of three. `crowsnest execguard` still works on its own.
 - [x] **Exec guard and admin console (2026-11-07).** `crowsnest execguard`
   allowlists `docker exec` to exactly the commands config implies, in front of
   docker-socket-proxy. Palworld gets an admin-only Console tab: fixed REST

@@ -4,8 +4,8 @@ server:
   session_secret_file: /app/data/session_secret
   settings_file: /app/data/settings.json
   history_file: /app/data/events.jsonl
-  # Every Docker call goes through execguard, then the guard; never the raw socket.
-  docker_host: tcp://execguard:2375
+  # Every Docker call goes through the guard; never the raw socket.
+  docker_host: tcp://dockerproxy-crowsnest:2375
   # Set to true once you serve CrowsNest over HTTPS (marks the cookie Secure, adds HSTS).
   secure_cookies: false
   # Behind a reverse proxy, list its address so the sign-in rate limit counts real visitors:
