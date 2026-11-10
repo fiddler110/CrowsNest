@@ -52,12 +52,12 @@ type Manager struct {
 	PolicyFile string // operator's policy.yaml
 	// PolicyEditable lets SetPolicy rewrite PolicyFile (the operator mounted it writable and opted in).
 	PolicyEditable bool
-	Platform   modules.Platform
-	Modules    *modules.Set
-	Config     *config.Config
-	Docker     Docker
-	Wire       *dockerctl.Client // for module wiring (status, logs, exec)
-	Registry   *games.Registry
+	Platform       modules.Platform
+	Modules        *modules.Set
+	Config         *config.Config
+	Docker         Docker
+	Wire           *dockerctl.Client // for module wiring (status, logs, exec)
+	Registry       *games.Registry
 	// Settle is how long a new game waits for the guard to pick up its scope.
 	Settle time.Duration
 
