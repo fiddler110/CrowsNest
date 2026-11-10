@@ -65,6 +65,11 @@ type ManagedConfig struct {
 	// PolicyFile is the operator's policy.yaml, mounted read-only. Required
 	// when Dir is set; the guard reads the same file.
 	PolicyFile string `yaml:"policy_file"`
+	// PolicyEditable lets admins change the policy from the dashboard. Off by
+	// default, and it only works when the policy's directory is mounted writable
+	// into the panel: leaving it read-only keeps the envelope out of the panel's
+	// reach, which is the point of having one.
+	PolicyEditable bool `yaml:"policy_editable"`
 }
 
 // PlatformConfig holds the host-level values a module's runtime section is

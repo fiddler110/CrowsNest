@@ -1149,6 +1149,10 @@ func (f *fakeManaged) Enable(r managed.Request) error { f.enabled = append(f.ena
 func (f *fakeManaged) Disable(string) error           { return nil }
 func (f *fakeManaged) Update(managed.Request) error   { return nil }
 func (f *fakeManaged) Refresh(string) error           { return nil }
+func (f *fakeManaged) Policy() (managed.PolicyState, error) {
+	return managed.PolicyState{Policy: managed.PolicyDoc{Names: []string{"x"}}}, nil
+}
+func (f *fakeManaged) SetPolicy(managed.PolicyDoc) error { return nil }
 
 func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 	h := newHarness(t, "#!/bin/sh\nexit 0\n")
@@ -1172,8 +1176,11 @@ func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 	if c := do("POST", "/api/managed/games", []byte(`{"id":"x","privileged":true}`)); c != http.StatusBadRequest {
 		t.Errorf("unknown field: %d, want 400", c)
 	}
+	if c := do("GET", "/api/managed/policy", nil); c != http.StatusOK {
+		t.Errorf("policy: %d", c)
+	}
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
-	for _, p := range [][2]string{{"GET", "/api/managed/modules"}, {"GET", "/api/managed/games"}, {"POST", "/api/managed/preview"}, {"POST", "/api/managed/games"}, {"DELETE", "/api/managed/games/minecraft"}, {"PUT", "/api/managed/games/minecraft"}, {"POST", "/api/managed/games/minecraft/refresh"}} {
+	for _, p := range [][2]string{{"GET", "/api/managed/modules"}, {"GET", "/api/managed/games"}, {"POST", "/api/managed/preview"}, {"POST", "/api/managed/games"}, {"DELETE", "/api/managed/games/minecraft"}, {"PUT", "/api/managed/games/minecraft"}, {"POST", "/api/managed/games/minecraft/refresh"}, {"GET", "/api/managed/policy"}, {"PUT", "/api/managed/policy"}} {
 		if c := do(p[0], p[1], []byte(`{}`)); c != http.StatusForbidden {
 			t.Errorf("player %s %s = %d, want 403", p[0], p[1], c)
 		}

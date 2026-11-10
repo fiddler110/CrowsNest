@@ -52,6 +52,34 @@
   <h2 class="section-title">// your fleet</h2>
   <div id="fleet" class="fleet" aria-live="polite"></div>
 
+  <h2 class="section-title">// policy</h2>
+  <section class="policy" aria-label="Policy">
+    <p class="settings-help" id="policy-note">What this panel is allowed to create. Anything outside it is refused before a container exists.</p>
+    <form id="policy-form" class="policy-form" autocomplete="off">
+      <label class="field">Games folder <small>Every data folder must be inside this one.</small>
+        <input type="text" name="games_root" spellcheck="false" disabled></label>
+      <label class="field">Container names <small>One per line. A trailing * matches a prefix, e.g. mc-*.</small>
+        <textarea name="names" rows="3" spellcheck="false" disabled></textarea></label>
+      <label class="field">Images <small>One repository per line, or a registry prefix ending in /*.</small>
+        <textarea name="images" rows="3" spellcheck="false" disabled></textarea></label>
+      <label class="field">Networks
+        <textarea name="networks" rows="2" spellcheck="false" disabled></textarea></label>
+      <label class="field">Published ports <small>e.g. 25565/tcp or 27000-28999/udp.</small>
+        <textarea name="ports" rows="2" spellcheck="false" disabled></textarea></label>
+      <label class="field">Host addresses <small>Ports may only be published on these. Empty means any.</small>
+        <textarea name="host_ips" rows="2" spellcheck="false" disabled></textarea></label>
+      <label class="field">Most games at once
+        <input type="number" name="max_scopes" min="1" max="1000" disabled></label>
+      <label class="setting-check"><input type="checkbox" name="exec" disabled> Allow running commands inside the games (needed for backups)</label>
+      <p id="policy-error" class="settings-error" role="alert" hidden></p>
+      <div class="dialog-actions">
+        <button id="policy-cancel" class="btn btn-ghost" type="button" hidden>Cancel</button>
+        <button id="policy-edit" class="btn btn-ghost" type="button" hidden>Edit policy</button>
+        <button id="policy-save" class="btn btn-primary" type="submit" hidden>Save policy</button>
+      </div>
+    </form>
+  </section>
+
   <div id="setup-section">
   <h2 class="section-title">// add a game</h2>
 

@@ -22,6 +22,8 @@ type ManagedGames interface {
 	Update(managed.Request) error
 	Refresh(id string) error
 	Disable(id string) error
+	Policy() (managed.PolicyState, error)
+	SetPolicy(managed.PolicyDoc) error
 }
 
 const maxManagedBody = 32 << 10
@@ -186,4 +188,37 @@ func (a *App) handleManagedRefresh(w http.ResponseWriter, r *http.Request) {
 	}
 	a.record(r, id, "updating image")
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": id, "state": managed.StateInstalling})
+}
+
+func (a *App) handleManagedPolicy(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	st, err := a.Managed.Policy()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, st)
+}
+
+func (a *App) handleManagedSetPolicy(w http.ResponseWriter, r *http.Request) {
+	if !a.managedOn(w) {
+		return
+	}
+	var doc managed.PolicyDoc
+	r.Body = http.MaxBytesReader(w, r.Body, maxManagedBody)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := a.Managed.SetPolicy(doc); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	a.record(r, "policy", "changed the policy")
+	st, _ := a.Managed.Policy()
+	writeJSON(w, http.StatusOK, st)
 }

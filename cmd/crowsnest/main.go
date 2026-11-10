@@ -236,7 +236,7 @@ func serve() error {
 
 	if cfg.Managed.Dir != "" {
 		mgr := &managed.Manager{
-			Dir: cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, Platform: modules.PlatformFrom(cfg.Platform),
+			Dir: cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, PolicyEditable: cfg.Managed.PolicyEditable, Platform: modules.PlatformFrom(cfg.Platform),
 			Modules: mods, Config: cfg, Docker: docker, Wire: docker, Registry: registry,
 		}
 		if err := mgr.Restore(ctx); err != nil {

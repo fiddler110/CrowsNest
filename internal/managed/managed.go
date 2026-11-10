@@ -49,7 +49,9 @@ type Docker interface {
 // Manager owns the dashboard-enabled games.
 type Manager struct {
 	Dir        string // state directory
-	PolicyFile string // operator's policy.yaml (read only)
+	PolicyFile string // operator's policy.yaml
+	// PolicyEditable lets SetPolicy rewrite PolicyFile (the operator mounted it writable and opted in).
+	PolicyEditable bool
 	Platform   modules.Platform
 	Modules    *modules.Set
 	Config     *config.Config
@@ -136,7 +138,10 @@ type ModuleInfo struct {
 	// Fits is whether a game from this module, with its defaults and the module's
 	// own id, is inside the operator's policy. Nil when it cannot be told (the
 	// module needs an image, or a game with that id already exists).
-	Fits    *bool        `json:"fits,omitempty"`
+	Fits *bool `json:"fits,omitempty"`
+	// FitID is an id the policy's names admit, when the module's own id is not one:
+	// the verdict above was reached with it.
+	FitID   string       `json:"fit_id,omitempty"`
 	Reason  string       `json:"reason,omitempty"`
 	Options []OptionInfo `json:"options"`
 }
@@ -197,6 +202,26 @@ func (m *Manager) probeFit(mi *ModuleInfo, mf *modules.Manifest) {
 	plan, err := m.Preview(req)
 	if err != nil {
 		return
+	}
+	if !plan.Fits && strings.Contains(plan.Reason, "policy's names") {
+		// The module's own id is not an allowed name. Judge the image and ports with one that is.
+		if pol, perr := m.policy(); perr == nil {
+			for _, n := range pol.Names {
+				id := strings.TrimSuffix(n, "*")
+				if id == n {
+					continue // an exact name is only for that one game
+				}
+				id += mf.ID
+				if !idRe.MatchString(id) {
+					continue
+				}
+				req.ID = id
+				if p2, e2 := m.Preview(req); e2 == nil && (p2.Fits || !strings.Contains(p2.Reason, "policy's names")) {
+					plan, mi.FitID = p2, id
+					break
+				}
+			}
+		}
 	}
 	fits := plan.Fits
 	mi.Fits, mi.Reason = &fits, plan.Reason
@@ -815,4 +840,72 @@ func ExecRules(dir string, mods *modules.Set) ([]execguard.Rule, error) {
 		}
 	}
 	return rules, nil
+}
+
+// PolicyDoc is policy.yaml as the dashboard shows and edits it.
+type PolicyDoc struct {
+	GamesRoot string   `json:"games_root" yaml:"games_root"`
+	Names     []string `json:"names" yaml:"names"`
+	Images    []string `json:"images" yaml:"images"`
+	Networks  []string `json:"networks" yaml:"networks"`
+	Ports     []string `json:"ports" yaml:"ports"`
+	HostIPs   []string `json:"host_ips" yaml:"host_ips,omitempty"`
+	Exec      bool     `json:"exec" yaml:"exec"`
+	Labels    []string `json:"labels" yaml:"labels,omitempty"`
+	MaxScopes int      `json:"max_scopes" yaml:"max_scopes"`
+}
+
+// PolicyState is the current policy and whether the dashboard may change it.
+type PolicyState struct {
+	Policy   PolicyDoc `json:"policy"`
+	Editable bool      `json:"editable"`
+}
+
+// Policy reads the policy in force.
+func (m *Manager) Policy() (PolicyState, error) {
+	p, err := m.policy()
+	if err != nil {
+		return PolicyState{}, err
+	}
+	return PolicyState{Editable: m.PolicyEditable, Policy: PolicyDoc{
+		GamesRoot: p.GamesRoot, Names: p.Names, Images: p.Images, Networks: p.Networks, Ports: p.Ports,
+		HostIPs: p.HostIPs, Exec: p.Exec, Labels: p.Labels, MaxScopes: p.MaxScopes,
+	}}, nil
+}
+
+// SetPolicy validates and rewrites policy.yaml. The guard reads the same file and applies it within
+// seconds; a managed game that no longer fits is dropped by the guard, not here.
+func (m *Manager) SetPolicy(d PolicyDoc) error {
+	if !m.PolicyEditable {
+		return errors.New("the policy is read-only here: it is edited in policy.yaml on the host")
+	}
+	body, err := yaml.Marshal(d)
+	if err != nil {
+		return err
+	}
+	doc := append([]byte("# Operator-owned envelope for what the dashboard may add. Last written from the dashboard.\n"+
+		"# Docs: docs/modules.md in the CrowsNest repo. Every list is required: no limit is ever implied.\n"), body...)
+	if _, err := dockerguard.ParsePolicy(doc); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	dir := filepath.Dir(m.PolicyFile)
+	tmp, err := os.CreateTemp(dir, ".policy-*.yaml")
+	if err != nil {
+		return fmt.Errorf("the policy folder is not writable by the panel: %w", err)
+	}
+	defer os.Remove(tmp.Name()) // #nosec G104 -- best effort once renamed away
+	if _, err := tmp.Write(doc); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(0o644); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tmp.Name(), m.PolicyFile)
 }

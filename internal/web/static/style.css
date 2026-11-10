@@ -543,3 +543,8 @@ h1, h2, h3, p { margin: 0; }
 @media (prefers-reduced-motion: reduce) { .progress-bar.progress-indeterminate { animation: none; } }
 @media (max-width: 860px) { .setup { grid-template-columns: 1fr; } .summary { position: static; } }
 a.btn { text-decoration: none; }
+
+.pick-badge.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 45%, transparent); }
+.policy { margin-bottom: 2rem; max-width: 44rem; }
+.policy-form textarea { padding: 0.55rem 0.7rem; font: 0.82rem var(--mono); color: inherit; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; resize: vertical; }
+.policy-form input:disabled, .policy-form textarea:disabled { opacity: 0.75; cursor: default; }

@@ -213,6 +213,14 @@ the container; leaving a secret empty keeps it), **Update image**, and **Disable
 install finishes the page reloads so the game's card appears. It talks to `/api/managed/*`; without `managed.dir` the
 dialog says the feature is off.
 
+### Policy on the Games page
+
+The page shows the policy in force. It is read-only by default: the panel mounts the policy directory read-only, so a
+compromised panel cannot widen its own limits. To edit it from the dashboard, mount the policy **directory**
+writable into the panel and set `managed.policy_editable: true`. Saves are validated with the same parser as the
+guard, written atomically, and applied by the guard within seconds (a managed game that no longer fits is dropped).
+Keep the guard's own mount read-only.
+
 ### Deploying it (tested shape)
 
 Verified end to end on a real Docker daemon with the production chain (panel → execguard → guard → docker.sock), the

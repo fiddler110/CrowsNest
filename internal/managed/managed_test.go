@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -445,5 +446,37 @@ func TestDerivedOptionsFillThemselvesIn(t *testing.T) {
 		if o.Key == "rest_api_url" && o.Derive == "" {
 			t.Error("rest_api_url lost its derive")
 		}
+	}
+}
+
+func TestPolicyEditing(t *testing.T) {
+	m, _ := newManager(t)
+	st, err := m.Policy()
+	if err != nil || st.Editable || len(st.Policy.Names) == 0 {
+		t.Fatalf("policy view: %+v %v", st, err)
+	}
+	if err := m.SetPolicy(st.Policy); err == nil {
+		t.Fatal("a read-only policy was rewritten")
+	}
+	m.PolicyEditable = true
+	st.Policy.Names = append(st.Policy.Names, "pal-*")
+	if err := m.SetPolicy(st.Policy); err != nil {
+		t.Fatal(err)
+	}
+	if again, _ := m.Policy(); !slices.Contains(again.Policy.Names, "pal-*") {
+		t.Errorf("edit not saved: %+v", again.Policy)
+	}
+	bad := st.Policy
+	bad.Names = []string{"*"}
+	if err := m.SetPolicy(bad); err == nil {
+		t.Error(`names: ["*"] was accepted`)
+	}
+	empty := st.Policy
+	empty.Ports = nil
+	if err := m.SetPolicy(empty); err == nil {
+		t.Error("an empty ports list was accepted")
+	}
+	if kept, _ := m.Policy(); !slices.Contains(kept.Policy.Names, "pal-*") || len(kept.Policy.Ports) == 0 {
+		t.Errorf("a refused edit changed the file: %+v", kept.Policy)
 	}
 }
