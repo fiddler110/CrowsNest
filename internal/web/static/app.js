@@ -1,7 +1,7 @@
 const CSRF_TOKEN = document.querySelector('meta[name=csrf-token]').content;
 const POLL_INTERVAL_MS = 5000;
 const STATS_POLL_MS = 3000;
-const INFO_POLL_MS = 5000;
+const INFO_POLL_MS = 30000; // the fact sheet barely changes; every poll is a call to the game server
 const MAX_LOG_LINES = 300;
 
 const logSources = {};
@@ -1270,6 +1270,44 @@ function toggleConsole(id) {
 
   const poll = () => { if (!timer) timer = setInterval(load, 3000); };
 
+  const renderConfigured = async () => {
+    const ul = document.getElementById("games-configured");
+    ul.replaceChildren();
+    const res = await callAPI("/api/managed/configured");
+    const rows = res.ok ? await res.json() : [];
+    if (!rows.length) { ul.appendChild(el("li", "empty", "None.")); return; }
+    rows.forEach((g) => {
+      const li = el("li", "user-row");
+      li.append(el("span", "user-name", g.display_name || g.id),
+        el("span", "user-role", [g.container, g.connect_address].filter(Boolean).join(" · ")));
+      ul.appendChild(li);
+    });
+  };
+
+  const renderCatalogue = () => {
+    const ul = document.getElementById("games-catalogue");
+    ul.replaceChildren();
+    modules.forEach((m) => {
+      const li = el("li", "user-row");
+      li.append(el("span", "user-name", m.name || m.id));
+      const badge = m.fits === undefined || m.fits === null ? "" : m.fits ? "fits policy" : "outside policy";
+      li.append(el("span", "user-role", [badge, m.image, (m.ports || []).join(", ")].filter(Boolean).join(" · ")));
+      const use = el("button", "btn btn-ghost", "Use");
+      use.type = "button";
+      use.addEventListener("click", () => {
+        resetForm();
+        moduleSel.value = m.id;
+        renderOptions();
+        form.elements.id.focus();
+        form.scrollIntoView({ block: "nearest" });
+      });
+      li.append(use);
+      if (m.description) li.appendChild(el("span", "settings-help", m.description));
+      if (m.fits === false && m.reason) li.appendChild(el("span", "settings-error", m.reason));
+      ul.appendChild(li);
+    });
+  };
+
   btn.addEventListener("click", async () => {
     showError("");
     const mres = await callAPI("/api/managed/modules");
@@ -1287,6 +1325,8 @@ function toggleConsole(id) {
       return o;
     }));
     resetForm();
+    renderCatalogue();
+    renderConfigured();
     lastStates = {};
     await load();
     poll();

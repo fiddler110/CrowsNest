@@ -31,6 +31,8 @@ type Manifest struct {
 	APIVersion int    `yaml:"api_version"`
 	ID         string `yaml:"id"`
 	Name       string `yaml:"name"`
+	// Description is one or two sentences the dashboard shows in the catalogue.
+	Description string `yaml:"description"`
 
 	Runtime Runtime `yaml:"runtime"`
 

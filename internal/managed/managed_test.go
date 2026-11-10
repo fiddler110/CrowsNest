@@ -401,3 +401,23 @@ func TestListCarriesEditFieldsButNoSecrets(t *testing.T) {
 		t.Errorf("a secret leaked into the list: %s", b)
 	}
 }
+
+func TestCatalogueDescribesAndProbesFit(t *testing.T) {
+	m, _ := newManager(t)
+	var mc *ModuleInfo
+	for _, mi := range m.Catalogue() {
+		if mi.ID == "minecraft" {
+			c := mi
+			mc = &c
+		}
+	}
+	if mc == nil {
+		t.Fatal("minecraft missing from the catalogue")
+	}
+	if mc.Description == "" || mc.Image == "" || len(mc.Ports) == 0 || !mc.HasBackup {
+		t.Errorf("catalogue entry is thin: %+v", mc)
+	}
+	if mc.Fits == nil || !*mc.Fits {
+		t.Errorf("minecraft should fit the test policy: %+v", mc)
+	}
+}

@@ -116,10 +116,19 @@ type OptionInfo struct {
 }
 
 type ModuleInfo struct {
-	ID         string       `json:"id"`
-	Name       string       `json:"name"`
-	NeedsImage bool         `json:"needs_image"` // the module has no image of its own
-	Options    []OptionInfo `json:"options"`
+	ID          string   `json:"id"`
+	Name        string   `json:"name"`
+	NeedsImage  bool     `json:"needs_image"` // the module has no image of its own
+	Description string   `json:"description,omitempty"`
+	Image       string   `json:"image,omitempty"`
+	Ports       []string `json:"ports,omitempty"` // "25565/tcp"
+	HasBackup   bool     `json:"has_backup,omitempty"`
+	// Fits is whether a game from this module, with its defaults and the module's
+	// own id, is inside the operator's policy. Nil when it cannot be told (the
+	// module needs an image, or a game with that id already exists).
+	Fits    *bool        `json:"fits,omitempty"`
+	Reason  string       `json:"reason,omitempty"`
+	Options []OptionInfo `json:"options"`
 }
 
 const (
@@ -141,13 +150,43 @@ func (m *Manager) Catalogue() []ModuleInfo {
 		if len(mf.Runtime.Ports) == 0 && mf.Runtime.Image == "" && len(mf.Runtime.Data) == 0 {
 			continue
 		}
-		mi := ModuleInfo{ID: mf.ID, Name: mf.Name, NeedsImage: mf.Runtime.Image == ""}
+		mi := ModuleInfo{ID: mf.ID, Name: mf.Name, NeedsImage: mf.Runtime.Image == "",
+			Description: mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil}
+		for _, p := range mf.Runtime.Ports {
+			mi.Ports = append(mi.Ports, fmt.Sprintf("%d/%s", p.Port, p.Proto))
+		}
 		for _, o := range mf.Options {
 			mi.Options = append(mi.Options, OptionInfo{Key: o.Key, Label: o.Label, Default: o.Default, Required: o.Required, Secret: o.Secret})
 		}
+		m.probeFit(&mi, mf)
 		out = append(out, mi)
 	}
 	return out
+}
+
+// probeFit dry-runs the module with its defaults (placeholders for what has
+// none) under its own id, to tell the catalogue whether the policy admits it.
+func (m *Manager) probeFit(mi *ModuleInfo, mf *modules.Manifest) {
+	if mi.NeedsImage {
+		return
+	}
+	req := Request{ID: mf.ID, Module: mf.ID, Options: map[string]string{}, Secrets: map[string]string{}}
+	for _, o := range mf.Options {
+		switch {
+		case o.Secret:
+			req.Secrets[o.Key] = "placeholder"
+		case o.Default != "":
+			req.Options[o.Key] = o.Default
+		case o.Required:
+			req.Options[o.Key] = "placeholder"
+		}
+	}
+	plan, err := m.Preview(req)
+	if err != nil {
+		return
+	}
+	fits := plan.Fits
+	mi.Fits, mi.Reason = &fits, plan.Reason
 }
 
 // validate checks a Request and returns the game config it stands for.

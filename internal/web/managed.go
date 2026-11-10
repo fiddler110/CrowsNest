@@ -46,6 +46,32 @@ func (a *App) handleManagedList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, a.Managed.List())
 }
 
+// handleManagedConfigured lists the games that come from config.yaml (everything
+// on the dashboard that was not enabled from it), read-only, so the Games dialog
+// shows the whole fleet in one place.
+func (a *App) handleManagedConfigured(w http.ResponseWriter, r *http.Request) {
+	managedIDs := map[string]bool{}
+	if a.Managed != nil {
+		for _, g := range a.Managed.List() {
+			managedIDs[g.ID] = true
+		}
+	}
+	type row struct {
+		ID             string `json:"id"`
+		DisplayName    string `json:"display_name"`
+		ConnectAddress string `json:"connect_address,omitempty"`
+		Container      string `json:"container,omitempty"`
+	}
+	out := []row{}
+	for _, d := range a.Registry.All() {
+		if managedIDs[d.ID] {
+			continue
+		}
+		out = append(out, row{ID: d.ID, DisplayName: d.DisplayName, ConnectAddress: d.ConnectAddress, Container: d.ContainerName})
+	}
+	writeJSON(w, http.StatusOK, out)
+}
+
 func readManagedRequest(w http.ResponseWriter, r *http.Request) (managed.Request, bool) {
 	var req managed.Request
 	r.Body = http.MaxBytesReader(w, r.Body, maxManagedBody)

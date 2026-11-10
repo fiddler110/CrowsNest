@@ -264,7 +264,15 @@
     <h3 id="games-title">Games</h3>
     <p class="settings-help">Add a game from a module. The operator's policy decides what is allowed; the preview shows whether a game fits before anything is created. The first image download can take a couple of minutes.</p>
     <p id="games-off" class="settings-help" hidden>Enabling games from the dashboard is not configured (managed.dir in config.yaml).</p>
+    <h4>Enabled from the dashboard</h4>
     <ul id="games-list" class="users-list"></ul>
+
+    <h4>Configured in files</h4>
+    <p class="settings-help">These come from config.yaml and compose files, so they are changed there, not here.</p>
+    <ul id="games-configured" class="users-list"></ul>
+
+    <h4>Available modules</h4>
+    <ul id="games-catalogue" class="users-list"></ul>
 
     <form id="game-form" class="user-form" autocomplete="off">
       <h4 id="game-form-title">Add a game</h4>
