@@ -268,11 +268,11 @@ func serve() error {
 	}
 	oidcLogin := &auth.OIDCLogin{Store: oidcStore, Google: google, Users: userStore, Service: authSvc}
 	if _, src := googleConf.Effective(); google.Active() {
-		password := "enabled"
+		pwState := "enabled" // a word, not a credential
 		if authSvc.PasswordLoginDisabled() {
-			password = "disabled"
+			pwState = "disabled"
 		}
-		log.Printf("auth: Google sign-in enabled (settings from %s); password sign-in %s", src, password)
+		log.Printf("auth: Google sign-in enabled (settings from %s); password sign-in %s", src, pwState)
 	}
 	sessions.Allowed = sessionAllowed(userStore.Snapshot, google, oidcLogin, authSvc.PasswordLoginDisabled)
 

@@ -177,7 +177,7 @@ func (m *Manager) run(ctx context.Context, d games.GameDef, file, actor string, 
 		if stage != "before the game was stopped" {
 			msg += ". The game is left stopped and its data may be partly restored; the backup file itself is untouched"
 		}
-		log.Printf("restore: %s: %s", d.ID, msg)
+		log.Printf("restore: %s: %q", d.ID, msg)
 		m.record(d.ID, actor, msg)
 		m.notify(fmt.Sprintf("⚠️ Restore of **%s** from %s failed (requested by %s): %s", d.DisplayName, file, actor, tail(err.Error())))
 	}

@@ -16,7 +16,7 @@ FROM docker:29.9.3-cli@sha256:2357639ad1ea7d0194134bf3292622fd4e562483966ed674e5
 # Same tag, same flags as upstream's Makefile, with only x/net bumped.
 # Drop this stage (and copy docker-compose from docker-cli again) once a
 # compose release ships x/net >= v0.62.0.
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine3.24@sha256:87c65a688975c0b1d4585d204874c45ca78354670e3a5f11368c5a492303d696 AS compose
+FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine3.24@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS compose
 ARG TARGETOS
 ARG TARGETARCH
 ARG COMPOSE_VERSION=v5.7.0
@@ -33,7 +33,7 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 
 # Stage 2: build the Go binary on the build machine's native platform and
 # cross-compile for the target (no QEMU emulation of the Go toolchain).
-FROM --platform=$BUILDPLATFORM golang:1.26.10-alpine3.24@sha256:87c65a688975c0b1d4585d204874c45ca78354670e3a5f11368c5a492303d696 AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine3.24@sha256:ae52b5bc6ed045a9ed26ab03dc19327a802a9cc9aa8b27ed57f5c6b60579b0bb AS build
 ARG TARGETOS
 ARG TARGETARCH
 WORKDIR /src

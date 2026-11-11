@@ -25,6 +25,9 @@ func Discover(ctx context.Context, client *http.Client, issuer string) (authURL,
 		client = tokenClient
 	}
 	issuer = strings.TrimRight(issuer, "/")
+	if _, err := httpsOrLocal(issuer); err != nil {
+		return "", "", fmt.Errorf("the issuer %s", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/.well-known/openid-configuration", nil)
 	if err != nil {
 		return "", "", err

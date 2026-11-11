@@ -214,16 +214,16 @@ func (s *Service) ServeLoginMFA(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 	case errors.Is(err, mfa.ErrLocked):
-		log.Printf("audit: %s second factor refused: locked", p.User)
+		log.Printf("audit: %q second factor refused: locked", p.User)
 		http.Error(w, "too many wrong codes, try again in a few minutes", http.StatusTooManyRequests)
 		return
 	default:
-		log.Printf("audit: %s second factor refused: %v", p.User, err)
+		log.Printf("audit: %q second factor refused: %v", p.User, err)
 		http.Error(w, "that code is not right", http.StatusUnauthorized)
 		return
 	}
 	if used {
-		log.Printf("audit: %s signed in with a recovery code (%d left)", p.User, s.MFA.RecoveryLeft(p.User))
+		log.Printf("audit: %q signed in with a recovery code (%d left)", p.User, s.MFA.RecoveryLeft(p.User))
 	}
 	// #nosec G124 -- clears the pending cookie; same attributes as when it was set
 	http.SetCookie(w, &http.Cookie{Name: mfaCookieName, Value: "", Path: "/login/mfa", MaxAge: -1, Expires: time.Unix(0, 0),
