@@ -221,6 +221,13 @@ func (m *Manager) checkGame(ctx context.Context, d games.GameDef, idleDuration t
 	}
 
 	now := m.now()
+	// A player seen on the very tick that first finds the game online counts
+	// too: the startup grace is for a server nobody has joined yet.
+	if d.Players != nil && o.PlayersOK && o.Count > 0 {
+		m.mu.Lock()
+		m.seenPlayers[d.ID] = true
+		m.mu.Unlock()
+	}
 	m.mu.Lock()
 	last, tracked := m.lastNonZero[d.ID]
 	m.mu.Unlock()

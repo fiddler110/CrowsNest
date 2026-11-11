@@ -220,3 +220,45 @@ func TestBundledBackupsMatchProduction(t *testing.T) {
 		t.Errorf("minecraft backup = %+v", m.Backup)
 	}
 }
+
+// A game with no backup command needs no exec, so the shipped policy
+// (exec: false) must admit it; only a module that declares a backup asks
+// for exec.
+func TestScopeAsksForExecOnlyWithABackup(t *testing.T) {
+	plat := Platform{GamesRoot: "${USERDIR}", HostGamesRoot: "/srv/games", HostIP: "10.0.0.2"}
+	pol, err := dockerguard.ParsePolicy([]byte(`
+games_root: /srv/games
+images: [docker.io/itzg/*]
+networks: [crowsnest-games-net]
+ports: ["25565/tcp"]
+host_ips: [10.0.0.2]
+exec: false
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	admit := func(m *Manifest) error {
+		r, err := m.Render(config.GameConfig{ID: "minecraft", ContainerName: "minecraft"}, plat)
+		if err != nil {
+			t.Fatal(err)
+		}
+		js, _ := ScopesJSON([]*Rendered{r})
+		scopes, err := dockerguard.LoadScopes(string(js))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return pol.Admit(scopes[0])
+	}
+	base, _ := Bundled().Manifest("minecraft")
+	if base.Backup == nil {
+		t.Fatal("minecraft should declare a backup")
+	}
+	if err := admit(base); err == nil {
+		t.Error("a module with a backup was admitted while exec is off")
+	}
+	noBackup := *base
+	noBackup.Backup = nil
+	if err := admit(&noBackup); err != nil {
+		t.Errorf("a module with no backup was refused while exec is off: %v", err)
+	}
+}
