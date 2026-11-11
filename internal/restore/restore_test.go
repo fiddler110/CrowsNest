@@ -79,10 +79,14 @@ type ctl struct {
 	e        *engine
 	stopErr  error
 	startErr error
+	onStop   func()
 }
 
 func (c *ctl) Stop(_ context.Context, id string) error {
 	c.e.note("stop " + id)
+	if c.onStop != nil {
+		c.onStop()
+	}
 	if c.stopErr != nil {
 		return c.stopErr
 	}
@@ -284,4 +288,26 @@ func TestRestore_OneAtATime(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.m.Wait()
+}
+
+// Stopping a game takes its before-stop backup, which a restore's own hold on
+// the game would refuse; the hold must come after the stop.
+func TestRestore_SafetyBackupIsNotBlockedByTheRestoreItself(t *testing.T) {
+	f := newFixture(t, 0)
+	blocked := false
+	f.c.onStop = func() {
+		release, ok := f.m.Backups.Hold("pal")
+		if !ok {
+			blocked = true
+			return
+		}
+		release()
+	}
+	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex"); err != nil {
+		t.Fatalf("Request = %v", err)
+	}
+	f.m.Wait()
+	if blocked {
+		t.Fatal("the game was held against backups while it was being stopped")
+	}
 }

@@ -128,11 +128,6 @@ func (m *Manager) Request(ctx context.Context, d games.GameDef, file, actor stri
 	if m.Backups.Running(d.ID) || !m.claim(d.ID) {
 		return ErrBusy
 	}
-	release, ok := m.Backups.Hold(d.ID)
-	if !ok {
-		m.release(d.ID)
-		return ErrBusy
-	}
 	base := m.BaseContext
 	if base == nil {
 		base = context.Background()
@@ -141,10 +136,24 @@ func (m *Manager) Request(ctx context.Context, d games.GameDef, file, actor stri
 	go func() {
 		defer m.wg.Done()
 		defer m.release(d.ID)
-		defer release()
 		m.run(base, d, file, actor, up)
 	}()
 	return nil
+}
+
+// hold claims the game against backups, waiting briefly for one that started
+// while the game was stopping.
+func (m *Manager) hold(ctx context.Context, id string) (func(), bool) {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		if release, ok := m.Backups.Hold(id); ok {
+			return release, true
+		}
+		if time.Now().After(deadline) || ctx.Err() != nil {
+			return nil, false
+		}
+		time.Sleep(m.poll())
+	}
 }
 
 func (m *Manager) timeout() time.Duration {
@@ -178,6 +187,13 @@ func (m *Manager) run(ctx context.Context, d games.GameDef, file, actor string, 
 			return
 		}
 	}
+	// Held only now: stopping the game takes its own backup, which a hold would refuse.
+	release, ok := m.hold(ctx, d.ID)
+	if !ok {
+		fail("preparing the restore", ErrBusy)
+		return
+	}
+	defer release()
 	spec, ok := m.Spec(d.ID, file)
 	if !ok {
 		fail("preparing the restore", ErrNotConfigured)
