@@ -71,7 +71,7 @@ users_file: /app/users.env     # <NAME>_PASSWORD_HASH entries; managed by `crows
 #     # These name env vars (set in .env); the defaults are shown.
 #     # client_id_env: CROWSNEST_GOOGLE_CLIENT_ID
 #     # client_secret_env: CROWSNEST_GOOGLE_CLIENT_SECRET
-#     # users_env: CROWSNEST_GOOGLE_USERS    # the allowlist: name=email,name=email
+#     # users_env: CROWSNEST_GOOGLE_USERS    # one-time import of old name=email pairs; the dashboard owns the list
 
 games:
   - id: windrose

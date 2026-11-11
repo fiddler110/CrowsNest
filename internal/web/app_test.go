@@ -814,7 +814,12 @@ func (c *chanNotifier) Notify(_ context.Context, m string) { c.ch <- m }
 func TestLoginPage_GoogleOnly(t *testing.T) {
 	h := newHarness(t, psOnlyRunning, "palworld")
 	h.App.Auth.DisablePasswordLogin = true
-	h.App.Google = &auth.GoogleLogin{RedirectURL: "https://crowsnest.example.com/auth/google/callback", Service: h.App.Auth}
+	h.App.Google = &auth.GoogleLogin{RedirectURL: "https://crowsnest.example.com/auth/google/callback"}
+	if h.App.OIDC == nil {
+		ostore, _ := auth.NewOIDCStore(filepath.Join(t.TempDir(), "oidc.json"), nil)
+		h.App.OIDC = &auth.OIDCLogin{Service: h.App.Auth, Store: ostore}
+	}
+	h.App.OIDC.Google = h.App.Google
 
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login?error="+auth.LoginErrorNotAllowed, nil))

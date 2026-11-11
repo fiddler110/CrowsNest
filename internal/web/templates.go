@@ -31,6 +31,7 @@ type Templates struct {
 	Setup     *template.Template
 	Games     *template.Template
 	Settings  *template.Template
+	Account   *template.Template
 }
 
 // layoutFile holds the partials every page shares: the icon sprite, the top
@@ -57,7 +58,7 @@ func LoadTemplates() (*Templates, error) {
 	for _, p := range []struct {
 		dst  **template.Template
 		file string
-	}{{&t.Dashboard, "dashboard.html"}, {&t.Login, "login.html"}, {&t.Setup, "setup.html"}, {&t.Games, "games.html"}, {&t.Settings, "settings.html"}} {
+	}{{&t.Dashboard, "dashboard.html"}, {&t.Login, "login.html"}, {&t.Setup, "setup.html"}, {&t.Games, "games.html"}, {&t.Settings, "settings.html"}, {&t.Account, "account.html"}} {
 		if *p.dst, err = parse(p.file); err != nil {
 			return nil, err
 		}

@@ -50,6 +50,8 @@ func TestRenderMatchesHandWrittenValheim(t *testing.T) {
 	eq("networks", s.Networks, []string{"crowsnest-games-net"})
 	eq("env", s.Environment, []string{
 		"TZ=${TZ:-UTC}",
+		"PUID=1000", // added on purpose: as root the image took the shared backups folder from the panel
+		"PGID=1000",
 		"SERVER_NAME=${VALHEIM_SERVER_NAME:-My Valheim Server}",
 		"WORLD_NAME=${VALHEIM_WORLD_NAME:-Midgard}",
 		"SERVER_PASS=${VALHEIM_SERVER_PASS:-}",

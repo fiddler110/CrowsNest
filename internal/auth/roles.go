@@ -64,3 +64,24 @@ func RequireAdmin(sessions *SessionManager, next http.Handler) http.Handler {
 		next.ServeHTTP(w, r)
 	})
 }
+
+// CanAccess reports whether the user may see and control the game with this
+// id: admins always, and anyone with no games list.
+func (u UserRecord) CanAccess(gameID string) bool {
+	if u.EffectiveRole() == RoleAdmin || len(u.Games) == 0 {
+		return true
+	}
+	for _, g := range u.Games {
+		if g == gameID {
+			return true
+		}
+	}
+	return false
+}
+
+// CanAccessGame is CanAccess for username's current record, looked up on
+// every call so a change applies at once.
+func (m *SessionManager) CanAccessGame(username, gameID string) bool {
+	rec, _ := m.lookupUser(username)
+	return rec.CanAccess(gameID)
+}

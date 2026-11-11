@@ -18,7 +18,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/vault"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -52,7 +54,9 @@ type Docker interface {
 
 // Manager owns the dashboard-enabled games.
 type Manager struct {
-	Dir        string // state directory
+	Dir string // state directory
+	// Vault encrypts secrets.json; nil leaves values as they are (tests).
+	Vault      *vault.Vault
 	PolicyFile string // operator's policy.yaml
 	// PolicyEditable lets SetPolicy rewrite PolicyFile (the operator mounted it writable and opted in).
 	PolicyEditable bool
@@ -132,7 +136,8 @@ type Info struct {
 	Error  string `json:"error,omitempty"`
 	// What the edit form pre-fills. Secret values are never listed.
 	DisplayName    string            `json:"display_name,omitempty"`
-	ConnectAddress string            `json:"connect_address,omitempty"`
+	ConnectAddress string            `json:"connect_address,omitempty"` // only what was typed in the form
+	Connect        string            `json:"connect,omitempty"`         // what players use: typed, or worked out from the published port
 	Options        map[string]string `json:"options,omitempty"`
 	// Image is the tag the game follows (repo:tag); Digest is the exact image it
 	// runs (empty for a game installed before pinning, until its next update);
@@ -155,6 +160,7 @@ type Plan struct {
 	Container string   `json:"container,omitempty"`
 	Image     string   `json:"image,omitempty"`
 	Ports     []string `json:"ports,omitempty"`   // host_ip:port/proto -> container
+	Connect   string   `json:"connect,omitempty"` // what players type to join
 	Folders   []string `json:"folders,omitempty"` // host folders the game stores data in
 	Memory    string   `json:"memory,omitempty"`
 	// Pinning says how the image is held still: the tag is resolved to a digest on install.
@@ -456,6 +462,11 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	if g.DisplayName == "" {
 		g.DisplayName = mf.Name
 	}
+	if g.ConnectAddress == "" {
+		if rd, err := mf.Render(g, m.Platform); err == nil {
+			g.ConnectAddress = connectAddress(mf, opts, rd)
+		}
+	}
 	if rd, err := mf.Render(g, m.Platform); err == nil && !r.probe { // a catalogue probe asks about the policy, not the ports in use
 		if clash := m.portClash(g.ID, rd); clash != "" {
 			return g, nil, errors.New(clash)
@@ -495,6 +506,28 @@ func (m *Manager) backupFor(mf *modules.Manifest, id string) *config.BackupConfi
 		b.LocalDir = m.Platform.BackupLocalDir(id)
 	}
 	return &b
+}
+
+// connectAddress is what a player types to join: a game on a LAN (macvlan)
+// network is reached at its own LAN address; any other game at the address its
+// first port is published on, with that port. An address typed into the form
+// wins over this (someone who reaches the game by a DNS name or a Tailscale
+// address says so there). It is "" when nothing is certain, as when the game is
+// published on every address.
+func connectAddress(mf *modules.Manifest, opts map[string]string, rd *modules.Rendered) string {
+	for _, n := range mf.Runtime.Networks {
+		if n.IPv4Option != "" && opts[n.IPv4Option] != "" {
+			return opts[n.IPv4Option]
+		}
+	}
+	if rd == nil || len(rd.Scope.Ports) == 0 {
+		return ""
+	}
+	p := rd.Scope.Ports[0]
+	if p.HostIP == "" || p.HostIP == "0.0.0.0" {
+		return ""
+	}
+	return net.JoinHostPort(p.HostIP, p.HostPort)
 }
 
 func plainValue(k, v string) error {
@@ -704,7 +737,7 @@ func (m *Manager) Preview(r Request) (*Plan, error) {
 	}
 	svc, _ := yaml.Marshal(map[string]any{r.ID: rd.Service})
 	sc, _ := json.MarshalIndent(rd.Scope, "", "  ")
-	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil,
+	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil, Connect: g.ConnectAddress,
 		Container: rd.Service.ContainerName, Image: rd.Service.Image, Ports: rd.Service.Ports, Memory: rd.Service.MemLimit,
 		Pinning: "Pinned: the container runs the exact image " + rd.Ref() + " points to when it is installed, by digest. Update image moves it on; Roll back returns to the one before."}
 	for _, v := range rd.Service.Volumes {
@@ -1263,8 +1296,12 @@ func (m *Manager) List() []Info {
 		for k, v := range e.Options {
 			opts[k] = v
 		}
+		connect := e.ConnectAddress
+		if mf, ok := m.Modules.Manifest(e.Module); ok && connect == "" {
+			connect = connectAddress(mf, e.Options, e.rendered)
+		}
 		in := Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error,
-			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Options: opts,
+			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Connect: connect, Options: opts,
 			Image: e.Image, Digest: e.Digest, PreviousDigest: e.PreviousDigest, Refresh: e.refresh}
 		if in.Image == "" && e.rendered != nil {
 			in.Image = e.rendered.Ref()
@@ -1305,7 +1342,47 @@ func (m *Manager) save() error {
 	if err := writeJSON(m.path("games.json"), st, 0o600); err != nil {
 		return err
 	}
-	return writeJSON(m.path("secrets.json"), secrets, 0o600)
+	sealed, err := m.sealSecrets(secrets)
+	if err != nil {
+		return err
+	}
+	return writeJSON(m.path("secrets.json"), sealed, 0o600)
+}
+
+func secretPurpose(game, key string) string { return "managed:" + game + ":" + key }
+
+// sealSecrets encrypts every value of secrets (game id, option key, value).
+func (m *Manager) sealSecrets(secrets map[string]map[string]string) (map[string]map[string]string, error) {
+	out := make(map[string]map[string]string, len(secrets))
+	for id, kv := range secrets {
+		out[id] = make(map[string]string, len(kv))
+		for k, v := range kv {
+			enc, err := m.Vault.Seal(secretPurpose(id, k), v)
+			if err != nil {
+				return nil, err
+			}
+			out[id][k] = enc
+		}
+	}
+	return out, nil
+}
+
+// unsealSecrets decrypts what sealSecrets wrote. legacy says some value was
+// still plain text from an older version, so the file should be rewritten.
+func (m *Manager) unsealSecrets(secrets map[string]map[string]string) (plain map[string]map[string]string, legacy bool, err error) {
+	plain = make(map[string]map[string]string, len(secrets))
+	for id, kv := range secrets {
+		plain[id] = make(map[string]string, len(kv))
+		for k, v := range kv {
+			p, old, err := m.Vault.Unseal(secretPurpose(id, k), v)
+			if err != nil {
+				return nil, false, fmt.Errorf("secrets.json (%s, %s): %w", id, k, err)
+			}
+			legacy = legacy || old
+			plain[id][k] = p
+		}
+	}
+	return plain, legacy, nil
 }
 
 func (m *Manager) writeScopes() error {
@@ -1373,6 +1450,23 @@ func (m *Manager) Restore(ctx context.Context) error {
 		if err := json.Unmarshal(b, &secrets); err != nil {
 			m.mu.Unlock()
 			return fmt.Errorf("secrets.json: %w", err)
+		}
+	}
+	secrets, legacy, uerr := m.unsealSecrets(secrets)
+	if uerr != nil {
+		m.mu.Unlock()
+		return uerr
+	}
+	if legacy && m.Vault != nil {
+		// Written by an older version in plain text: seal it now.
+		sealed, err := m.sealSecrets(secrets)
+		if err == nil {
+			err = writeJSON(m.path("secrets.json"), sealed, 0o600)
+		}
+		if err != nil {
+			log.Printf("warning: could not encrypt %s: %v", m.path("secrets.json"), err)
+		} else {
+			log.Printf("secrets: encrypted the game secrets in %s", m.path("secrets.json"))
 		}
 	}
 	type todo struct {

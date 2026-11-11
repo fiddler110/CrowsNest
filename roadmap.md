@@ -142,8 +142,12 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   module's default, applies at once, and is audit-logged. Not built: max
   players, which needs a per-module way to push the limit into the game's own
   config.)
-- [ ] **Per-user, per-game permissions** (a friend can start Palworld but not
-  see Windrose). Needs stable game/profile ids: Phase 2, UI in Phase 5.
+- [x] **Per-user, per-game permissions (done 2026-11-11).** A player can be limited to chosen games
+  (`<NAME>_GAMES=palworld,valheim` in the users file; Settings, Users has a checkbox per game; empty means all,
+  admins always see all). Hidden games are absent from the dashboard, `/api/games`, the live stream, the
+  activity feed and playtime, and every per-game route answers 404 for them. Starting a game while a hidden one
+  is running says only "another server is running" and offers no switch. Not built: a CLI command for it
+  (edit the users file or use the panel), and per-game *actions* (a friend who may start but not stop).
 - [ ] **Profile page**: display name, "my sessions", sign out of all
   devices. Needs a **server-side session store** (today revocation is one
   `ValidAfter` timestamp per user) to offer "revoke this device".
@@ -151,6 +155,21 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   activity log by game, kind, user, text and date range, paged 50 at a time
   (`GET /api/audit`, admin only, shows the admin kinds the logbook hides from
   players). No export yet.
+- [x] **Google sign-in from the dashboard (done 2026-11-11).** Settings, Sign-in: client ID, client secret (encrypted
+  in `auth.json`, key in `auth-key`), redirect URL and an on/off switch, applied live; saving asks for the admin's
+  password; Google-allowlist users now get a users-file entry so they can be managed. Not built: the
+  password-sign-in switch (still `auth.password_login` in config.yaml), editing the `name=email` env allowlist
+  (use the per-user Google email instead), and other OIDC providers (Google only).
+- [x] **Sign-in methods and secrets at rest (done 2026-11-11).** `internal/vault` (AES-256-GCM, master key from
+  `CROWSNEST_MASTER_KEY` or a key file) seals the Google/OIDC client secrets, TOTP secrets, game `secrets.json` and
+  the session key, migrating old plain files. Password sign-in switch with lock-out analysis, double confirmation and
+  a `crowsnest enable-password-login` break-glass. TOTP (RFC 6238: replay guard, lockout, bcrypt recovery codes,
+  step-up on changes, admin reset, Account page). Generic OIDC providers (discovery, PKCE, subject-bound linking).
+  Not built: requiring MFA for admins or everyone (needs a limited "enrol first" session), WebAuthn/passkeys, ID-token
+  signature checks against the provider's JWKS (relying on TLS to the token endpoint, as OIDC Core 3.1.3.7 allows),
+  and encrypting the users file. MFA stays optional per person; Google and OIDC sign-ins skip it because the provider
+  is the second factor. The Google login now runs on the same OIDC code as other providers (built-in provider
+  `google`, still matched by the Google email allowlist rather than a linked subject).
 - [ ] **Per-user Discord notices** (opt in per game).
 - [ ] **Scheduled starts/stops** (deferred from the 2026-11-07 review) and
   **Discord slash commands** (deferred). Land after the Phase 4 state hub.

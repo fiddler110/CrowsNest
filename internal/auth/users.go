@@ -88,6 +88,8 @@ const (
 	validAfterSuffix   = "_VALID_AFTER"
 	roleSuffix         = "_ROLE"
 	googleEmailSuffix  = "_GOOGLE_EMAIL"
+	gamesSuffix        = "_GAMES"
+	oidcEmailSuffix    = "_OIDC_EMAIL"
 )
 
 // UserRecord is one user's stored credential plus revocation state.
@@ -107,6 +109,16 @@ type UserRecord struct {
 	// (in addition to any CROWSNEST_GOOGLE_USERS entry). Such a user may have
 	// no password at all.
 	GoogleEmail string
+
+	// OIDCEmail, when set, is the (verified) email an OIDC provider may sign
+	// in as this user with, the first time; after that the provider's own
+	// subject id is what identifies them.
+	OIDCEmail string
+
+	// Games, when non-empty, limits a player to these game ids: they see and
+	// control only those. Empty means every game. Admins ignore it (see
+	// CanAccess).
+	Games []string
 }
 
 // Users maps username (lowercased) to their stored record.
@@ -172,8 +184,22 @@ func LoadUsers(path string) (Users, error) {
 			rec := users[username]
 			rec.GoogleEmail = strings.ToLower(value)
 			users[username] = rec
+		case strings.HasSuffix(key, oidcEmailSuffix):
+			username := strings.ToLower(strings.TrimSuffix(key, oidcEmailSuffix))
+			rec := users[username]
+			rec.OIDCEmail = strings.ToLower(value)
+			users[username] = rec
+		case strings.HasSuffix(key, gamesSuffix):
+			username := strings.ToLower(strings.TrimSuffix(key, gamesSuffix))
+			games, err := ParseGameList(value)
+			if err != nil {
+				return nil, fmt.Errorf("auth: %s:%d: %w", path, lineNo, err)
+			}
+			rec := users[username]
+			rec.Games = games
+			users[username] = rec
 		default:
-			return nil, fmt.Errorf("auth: %s:%d: key %q must end with %s, %s, %s or %s", path, lineNo, key, passwordHashSuffix, validAfterSuffix, roleSuffix, googleEmailSuffix)
+			return nil, fmt.Errorf("auth: %s:%d: key %q must end with %s, %s, %s, %s, %s or %s", path, lineNo, key, passwordHashSuffix, validAfterSuffix, roleSuffix, googleEmailSuffix, oidcEmailSuffix, gamesSuffix)
 		}
 	}
 	if err := scanner.Err(); err != nil {
@@ -247,6 +273,127 @@ func SetRole(path, username string, role Role, allowNew bool) error {
 	return writeUsers(path, existing)
 }
 
+// AdoptUsers gives each name that has no users-file entry a plain player
+// entry, so a user who signs in only through the Google allowlist can be
+// managed (games, sessions) like any other. The entry holds no password and
+// no email: sign-in still comes from the allowlist, so dropping a name from
+// it still ends their access. An empty or missing file is left alone, since
+// any entry there would end first-run setup. It returns the names added.
+func AdoptUsers(path string, names []string) ([]string, error) {
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return nil, err
+	}
+	if len(existing) == 0 {
+		return nil, nil
+	}
+	var added []string
+	for _, name := range names {
+		name = strings.ToLower(name)
+		if _, ok := existing[name]; ok || ValidateUsername(name) != nil {
+			continue
+		}
+		existing[name] = UserRecord{Role: RolePlayer}
+		added = append(added, name)
+	}
+	if len(added) == 0 {
+		return nil, nil
+	}
+	sort.Strings(added)
+	return added, writeUsers(path, existing)
+}
+
+// ImportGoogleEmails records each email in emails (email -> username) on that
+// user's users-file entry, creating a player entry for a name that has none.
+// A user who already has a different Google email keeps it and the extra one
+// is returned in skipped. An empty or missing file is left alone, since any
+// entry there would end first-run setup.
+func ImportGoogleEmails(path string, emails GoogleUsers) (imported, skipped []string, err error) {
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(existing) == 0 {
+		return nil, nil, nil
+	}
+	keys := make([]string, 0, len(emails))
+	for e := range emails {
+		keys = append(keys, e)
+	}
+	sort.Strings(keys)
+	for _, email := range keys {
+		name := strings.ToLower(emails[email])
+		if ValidateUsername(name) != nil {
+			continue
+		}
+		rec, ok := existing[name]
+		if !ok {
+			rec = UserRecord{Role: RolePlayer}
+		}
+		switch {
+		case rec.GoogleEmail == "" || rec.GoogleEmail == email:
+			rec.GoogleEmail = email
+			existing[name] = rec
+			imported = append(imported, email)
+		default:
+			skipped = append(skipped, email)
+		}
+	}
+	if len(imported) == 0 {
+		return nil, skipped, nil
+	}
+	return imported, skipped, writeUsers(path, existing)
+}
+
+// ParseGameList reads a comma-separated list of game ids, lowercased, sorted
+// and de-duplicated. An empty string is an empty list (every game).
+func ParseGameList(s string) ([]string, error) {
+	var out []string
+	seen := map[string]bool{}
+	for _, id := range strings.Split(s, ",") {
+		id = strings.ToLower(strings.TrimSpace(id))
+		if id == "" {
+			continue
+		}
+		if !usernamePattern.MatchString(id) {
+			return nil, fmt.Errorf("invalid game id %q", id)
+		}
+		if !seen[id] {
+			seen[id] = true
+			out = append(out, id)
+		}
+	}
+	sort.Strings(out)
+	return out, nil
+}
+
+// SetGames sets (or, with none, clears) the games username is limited to.
+// The user must already have an entry.
+func SetGames(path, username string, games []string) error {
+	list, err := ParseGameList(strings.Join(games, ","))
+	if err != nil {
+		return err
+	}
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(username)
+	rec, ok := existing[key]
+	if !ok {
+		return fmt.Errorf("auth: no such user %q in %s", username, path)
+	}
+	rec.Games = list
+	existing[key] = rec
+	return writeUsers(path, existing)
+}
+
 // writeUsers rewrites path from scratch with entries sorted by username for
 // a stable diff.
 func writeUsers(path string, users Users) error {
@@ -267,6 +414,12 @@ func writeUsers(path string, users Users) error {
 		}
 		if rec.GoogleEmail != "" {
 			fmt.Fprintf(&b, "%s%s=%s\n", strings.ToUpper(name), googleEmailSuffix, rec.GoogleEmail)
+		}
+		if rec.OIDCEmail != "" {
+			fmt.Fprintf(&b, "%s%s=%s\n", strings.ToUpper(name), oidcEmailSuffix, rec.OIDCEmail)
+		}
+		if len(rec.Games) > 0 {
+			fmt.Fprintf(&b, "%s%s=%s\n", strings.ToUpper(name), gamesSuffix, strings.Join(rec.Games, ","))
 		}
 		if !rec.ValidAfter.IsZero() {
 			fmt.Fprintf(&b, "%s%s=%d\n", strings.ToUpper(name), validAfterSuffix, rec.ValidAfter.Unix())
@@ -335,6 +488,25 @@ func SetGoogleEmail(path, username, email string) error {
 		return fmt.Errorf("auth: no such user %q in %s", username, path)
 	}
 	rec.GoogleEmail = strings.ToLower(email)
+	existing[key] = rec
+	return writeUsers(path, existing)
+}
+
+// SetOIDCEmail sets (or, with "", clears) the email an OIDC provider may
+// sign username in as. The user must already have an entry.
+func SetOIDCEmail(path, username, email string) error {
+	usersMu.Lock()
+	defer usersMu.Unlock()
+	existing, err := LoadUsers(path)
+	if err != nil {
+		return err
+	}
+	key := strings.ToLower(username)
+	rec, ok := existing[key]
+	if !ok {
+		return fmt.Errorf("auth: no such user %q in %s", username, path)
+	}
+	rec.OIDCEmail = strings.ToLower(email)
 	existing[key] = rec
 	return writeUsers(path, existing)
 }

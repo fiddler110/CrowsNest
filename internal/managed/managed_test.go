@@ -1225,3 +1225,37 @@ func TestIdMayNotEndInClean(t *testing.T) {
 		t.Fatalf("Enable = %v", err)
 	}
 }
+
+// Players are shown the host's address and the game's first port without anyone typing it; a chosen port
+// moves it, and an address typed into the form still wins.
+func TestConnectAddressIsAutomatic(t *testing.T) {
+	m, _ := newManager(t)
+	req := Request{ID: "mc", Module: "minecraft", Secrets: map[string]string{"rcon_password": "x"}}
+	p, err := m.Preview(req)
+	if err != nil || p.Connect != "10.0.0.2:25565" {
+		t.Fatalf("default: Connect = %q, err %v; want 10.0.0.2:25565", p.Connect, err)
+	}
+	req.Options = map[string]string{"ports": "25570:25565/tcp"}
+	if p, err = m.Preview(req); err != nil || p.Connect != "10.0.0.2:25570" {
+		t.Fatalf("chosen port: Connect = %q, err %v; want 10.0.0.2:25570", p.Connect, err)
+	}
+	req.ConnectAddress = "play.example.com:25565"
+	if p, err = m.Preview(req); err != nil || p.Connect != "play.example.com:25565" {
+		t.Fatalf("typed address: Connect = %q, err %v; want the typed one", p.Connect, err)
+	}
+	m.Platform.HostIP = ""
+	req.ConnectAddress = ""
+	if p, err = m.Preview(req); err != nil || p.Connect != "" {
+		t.Fatalf("published on every address: Connect = %q, err %v; want none", p.Connect, err)
+	}
+}
+
+func TestConnectAddressWindroseUsesItsLANAddress(t *testing.T) {
+	mf, ok := modules.Bundled().Manifest("windrose")
+	if !ok {
+		t.Fatal("no windrose module")
+	}
+	if got := connectAddress(mf, map[string]string{"lan_ipv4": "10.0.1.50"}, nil); got != "10.0.1.50" {
+		t.Fatalf("connectAddress = %q, want the macvlan address 10.0.1.50", got)
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/fiddler110/crowsnest/internal/vault"
 )
 
 func TestLoadOrCreateSecret_GeneratesAndPersists(t *testing.T) {
@@ -33,5 +35,33 @@ func TestLoadOrCreateSecret_TooShort(t *testing.T) {
 
 	if _, err := LoadOrCreateSecret(path); err == nil {
 		t.Fatal("LoadOrCreateSecret() error = nil, want error for an undersized existing secret")
+	}
+}
+
+func TestLoadOrCreateSealedSecret(t *testing.T) {
+	dir := t.TempDir()
+	v, _ := vault.New("", filepath.Join(dir, "k"))
+	path := filepath.Join(dir, "session")
+	a, err := LoadOrCreateSealedSecret(path, v)
+	if err != nil || len(a) != 32 {
+		t.Fatalf("create: %v %d", err, len(a))
+	}
+	raw, _ := os.ReadFile(path)
+	if !vault.IsSealed(string(raw)) {
+		t.Fatal("secret is not stored sealed")
+	}
+	b, err := LoadOrCreateSealedSecret(path, v)
+	if err != nil || !bytes.Equal(a, b) {
+		t.Fatalf("reload differs: %v", err)
+	}
+	// A legacy raw file keeps its value and is rewritten sealed.
+	legacy := filepath.Join(dir, "legacy")
+	os.WriteFile(legacy, a, 0o600)
+	c, err := LoadOrCreateSealedSecret(legacy, v)
+	if err != nil || !bytes.Equal(a, c) {
+		t.Fatalf("legacy: %v", err)
+	}
+	if raw, _ := os.ReadFile(legacy); !vault.IsSealed(string(raw)) {
+		t.Fatal("legacy secret was not rewritten sealed")
 	}
 }

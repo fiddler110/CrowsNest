@@ -28,6 +28,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/idleshutdown"
 	"github.com/fiddler110/crowsnest/internal/managed"
+	"github.com/fiddler110/crowsnest/internal/mfa"
 	"github.com/fiddler110/crowsnest/internal/modules"
 	"github.com/fiddler110/crowsnest/internal/nightshutdown"
 	"github.com/fiddler110/crowsnest/internal/notify"
@@ -35,6 +36,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/restore"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
+	"github.com/fiddler110/crowsnest/internal/vault"
 	"github.com/fiddler110/crowsnest/internal/web"
 )
 
@@ -119,8 +121,12 @@ func main() {
 		if err := setRole(os.Args[2], os.Args[3]); err != nil {
 			log.Fatal(err)
 		}
+	case "enable-password-login":
+		if err := enablePasswordLogin(); err != nil {
+			log.Fatal(err)
+		}
 	default:
-		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, doctor, module, execguard, guard, healthcheck, set-password, set-role, revoke-sessions)\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command %q (want: serve, doctor, module, execguard, guard, healthcheck, set-password, set-role, revoke-sessions, enable-password-login)\n", cmd)
 		os.Exit(2)
 	}
 }
@@ -177,6 +183,15 @@ func serve() error {
 		go r.Run(ctx)
 	}
 
+	vlt, err := vault.New(os.Getenv(vault.EnvKey), filepath.Join(filepath.Dir(cfg.Server.SessionSecretFile), "master.key"))
+	if err != nil {
+		return err
+	}
+	if vlt.Source == vault.SourceFile {
+		log.Printf("warning: secrets on disk are encrypted with a key kept in %s, next to the data; set %s (from outside the data volume) so a copy of the volume alone can't open them",
+			filepath.Join(filepath.Dir(cfg.Server.SessionSecretFile), "master.key"), vault.EnvKey)
+	}
+
 	userStore, err := auth.NewUserStore(cfg.UsersFile)
 	if err != nil {
 		return fmt.Errorf("load users: %w", err)
@@ -192,7 +207,8 @@ func serve() error {
 	} else if !hasAdmin(users) {
 		log.Printf("warning: no admin in %s; a Google-only user with no role is a player — run `crowsnest set-role <username> admin`", cfg.UsersFile)
 	}
-	secret, err := auth.LoadOrCreateSecret(cfg.Server.SessionSecretFile)
+	importLegacyGoogleUsers(cfg, userStore)
+	secret, err := auth.LoadOrCreateSealedSecret(cfg.Server.SessionSecretFile, vlt)
 	if err != nil {
 		return fmt.Errorf("load session secret: %w", err)
 	}
@@ -212,21 +228,53 @@ func serve() error {
 		SecureCookies:        cfg.Server.SecureCookies,
 		DisablePasswordLogin: !cfg.Auth.PasswordLoginEnabled(),
 	}
-	google, err := googleLogin(cfg, authSvc)
+	envGoogle, err := googleLogin(cfg)
 	if err != nil {
 		return err
 	}
-	if google != nil {
+	// The login object always exists, so the dashboard can switch Google on
+	// or off while the server runs; the routes answer 404 while it is off.
+	google := &auth.GoogleLogin{Store: userStore}
+	fallback := auth.GoogleSettings{}
+	if envGoogle != nil {
+		fallback = auth.GoogleSettings{Enabled: true, ClientID: envGoogle.ClientID, ClientSecret: envGoogle.ClientSecret, RedirectURL: envGoogle.RedirectURL}
+	}
+	googleConf, err := auth.NewGoogleConfStore(
+		filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "auth.json"),
+		vlt, fallback)
+	if err != nil {
+		log.Printf("warning: dashboard Google sign-in settings ignored: %v", err)
+	}
+	if googleConf == nil {
+		return fmt.Errorf("google sign-in settings: %w", err)
+	}
+	googleConf.Apply(google)
+	authPrefs, err := auth.NewPrefsStore(filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "auth-prefs.json"))
+	if err != nil {
+		return err
+	}
+	authSvc.SetPasswordLoginOverride(authPrefs.PasswordLogin())
+	mfaStore, err := mfa.NewStore(filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "mfa.json"), vlt)
+	if err != nil {
+		return err
+	}
+	authSvc.MFA = mfaStore
+	oidcStore, err := auth.NewOIDCStore(filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "oidc.json"), vlt)
+	if err != nil {
+		log.Printf("warning: %v", err)
+	}
+	if oidcStore == nil {
+		return fmt.Errorf("sign-in providers: %w", err)
+	}
+	oidcLogin := &auth.OIDCLogin{Store: oidcStore, Google: google, Users: userStore, Service: authSvc}
+	if _, src := googleConf.Effective(); google.Active() {
 		password := "enabled"
-		if authSvc.DisablePasswordLogin {
+		if authSvc.PasswordLoginDisabled() {
 			password = "disabled"
 		}
-		log.Printf("auth: Google sign-in enabled; password sign-in %s", password)
+		log.Printf("auth: Google sign-in enabled (settings from %s); password sign-in %s", src, password)
 	}
-	if google != nil {
-		google.Store = userStore
-	}
-	sessions.Allowed = sessionAllowed(userStore.Snapshot, google, authSvc.DisablePasswordLogin)
+	sessions.Allowed = sessionAllowed(userStore.Snapshot, google, oidcLogin, authSvc.PasswordLoginDisabled)
 
 	templates, err := web.LoadTemplates()
 	if err != nil {
@@ -307,6 +355,10 @@ func serve() error {
 		Auth:         authSvc,
 		Setup:        setup,
 		Google:       google,
+		GoogleConf:   googleConf,
+		AuthPrefs:    authPrefs,
+		MFA:          mfaStore,
+		OIDC:         oidcLogin,
 		Settings:     settingsStore,
 		TimeZone:     cfg.Server.TZ,
 		History:      activity,
@@ -321,6 +373,7 @@ func serve() error {
 			log.Printf("warning: managed.policy_editable is on: the panel can rewrite %s (it may only tighten it, but it can still remove limits it was given)", cfg.Managed.PolicyFile)
 		}
 		mgr := &managed.Manager{
+			Vault:   vlt,
 			Backups: backupRoot,
 			Dir:     cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, PolicyEditable: cfg.Managed.PolicyEditable, Platform: modules.PlatformFrom(cfg.Platform),
 			Modules: mods, Config: cfg, Docker: docker, Wire: docker, Registry: registry,
@@ -525,7 +578,7 @@ func clearPassword(username string) error {
 		if err != nil {
 			return err
 		}
-		other = users[strings.ToLower(username)].GoogleEmail != "" || googleAllowed(cfg, username)
+		other = users[strings.ToLower(username)].GoogleEmail != ""
 	}
 	if err := auth.ClearPasswordHash(cfg.UsersFile, username, other); err != nil {
 		return err
@@ -547,33 +600,32 @@ func revokeSessions(username string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	allowNew := googleAllowed(cfg, username)
-	if err := auth.RevokeSessions(cfg.UsersFile, username, allowNew); err != nil {
+	if err := auth.RevokeSessions(cfg.UsersFile, username, false); err != nil {
 		return err
 	}
 	fmt.Printf("Revoked sessions for %s in %s — a running server picks this up within a few seconds\n", strings.ToLower(username), cfg.UsersFile)
 	return nil
 }
 
-// googleAllowed reports whether username is on the Google sign-in allowlist.
-// Such a user may have no users-file entry yet (no password), so commands that
-// only write a marker for them (revoke-sessions, set-role) allow creating one;
-// a typo'd name still fails.
-func googleAllowed(cfg *config.Config, username string) bool {
-	g := cfg.Auth.Google
-	if g == nil {
-		return false
-	}
-	users, err := auth.ParseGoogleUsers(os.Getenv(g.UsersEnv))
+// enablePasswordLogin is the way back in when password sign-in was turned off
+// from the dashboard and the other sign-in method stopped working. It saves
+// "password sign-in on" where the dashboard keeps its choice, which wins over
+// config.yaml; restart the server for it to apply.
+func enablePasswordLogin() error {
+	cfg, err := config.Load(configPath())
 	if err != nil {
-		return false
+		return fmt.Errorf("load config: %w", err)
 	}
-	for _, name := range users {
-		if name == strings.ToLower(username) {
-			return true
-		}
+	store, err := auth.NewPrefsStore(filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "auth-prefs.json"))
+	if err != nil {
+		return err
 	}
-	return false
+	on := true
+	if err := store.SetPasswordLogin(&on); err != nil {
+		return err
+	}
+	fmt.Println("Password sign-in is on again. Restart CrowsNest for it to apply.")
+	return nil
 }
 
 // setRole implements `crowsnest set-role <username> <admin|player>`. Admins
@@ -588,7 +640,7 @@ func setRole(username, roleName string) error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	if err := auth.SetRole(cfg.UsersFile, username, role, googleAllowed(cfg, username)); err != nil {
+	if err := auth.SetRole(cfg.UsersFile, username, role, false); err != nil {
 		return err
 	}
 	fmt.Printf("%s is now %s (a running server picks this up within a few seconds)\n", strings.ToLower(username), role)
@@ -657,14 +709,17 @@ func hasAdmin(users auth.Users) bool {
 	return false
 }
 
-func sessionAllowed(users func() auth.Users, google *auth.GoogleLogin, passwordDisabled bool) func(string) bool {
+func sessionAllowed(users func() auth.Users, google *auth.GoogleLogin, oidc *auth.OIDCLogin, passwordDisabled func() bool) func(string) bool {
 	return func(name string) bool {
 		if google != nil {
 			if google.Allows(name) {
 				return true
 			}
 		}
-		if passwordDisabled {
+		if oidc.Allows(name) {
+			return true
+		}
+		if passwordDisabled() {
 			return false
 		}
 		rec, ok := users()[name]
@@ -675,7 +730,7 @@ func sessionAllowed(users func() auth.Users, google *auth.GoogleLogin, passwordD
 // googleLogin builds Google sign-in from config and the environment, or
 // returns nil when auth.google isn't configured. Missing or malformed values
 // are a startup error rather than a silently disabled login.
-func googleLogin(cfg *config.Config, svc *auth.Service) (*auth.GoogleLogin, error) {
+func googleLogin(cfg *config.Config) (*auth.GoogleLogin, error) {
 	g := cfg.Auth.Google
 	if g == nil {
 		return nil, nil
@@ -684,15 +739,49 @@ func googleLogin(cfg *config.Config, svc *auth.Service) (*auth.GoogleLogin, erro
 	if clientID == "" || secret == "" {
 		return nil, fmt.Errorf("auth.google: %s and %s must both be set", g.ClientIDEnv, g.ClientSecretEnv)
 	}
-	users, err := auth.ParseGoogleUsers(os.Getenv(g.UsersEnv))
-	if err != nil {
-		return nil, fmt.Errorf("auth.google: %s: %w", g.UsersEnv, err)
-	}
 	return &auth.GoogleLogin{
 		ClientID:     clientID,
 		ClientSecret: secret,
 		RedirectURL:  g.RedirectURL,
-		Users:        users,
-		Service:      svc,
 	}, nil
+}
+
+// importLegacyGoogleUsers carries the old CROWSNEST_GOOGLE_USERS allowlist
+// (name=email pairs) into the users file, once, so the dashboard is the only
+// place the list is kept from then on. A marker file records that it ran, so
+// an email removed in the dashboard doesn't come back at the next start. While
+// the users file is still empty (first-run setup not done) it waits.
+func importLegacyGoogleUsers(cfg *config.Config, userStore *auth.UserStore) {
+	g := cfg.Auth.Google
+	if g == nil {
+		return
+	}
+	gu, err := auth.ParseGoogleUsers(os.Getenv(g.UsersEnv))
+	if err != nil {
+		return // unset, empty or malformed: nothing to import
+	}
+	marker := filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "google-users-imported")
+	if _, err := os.Stat(marker); err == nil {
+		log.Printf("notice: %s is ignored; Google sign-in is allowed per user under Settings, Users (imported earlier)", g.UsersEnv)
+		return
+	}
+	if all, err := auth.LoadUsers(cfg.UsersFile); err == nil && len(all) == 0 {
+		log.Printf("notice: %s will be imported into the users file once the first admin exists (restart after setup)", g.UsersEnv)
+		return
+	}
+	imported, skipped, err := auth.ImportGoogleEmails(cfg.UsersFile, gu)
+	if err != nil {
+		log.Printf("warning: could not import %s into %s: %v", g.UsersEnv, cfg.UsersFile, err)
+		return
+	}
+	if len(imported) > 0 {
+		log.Printf("auth: imported Google emails from %s into %s: %s. Manage them under Settings, Users from now on; the variable can be removed", g.UsersEnv, cfg.UsersFile, strings.Join(imported, ", "))
+		_, _ = userStore.Reload()
+	}
+	for _, e := range skipped {
+		log.Printf("warning: %s not imported: that user already has a different Google email (one per user)", e)
+	}
+	if err := os.WriteFile(marker, []byte("done\n"), 0o600); err != nil {
+		log.Printf("warning: could not write %s: %v", marker, err)
+	}
 }

@@ -225,10 +225,10 @@ type GoogleAuthConfig struct {
 	ClientIDEnv     string `yaml:"client_id_env"`
 	ClientSecretEnv string `yaml:"client_secret_env"`
 
-	// UsersEnv names the variable holding the allowlist: comma-separated
-	// name=email pairs, e.g. "alex=alex@example.com,friend=pal@gmail.com".
-	// Only these Google accounts may sign in, each as the CrowsNest
-	// username before the '='. Default: CROWSNEST_GOOGLE_USERS.
+	// UsersEnv names an optional variable of comma-separated name=email pairs,
+	// e.g. "alex=alex@example.com". It is imported into the users file once
+	// (see importLegacyGoogleUsers) and ignored afterwards: who may sign in is
+	// kept per user in the dashboard. Default: CROWSNEST_GOOGLE_USERS.
 	UsersEnv string `yaml:"users_env"`
 }
 

@@ -164,6 +164,21 @@ func (s *Store) RecentExcluding(limit int, game string, kinds ...string) []Event
 	return out
 }
 
+// RecentAllowed is RecentExcluding that also skips events of games allow
+// rejects. An event with no game is kept.
+func (s *Store) RecentAllowed(limit int, game string, allow func(game string) bool, kinds ...string) []Event {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := []Event{}
+	for i := len(s.events) - 1; i >= 0 && len(out) < limit; i-- {
+		e := s.events[i]
+		if (game == "" || e.Game == game) && !slices.Contains(kinds, e.Kind) && (e.Game == "" || allow(e.Game)) {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
 // Filter selects events for Query. Zero fields match everything.
 type Filter struct {
 	Game  string

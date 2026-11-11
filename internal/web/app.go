@@ -29,6 +29,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/hoststats"
 	"github.com/fiddler110/crowsnest/internal/memadmit"
 	"github.com/fiddler110/crowsnest/internal/memo"
+	"github.com/fiddler110/crowsnest/internal/mfa"
 	"github.com/fiddler110/crowsnest/internal/restore"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
@@ -44,6 +45,16 @@ type App struct {
 	// Setup, when set, offers first-run setup while there are no users.
 	Setup  *auth.Setup
 	Google *auth.GoogleLogin
+	// GoogleConf holds the Google sign-in settings saved from the dashboard;
+	// nil means they can't be edited there.
+	GoogleConf *auth.GoogleConfStore
+	// AuthPrefs holds the sign-in choices saved from the dashboard (password
+	// sign-in on or off); nil means they can't be changed there.
+	AuthPrefs *auth.PrefsStore
+	// MFA is the TOTP second-factor store; nil turns the feature off.
+	MFA *mfa.Store
+	// OIDC serves sign-in through other OpenID Connect providers; nil turns it off.
+	OIDC *auth.OIDCLogin
 	// Settings backs the dashboard's settings dialog (/api/settings).
 	Settings *settings.Store
 	// TimeZone is the server's time zone name (server.tz), shown beside the
@@ -179,10 +190,18 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /setup", a.handleSetup)
 	mux.HandleFunc("GET /login", a.handleLoginPage)
 	mux.HandleFunc("POST /login", a.Auth.ServeLogin)
+	mux.HandleFunc("POST /login/mfa", a.Auth.ServeLoginMFA)
+	mux.HandleFunc("GET "+"/auth/oidc/{id}/start", a.whenOIDC((*auth.OIDCLogin).ServeStart))
+	mux.HandleFunc("GET "+"/auth/oidc/{id}/callback", getOnly(a.whenOIDC((*auth.OIDCLogin).ServeCallback)))
 	mux.HandleFunc("POST /logout", a.Auth.ServeLogout)
-	if a.Google != nil {
-		mux.HandleFunc("GET "+auth.GoogleStartPath, a.Google.ServeStart)
-		mux.HandleFunc("GET "+auth.GoogleCallbackPath, getOnly(a.Google.ServeCallback))
+	// Registered always, so the dashboard can turn Google sign-in on and off
+	// while the server runs; both answer 404 while it is off.
+	if a.Google != nil && a.OIDC != nil {
+		google := func(serve func(*auth.OIDCLogin, http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+			return a.whenGoogleActive(func(w http.ResponseWriter, r *http.Request) { serve(a.OIDC, w, r, auth.GoogleProviderID) })
+		}
+		mux.HandleFunc("GET "+auth.GoogleStartPath, google((*auth.OIDCLogin).ServeStart))
+		mux.HandleFunc("GET "+auth.GoogleCallbackPath, getOnly(google((*auth.OIDCLogin).ServeCallback)))
 	}
 
 	mux.Handle("GET /{$}", a.requireSessionHTML(http.HandlerFunc(a.handleDashboard)))
@@ -221,6 +240,21 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/managed/games/{id}/refresh", a.requireAdmin(http.HandlerFunc(a.handleManagedRefresh)))
 	mux.Handle("POST /api/managed/games/{id}/rollback", a.requireAdmin(http.HandlerFunc(a.handleManagedRollback)))
 	mux.Handle("DELETE /api/managed/games/{id}", a.requireAdmin(http.HandlerFunc(a.handleManagedDisable)))
+	mux.Handle("GET /account", a.requireSessionHTML(http.HandlerFunc(a.handleAccountPage)))
+	mux.Handle("GET /api/account/security", a.requireSession(http.HandlerFunc(a.handleGetSecurity)))
+	mux.Handle("POST /api/account/totp/begin", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPBegin)))
+	mux.Handle("GET /api/account/totp/qr", a.requireSession(http.HandlerFunc(a.handleTOTPQR)))
+	mux.Handle("POST /api/account/totp/confirm", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPConfirm)))
+	mux.Handle("POST /api/account/totp/disable", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPDisable)))
+	mux.Handle("POST /api/account/totp/recovery", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPRecovery)))
+	mux.Handle("GET /api/auth/oidc", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleListOIDC))))
+	mux.Handle("PUT /api/auth/oidc/{id}", a.requireAdmin(http.HandlerFunc(a.handlePutOIDC)))
+	mux.Handle("DELETE /api/auth/oidc/{id}", a.requireAdmin(http.HandlerFunc(a.handleDeleteOIDC)))
+	mux.Handle("GET /api/auth/google", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleGetGoogle))))
+	mux.Handle("PUT /api/auth/google", a.requireAdmin(http.HandlerFunc(a.handlePutGoogle)))
+	mux.Handle("DELETE /api/auth/google", a.requireAdmin(http.HandlerFunc(a.handleDeleteGoogle)))
+	mux.Handle("GET /api/auth/password-login", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleGetPasswordLogin))))
+	mux.Handle("PUT /api/auth/password-login", a.requireAdmin(http.HandlerFunc(a.handlePutPasswordLogin)))
 	mux.Handle("GET /api/users", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleListUsers))))
 	mux.Handle("POST /api/users", a.requireAdmin(http.HandlerFunc(a.handleCreateUser)))
 	mux.Handle("PUT /api/users/{name}", a.requireAdmin(http.HandlerFunc(a.handleUpdateUser)))
@@ -233,6 +267,16 @@ func (a *App) Routes(mux *http.ServeMux) {
 		log.Printf("web: static assets unavailable: %v", err)
 	} else {
 		mux.Handle("GET /static/", http.StripPrefix("/static/", static))
+	}
+}
+
+func (a *App) whenGoogleActive(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !a.Google.Active() {
+			http.NotFound(w, r)
+			return
+		}
+		next(w, r)
 	}
 }
 
@@ -310,14 +354,15 @@ func (a *App) gameStatus(d games.GameDef, observed games.Status) games.Status {
 type loginPage struct {
 	PasswordLogin  bool
 	GoogleStartURL string
+	OIDC           []oidcButton
 	Error          string
 }
 
 var loginErrors = map[string]string{
-	auth.LoginErrorDenied:     "Google sign-in was cancelled.",
+	auth.LoginErrorDenied:     "Sign-in was cancelled.",
 	auth.LoginErrorExpired:    "That sign-in attempt expired. Please try again.",
-	auth.LoginErrorNotAllowed: "That Google account isn't on this ship's crew list.",
-	auth.LoginErrorFailed:     "Google sign-in failed. Please try again.",
+	auth.LoginErrorNotAllowed: "That account isn't on this ship's crew list.",
+	auth.LoginErrorFailed:     "Sign-in failed. Please try again.",
 	auth.LoginErrorRateLimit:  "Too many sign-in attempts. Try again in a few minutes.",
 }
 
@@ -326,8 +371,9 @@ func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	page := loginPage{PasswordLogin: !a.Auth.DisablePasswordLogin, Error: loginErrors[r.URL.Query().Get("error")]}
-	if a.Google != nil {
+	page := loginPage{PasswordLogin: !a.Auth.PasswordLoginDisabled(), Error: loginErrors[r.URL.Query().Get("error")]}
+	page.OIDC = a.oidcButtons()
+	if a.Google.Active() {
 		page.GoogleStartURL = a.Google.StartURL()
 	}
 	render(w, a.Templates.Login, page, "login page")
@@ -375,7 +421,7 @@ type dashboardData struct {
 
 func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	session, _ := auth.FromContext(r.Context())
-	defs := a.Registry.All()
+	defs := a.visibleGames(r)
 	data := dashboardData{
 		Page:          "dashboard",
 		Username:      session.Username,
@@ -418,7 +464,7 @@ func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
 // listGames builds the /api/games body for r's user (admins see raw error
 // detail); /api/events sends the same.
 func (a *App) listGames(r *http.Request) []gameSummary {
-	defs := a.Registry.All()
+	defs := a.visibleGames(r)
 	out := make([]gameSummary, len(defs))
 	snaps := a.observeAll(r.Context(), defs)
 	admin := a.Auth.Sessions.RoleFor(actor(r)) == auth.RoleAdmin
@@ -509,9 +555,21 @@ func (a *App) handleActivity(w http.ResponseWriter, r *http.Request) {
 		hide = []string{history.KindUsers, history.KindConsole, history.KindSettings, history.KindGames}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"events":   a.History.RecentExcluding(limit, r.URL.Query().Get("game"), hide...),
-		"playtime": a.History.Playtime(),
+		"events":   a.History.RecentAllowed(limit, r.URL.Query().Get("game"), func(id string) bool { return a.canSee(r, id) }, hide...),
+		"playtime": a.visiblePlaytime(r),
 	})
+}
+
+// visiblePlaytime is the playtime totals for the games r's user may see.
+func (a *App) visiblePlaytime(r *http.Request) []history.Playtime {
+	all := a.History.Playtime()
+	out := make([]history.Playtime, 0, len(all))
+	for _, p := range all {
+		if a.canSee(r, p.Game) {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // handleAudit is the admin audit view's feed: every kind of event, filtered
@@ -728,10 +786,31 @@ func (a *App) handleInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// canSee reports whether r's user may see and control game id (see
+// auth.UserRecord.Games).
+func (a *App) canSee(r *http.Request, id string) bool {
+	return a.Auth.Sessions.CanAccessGame(actor(r), id)
+}
+
+// visibleGames is the registry's games r's user may see, in registry order.
+func (a *App) visibleGames(r *http.Request) []games.GameDef {
+	defs := a.Registry.All()
+	out := make([]games.GameDef, 0, len(defs))
+	for _, d := range defs {
+		if a.canSee(r, d.ID) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// gameOr404 is the game named in the path, or a 404. A game the user is not
+// allowed gets the same 404 as one that does not exist, so its id does not
+// leak.
 func (a *App) gameOr404(w http.ResponseWriter, r *http.Request) (games.GameDef, bool) {
 	id := r.PathValue("id")
 	d, ok := a.Registry.Get(id)
-	if !ok {
+	if !ok || !a.canSee(r, d.ID) {
 		http.Error(w, "game not found", http.StatusNotFound)
 		return games.GameDef{}, false
 	}
@@ -822,6 +901,14 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	var conflict *exclusivity.ConflictError
 	if errors.As(err, &conflict) {
+		// A game this user may not see is running: do not name it or offer
+		// to stop it.
+		for _, id := range conflict.All {
+			if !a.canSee(r, id) {
+				writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": "Another server is running right now, so this one can't start."})
+				return
+			}
+		}
 		writeJSON(w, http.StatusConflict, map[string]any{"conflict": true, "active_game": conflict.Active, "active_games": conflict.All})
 		return
 	}
@@ -881,7 +968,7 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 	// From here on use the registry's own ID, never the client-supplied
 	// string, so nothing a caller typed reaches the log.
 	fromDef, ok := a.Registry.Get(req.From)
-	if !ok {
+	if !ok || !a.canSee(r, fromDef.ID) {
 		http.Error(w, "unknown source game", http.StatusBadRequest)
 		return
 	}

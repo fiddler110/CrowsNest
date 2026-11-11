@@ -653,3 +653,15 @@ a.btn { text-decoration: none; }
 .wipe-form[hidden] { display: none; }
 .wipe-tick { display: flex; align-items: flex-start; gap: 0.4rem; font-size: 0.85rem; }
 .wipe-form input[type="text"], .wipe-form input[type="password"] { max-width: 22rem; }
+
+/* Per-user game allowlist (Settings, Users) */
+fieldset.field { border: 0; padding: 0; min-inline-size: 0; }
+fieldset.field legend { padding: 0; margin-bottom: 0.3rem; }
+.check-row { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; }
+.check-row label { display: inline-flex; align-items: center; gap: 0.35rem; }
+.check-row input { padding: 0; }
+
+/* Account page: authenticator app */
+.totp-qr { display: block; margin: 0.8rem 0; background: #fff; padding: 8px; border-radius: 8px; }
+.totp-secret { font-family: var(--mono); letter-spacing: 0.08em; word-break: break-all; }
+.totp-codes { font-family: var(--mono); font-size: 1.05rem; line-height: 1.7; padding: 0.8rem 1rem; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; width: max-content; max-width: 100%; user-select: all; }

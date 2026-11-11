@@ -208,28 +208,22 @@ func TestGoogleLoginFromEnv(t *testing.T) {
 		RedirectURL: "https://crowsnest.example.com/auth/google/callback",
 		ClientIDEnv: "T_GID", ClientSecretEnv: "T_GSECRET", UsersEnv: "T_GUSERS",
 	}}}
-	svc := &auth.Service{}
 
 	t.Setenv("T_GID", "")
 	t.Setenv("T_GSECRET", "")
 	t.Setenv("T_GUSERS", "alex=alex@example.com")
-	if _, err := googleLogin(cfg, svc); err == nil {
+	if _, err := googleLogin(cfg); err == nil {
 		t.Fatal("googleLogin with no client ID/secret should fail")
 	}
 
 	t.Setenv("T_GID", "id")
 	t.Setenv("T_GSECRET", "secret")
 	t.Setenv("T_GUSERS", "")
-	if _, err := googleLogin(cfg, svc); err == nil {
-		t.Fatal("googleLogin with an empty allowlist should fail")
-	}
-
-	t.Setenv("T_GUSERS", "alex=alex@example.com")
-	g, err := googleLogin(cfg, svc)
-	if err != nil || g == nil || g.Users["alex@example.com"] != "alex" {
+	g, err := googleLogin(cfg)
+	if err != nil || g == nil || len(g.Users) != 0 { // the allowlist is the users file, not the environment
 		t.Fatalf("googleLogin() = %+v, %v", g, err)
 	}
-	if g, err := googleLogin(&config.Config{}, svc); g != nil || err != nil {
+	if g, err := googleLogin(&config.Config{}); g != nil || err != nil {
 		t.Fatalf("googleLogin without auth.google = %v, %v; want nil, nil", g, err)
 	}
 }
@@ -248,7 +242,7 @@ func TestSessionAllowed(t *testing.T) {
 		{"revoked-only", false, false},
 		{"stranger", false, false},
 	} {
-		if got := sessionAllowed(func() auth.Users { return users }, google, tc.passwordDisabled)(tc.name); got != tc.want {
+		if got := sessionAllowed(func() auth.Users { return users }, google, nil, func() bool { return tc.passwordDisabled })(tc.name); got != tc.want {
 			t.Errorf("sessionAllowed(%q, passwordDisabled=%v) = %v, want %v", tc.name, tc.passwordDisabled, got, tc.want)
 		}
 	}

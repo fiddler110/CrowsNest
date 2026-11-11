@@ -15,6 +15,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/dockerguard"
 	"github.com/fiddler110/crowsnest/internal/modules"
+	"github.com/fiddler110/crowsnest/internal/vault"
 	"gopkg.in/yaml.v3"
 )
 
@@ -344,5 +345,30 @@ func TestPinnedCreateThroughRealGuard(t *testing.T) {
 	byDigest, _ := rd.Spec(func(string) (string, bool) { return "", false })
 	if err := client.Create(ctx, byDigest); err != nil {
 		t.Errorf("create by digest: %v", err)
+	}
+}
+
+func TestSecretsSealRoundTrip(t *testing.T) {
+	v, err := vault.New("", filepath.Join(t.TempDir(), "k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{Vault: v}
+	in := map[string]map[string]string{"mc": {"RCON": "hunter2"}}
+	sealed, err := m.sealSecrets(in)
+	if err != nil || strings.Contains(sealed["mc"]["RCON"], "hunter2") || !vault.IsSealed(sealed["mc"]["RCON"]) {
+		t.Fatalf("sealed = %v, %v", sealed, err)
+	}
+	out, legacy, err := m.unsealSecrets(sealed)
+	if err != nil || legacy || out["mc"]["RCON"] != "hunter2" {
+		t.Fatalf("unsealed = %v %v %v", out, legacy, err)
+	}
+	if _, legacy, _ := m.unsealSecrets(in); !legacy {
+		t.Error("plain values should be reported as legacy")
+	}
+	// A value moved to another game doesn't open.
+	moved := map[string]map[string]string{"other": sealed["mc"]}
+	if _, _, err := m.unsealSecrets(moved); err == nil {
+		t.Error("opened a secret moved to another game")
 	}
 }

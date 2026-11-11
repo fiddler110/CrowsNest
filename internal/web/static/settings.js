@@ -176,8 +176,28 @@ loaders.users = () => {
   const cancelEdit = $("user-form-cancel");
   const pwLabel = $("user-pw-label");
   const googleField = $("user-google-field");
+  const oidcField = $("user-oidc-field");
+  let oidcAvailable = false;
+  const gamesBox = $("user-games");
+  const gamesField = $("user-games-field");
   let editing = null;
   let googleEnabled = false;
+  let gameRefs = [];
+  const buildGames = () => {
+    gamesBox.replaceChildren();
+    gameRefs.forEach((g) => {
+      const l = document.createElement("label");
+      const c = document.createElement("input");
+      c.type = "checkbox";
+      c.value = g.id;
+      l.append(c, " " + g.name);
+      gamesBox.append(l);
+    });
+  };
+  const pickedGames = () => [...gamesBox.querySelectorAll("input:checked")].map((c) => c.value);
+  const setPicked = (ids) => gamesBox.querySelectorAll("input").forEach((c) => { c.checked = ids.includes(c.value); });
+  const syncGamesField = () => { gamesField.hidden = form.elements.role.value === "admin"; };
+  form.elements.role.addEventListener("change", syncGamesField);
   const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = !msg; };
 
   const resetForm = () => {
@@ -186,10 +206,13 @@ loaders.users = () => {
     form.elements.username.readOnly = false;
     form.elements.role.disabled = false;
     googleField.hidden = !googleEnabled;
+    oidcField.hidden = !oidcAvailable;
     title.textContent = "Add a user";
     submit.textContent = "Add user";
     pwLabel.textContent = googleEnabled ? "Password (8+ characters, optional for Google users)" : "Password (8+ characters)";
     cancelEdit.hidden = true;
+    setPicked([]);
+    syncGamesField();
     showError("");
   };
   const startEdit = (u) => {
@@ -200,6 +223,9 @@ loaders.users = () => {
     form.elements.role.value = u.role;
     form.elements.role.disabled = u.self;
     form.elements.google_email.value = u.google_email || "";
+    form.elements.oidc_email.value = u.oidc_email || "";
+    setPicked(u.games || []);
+    syncGamesField();
     title.textContent = `Edit ${u.username}`;
     submit.textContent = "Save changes";
     pwLabel.textContent = "New password (leave blank to keep)";
@@ -224,7 +250,8 @@ loaders.users = () => {
       name.textContent = u.username + (u.self ? " (you)" : "");
       const tags = document.createElement("span");
       tags.className = "user-tags";
-      tags.textContent = [u.role, u.google_email ? `google: ${u.google_email}` : (u.google ? "google" : ""),
+      tags.textContent = [u.role, u.mfa ? "2FA" : "", u.role === "player" && u.games && u.games.length ? `games: ${u.games.join(", ")}` : "",
+        u.google_email ? `google: ${u.google_email}` : (u.google ? "google" : ""), u.oidc_email ? `sso: ${u.oidc_email}` : "",
         u.has_password ? "" : "no password"].filter(Boolean).join(" · ");
       li.append(name, tags);
       if (u.managed) {
@@ -239,6 +266,20 @@ loaders.users = () => {
           return b;
         };
         actions.append(mk("Edit", () => startEdit(u)));
+        if (u.mfa) {
+          actions.append(mk("Reset 2FA", async () => {
+            const ok = await confirmAction({
+              eyebrow: "// crew list",
+              title: `Reset ${u.username}'s authenticator app?`,
+              message: u.self ? "You will be asked to set it up again." : "They are signed out everywhere and can sign in with just their password until they set it up again.",
+              confirmLabel: "Reset",
+              danger: true,
+            });
+            if (!ok) return;
+            const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "PUT", { reset_mfa: true });
+            if (r) { render(r); toast(`Reset ${u.username}'s authenticator app.`, "ok"); }
+          }));
+        }
         if (!u.self) {
           actions.append(mk("Sign out", async () => {
             const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "PUT", { revoke_sessions: true });
@@ -268,6 +309,9 @@ loaders.users = () => {
     if (!res.ok) { toast(await errorText(res, "Loading users"), "error"); return; }
     const data = await res.json();
     googleEnabled = !!data.google_enabled;
+    gameRefs = data.games || [];
+    oidcAvailable = (await callAPI("/api/auth/oidc")).ok;
+    buildGames();
     resetForm();
     render(data.users);
   })();
@@ -280,12 +324,15 @@ loaders.users = () => {
       const body = {};
       if (!f.role.disabled) body.role = f.role.value;
       if (f.password.value) body.password = f.password.value;
+      body.games = pickedGames();
+      if (oidcAvailable) body.oidc_email = f.oidc_email.value.trim();
       if (googleEnabled) body.google_email = f.google_email.value.trim();
       users = await request(`/api/users/${encodeURIComponent(editing)}`, "PUT", body);
     } else {
       users = await request("/api/users", "POST",
-        { username: f.username.value.trim(), password: f.password.value, role: f.role.value,
-          google_email: googleEnabled ? f.google_email.value.trim() : "" });
+        { username: f.username.value.trim(), password: f.password.value, role: f.role.value, games: pickedGames(),
+          google_email: googleEnabled ? f.google_email.value.trim() : "",
+          oidc_email: oidcAvailable ? f.oidc_email.value.trim() : "" });
     }
     if (!users) return;
     f.role.disabled = false;
@@ -294,6 +341,228 @@ loaders.users = () => {
     resetForm();
   });
 };
+
+// ---------- Sign-in ----------
+loaders.signin = () => {
+  initPasswordSwitch();
+  initOIDC();
+  const form = $("signin-form");
+  const errorEl = $("signin-error");
+  const reset = $("signin-reset");
+  const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = !msg; };
+  const SOURCES = {
+    dashboard: "These settings were saved here.",
+    environment: "These settings come from config.yaml and the environment. Saving here replaces them.",
+    none: "Google sign-in is not set up yet.",
+  };
+  const show = (v) => {
+    const f = form.elements;
+    f.enabled.checked = v.enabled;
+    f.client_id.value = v.client_id || "";
+    f.client_secret.value = "";
+    f.client_secret.placeholder = v.has_secret ? "set (leave blank to keep)" : "";
+    f.redirect_url.value = v.redirect_url || (location.origin + v.callback_path);
+    f.password.value = "";
+    $("signin-source").textContent = SOURCES[v.source] || "";
+    reset.hidden = v.source !== "dashboard";
+  };
+  (async () => {
+    const res = await callAPI("/api/auth/google");
+    if (res.status === 404) { form.hidden = true; $("signin-off").hidden = false; return; }
+    if (!res.ok) { toast(await errorText(res, "Loading sign-in settings"), "error"); return; }
+    show(await res.json());
+  })();
+  const send = async (method, body) => {
+    const res = await callAPI("/api/auth/google", { method, body: JSON.stringify(body) });
+    if (!res.ok) { showError(await errorText(res)); return null; }
+    showError("");
+    return res.json();
+  };
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = form.elements;
+    const body = { enabled: f.enabled.checked, client_id: f.client_id.value.trim(), redirect_url: f.redirect_url.value.trim(), password: f.password.value };
+    if (f.client_secret.value) body.client_secret = f.client_secret.value;
+    const v = await send("PUT", body);
+    if (v) { show(v); toast("Sign-in settings saved.", "ok"); }
+  });
+  reset.addEventListener("click", async () => {
+    const f = form.elements;
+    if (!f.password.value) { showError("Enter your password to remove the saved settings."); f.password.focus(); return; }
+    const ok = await confirmAction({
+      eyebrow: "// sign-in",
+      title: "Remove the saved settings?",
+      message: "Google sign-in goes back to whatever config.yaml and the environment say, which may mean it turns off.",
+      confirmLabel: "Remove",
+      danger: true,
+    });
+    if (!ok) return;
+    const v = await send("DELETE", { password: f.password.value });
+    if (v) { show(v); toast("Saved settings removed.", "ok"); }
+  });
+};
+
+// ---------- OpenID Connect providers (inside the Sign-in pane) ----------
+function initOIDC() {
+  const section = $("oidc-section");
+  const list = $("oidc-list");
+  const form = $("oidc-form");
+  const errorEl = $("oidc-error");
+  const cancel = $("oidc-cancel");
+  let editing = null;
+  const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = !msg; };
+  const redirectFor = (id) => `${location.origin}/auth/oidc/${id || "<id>"}/callback`;
+  const reset = () => {
+    editing = null;
+    form.reset();
+    form.elements.id.readOnly = false;
+    form.elements.redirect_url.value = redirectFor("");
+    $("oidc-form-title").textContent = "Add a provider";
+    $("oidc-submit").textContent = "Add provider";
+    $("oidc-secret-note").textContent = "Stored encrypted and never shown again.";
+    form.elements.client_secret.required = true;
+    cancel.hidden = true;
+    showError("");
+  };
+  form.elements.id.addEventListener("input", () => {
+    if (!editing) form.elements.redirect_url.value = redirectFor(form.elements.id.value.trim());
+  });
+  const edit = (p) => {
+    reset();
+    editing = p.id;
+    const f = form.elements;
+    f.id.value = p.id; f.id.readOnly = true;
+    f.name.value = p.name; f.issuer.value = p.issuer; f.client_id.value = p.client_id;
+    f.redirect_url.value = p.redirect_url; f.enabled.checked = p.enabled;
+    f.client_secret.required = false;
+    f.client_secret.placeholder = p.has_secret ? "set (leave blank to keep)" : "";
+    $("oidc-form-title").textContent = `Edit ${p.name}`;
+    $("oidc-submit").textContent = "Save changes";
+    cancel.hidden = false;
+    f.password.focus();
+  };
+  const render = (providers) => {
+    list.replaceChildren();
+    providers.forEach((p) => {
+      const li = document.createElement("li");
+      li.className = "user-row";
+      const name = document.createElement("span");
+      name.className = "user-name";
+      name.textContent = p.name;
+      const tags = document.createElement("span");
+      tags.className = "user-tags";
+      tags.textContent = [p.enabled ? "on" : "off", new URL(p.issuer).host].join(" · ");
+      const actions = document.createElement("span");
+      actions.className = "user-actions";
+      const mk = (label, fn, danger) => {
+        const b = document.createElement("button");
+        b.type = "button";
+        b.className = "btn btn-ghost" + (danger ? " btn-danger" : "");
+        b.textContent = label;
+        b.addEventListener("click", fn);
+        return b;
+      };
+      actions.append(mk("Edit", () => edit(p)), mk("Remove", async () => {
+        const pw = form.elements.password.value;
+        if (!pw) { showError(`Enter your password below to remove ${p.name}.`); form.elements.password.focus(); return; }
+        const ok = await confirmAction({ eyebrow: "// sign-in", title: `Remove ${p.name}?`,
+          message: "People linked to it can no longer sign in through it.", confirmLabel: "Remove", danger: true });
+        if (!ok) return;
+        const r = await send(`/api/auth/oidc/${encodeURIComponent(p.id)}`, "DELETE", { password: pw });
+        if (r) { render(r.providers); if (editing === p.id) reset(); toast(`Removed ${p.name}.`, "ok"); }
+      }, true));
+      li.append(name, tags, actions);
+      list.append(li);
+    });
+  };
+  // send answers the parsed body, asking once to confirm when the change would lock people out.
+  const send = async (path, method, body) => {
+    let res = await callAPI(path, { method, body: JSON.stringify(body) });
+    if (res.status === 409) {
+      const b = await res.json();
+      if (b.refused) { showError(b.message); return null; }
+      if (b.needs_confirm) {
+        const ok = await confirmAction({ eyebrow: "// sign-in", title: "Lock these people out?",
+          message: `${b.message}\n\nLocked out: ${b.locked_out.join(", ")}.` + (b.you_locked_out ? "\n\nThat includes you." : ""),
+          confirmLabel: "Go ahead", danger: true });
+        if (!ok) return null;
+        res = await callAPI(path, { method, body: JSON.stringify({ ...body, confirm: true }) });
+      }
+    }
+    if (!res.ok) { showError(await errorText(res)); return null; }
+    showError("");
+    return res.json();
+  };
+  (async () => {
+    const res = await callAPI("/api/auth/oidc");
+    if (!res.ok) return;
+    section.hidden = false;
+    reset();
+    render((await res.json()).providers);
+  })();
+  cancel.addEventListener("click", reset);
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const f = form.elements;
+    const body = { name: f.name.value.trim(), issuer: f.issuer.value.trim(), client_id: f.client_id.value.trim(),
+      redirect_url: f.redirect_url.value.trim(), enabled: f.enabled.checked, password: f.password.value };
+    if (f.client_secret.value) body.client_secret = f.client_secret.value;
+    const r = await send(`/api/auth/oidc/${encodeURIComponent(f.id.value.trim())}`, "PUT", body);
+    if (r) { render(r.providers); toast("Provider saved.", "ok"); reset(); }
+  });
+}
+
+// ---------- Password sign-in switch (inside the Sign-in pane) ----------
+function initPasswordSwitch() {
+  const form = $("pwlogin-form");
+  const errorEl = $("pwlogin-error");
+  const toggle = $("pwlogin-toggle");
+  let enabled = true;
+  const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = !msg; };
+  const show = (v) => {
+    enabled = v.enabled;
+    $("pwlogin-state").textContent = enabled
+      ? "Password sign-in is on. Turn it off to let people in only through Google."
+      : "Password sign-in is off. Only Google accounts can sign in. If you are ever locked out, run `crowsnest enable-password-login` on the host and restart.";
+    toggle.textContent = enabled ? "Turn password sign-in off" : "Turn password sign-in on";
+    toggle.className = "btn " + (enabled ? "btn-ghost btn-danger" : "btn-primary");
+    form.elements.password.value = "";
+  };
+  (async () => {
+    const res = await callAPI("/api/auth/password-login");
+    if (!res.ok) return; // 404: not editable here
+    form.hidden = false;
+    show(await res.json());
+  })();
+  const put = (confirm) => callAPI("/api/auth/password-login", {
+    method: "PUT",
+    body: JSON.stringify({ enabled: !enabled, password: form.elements.password.value, confirm }),
+  });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    showError("");
+    let res = await put(false);
+    if (res.status === 409) {
+      const body = await res.json();
+      if (body.refused) { showError(body.message); return; }
+      if (body.needs_confirm) {
+        const who = body.locked_out.join(", ");
+        const ok = await confirmAction({
+          eyebrow: "// sign-in",
+          title: "Lock these people out?",
+          message: `${body.message}\n\nLocked out: ${who}.` + (body.you_locked_out ? "\n\nThat includes you: you will be signed out now." : ""),
+          confirmLabel: "Turn password sign-in off",
+          danger: true,
+        });
+        if (!ok) return;
+        res = await put(true);
+      }
+    }
+    if (!res.ok) { showError(await errorText(res)); return; }
+    show(await res.json());
+    toast(enabled ? "Password sign-in is on." : "Password sign-in is off.", "ok");
+  });
+}
 
 // ---------- Game policy ----------
 loaders.policy = () => {

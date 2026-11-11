@@ -52,6 +52,7 @@ func makeJWT(claims map[string]any) string {
 
 type googleHarness struct {
 	g    *GoogleLogin
+	o    *OIDCLogin
 	fake *fakeGoogle
 	now  time.Time
 }
@@ -69,12 +70,10 @@ func newGoogleHarness(t *testing.T) *googleHarness {
 		ClientSecret: "shh",
 		RedirectURL:  "https://crowsnest.example.com/auth/google/callback",
 		Users:        GoogleUsers{"alex@example.com": "alex", "friend@gmail.com": "friend"},
-		Service:      svc,
 		AuthURL:      "https://accounts.example/auth",
 		TokenURL:     srv.URL,
-		HTTPClient:   srv.Client(),
-		Now:          func() time.Time { return h.now },
 	}
+	h.o = &OIDCLogin{Google: h.g, Service: svc, HTTPClient: srv.Client(), Now: func() time.Time { return h.now }}
 	return h
 }
 
@@ -83,7 +82,7 @@ func newGoogleHarness(t *testing.T) *googleHarness {
 func (h *googleHarness) start(t *testing.T) (*http.Cookie, url.Values) {
 	t.Helper()
 	rec := httptest.NewRecorder()
-	h.g.ServeStart(rec, httptest.NewRequest(http.MethodGet, GoogleStartPath, nil))
+	h.o.ServeStart(rec, httptest.NewRequest(http.MethodGet, GoogleStartPath, nil), GoogleProviderID)
 	if rec.Code != http.StatusFound {
 		t.Fatalf("start status = %d", rec.Code)
 	}
@@ -97,7 +96,7 @@ func (h *googleHarness) start(t *testing.T) (*http.Cookie, url.Values) {
 			cookie = c
 		}
 	}
-	if cookie == nil || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Path != "/auth/google/" {
+	if cookie == nil || !cookie.HttpOnly || cookie.SameSite != http.SameSiteLaxMode || cookie.Path != oauthCookiePath {
 		t.Fatalf("state cookie = %+v", cookie)
 	}
 	return cookie, loc.Query()
@@ -118,7 +117,7 @@ func (h *googleHarness) callback(t *testing.T, cookie *http.Cookie, query string
 		req.AddCookie(cookie)
 	}
 	rec := httptest.NewRecorder()
-	h.g.ServeCallback(rec, req)
+	h.o.ServeCallback(rec, req, GoogleProviderID)
 	return rec
 }
 
@@ -154,7 +153,7 @@ func TestGoogleLogin_FullFlow(t *testing.T) {
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
 		t.Fatalf("callback = %d %q, want 303 /", rec.Code, rec.Header().Get("Location"))
 	}
-	s, ok := sessionFrom(t, h.g.Service, rec)
+	s, ok := sessionFrom(t, h.o.Service, rec)
 	if !ok || s.Username != "alex" {
 		t.Fatalf("session = %+v (ok=%v), want user alex", s, ok)
 	}
@@ -246,7 +245,7 @@ func TestGoogleLogin_Refusals(t *testing.T) {
 			if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != want {
 				t.Fatalf("callback = %d %q, want 303 %q", rec.Code, rec.Header().Get("Location"), want)
 			}
-			if _, ok := sessionFrom(t, h.g.Service, rec); ok {
+			if _, ok := sessionFrom(t, h.o.Service, rec); ok {
 				t.Fatal("a session cookie was set on a refused sign-in")
 			}
 			if tc.noToken && h.fake.requests != 0 {
@@ -270,7 +269,7 @@ func TestGoogleLogin_ExpiredState(t *testing.T) {
 
 func TestGoogleLogin_RateLimited(t *testing.T) {
 	h := newGoogleHarness(t)
-	h.g.Service.LoginLimiter = NewLimiter(1, time.Minute)
+	h.o.Service.LoginLimiter = NewLimiter(1, time.Minute)
 	h.callback(t, nil, "code=x&state=y")
 	rec := h.callback(t, nil, "code=x&state=y")
 	if rec.Header().Get("Location") != "/login?error="+LoginErrorRateLimit {
@@ -333,7 +332,7 @@ func TestTokenClient_DoesNotFollowRedirects(t *testing.T) {
 	}))
 	t.Cleanup(redirector.Close)
 
-	resp, err := (&GoogleLogin{}).client().Post(redirector.URL, "application/x-www-form-urlencoded", strings.NewReader("client_secret=shh"))
+	resp, err := tokenClient.Post(redirector.URL, "application/x-www-form-urlencoded", strings.NewReader("client_secret=shh"))
 	if err != nil {
 		t.Fatalf("Post() error = %v", err)
 	}

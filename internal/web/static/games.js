@@ -129,7 +129,7 @@ function renderFleet(configured) {
       const ok = await confirmAction({
         eyebrow: "// decommission",
         title: `Disable ${name}?`,
-        message: "The container is removed and the game leaves the dashboard. Its data folders and backups are kept, so it can be enabled again later. To delete them too, use "Disable and delete…".",
+        message: "The container is removed and the game leaves the dashboard. Its data folders and backups are kept, so it can be enabled again later. To delete them too, use \u201cDisable and delete…\u201d.",
         confirmLabel: "Disable",
         danger: true,
       });
@@ -151,7 +151,7 @@ function renderFleet(configured) {
     root.append(c);
   });
   configured.forEach((g) => {
-    const c = fleetCard(g.display_name || g.id, [g.container, g.connect_address].filter(Boolean).join(" · "),
+    const c = fleetCard(g.display_name || g.id, [g.container, g.connect || g.connect_address].filter(Boolean).join(" · "),
       el("span", "tag", "set in files"));
     root.append(c);
   });
@@ -345,11 +345,40 @@ function buildForm(values = {}) {
     const f = form.elements["opt:" + key];
     if (f) f.placeholder = hint;
   });
-  const connect = form.elements.connect_address;
-  connect.placeholder = m.connect_hint ? `e.g. ${m.connect_hint}` : "e.g. 10.0.0.2:25565";
-  if (!editing && m.connect_hint && !connect.value) connect.value = m.connect_hint;
+  const first = firstPort(m);
+  $("port-field").hidden = !first; // a game on its own LAN address (Windrose) publishes no host port
+  form.elements.game_port.placeholder = first ? `${first.port} (the standard port)` : "";
   $("more").hidden = false;
   $("options").hidden = !main.length;
+}
+
+// firstPort is the module's main game port (the first it publishes), from "8211/udp" style entries.
+function firstPort(m) {
+  const list = portsOf(m);
+  return list.length ? list[0] : null;
+}
+
+function portsOf(m) {
+  return (m.ports || []).map((p) => {
+    const [num, proto] = String(p).split("/");
+    return { port: parseInt(num, 10), proto: proto || "udp" };
+  }).filter((p) => p.port > 0);
+}
+
+// publishedPorts turns the one "Game port" the person chose into the full host:container/proto list. The
+// module's other ports keep their distance from the first, so a pair like Valheim's 2456 and 2457 stays a pair.
+function publishedPorts(m, chosen) {
+  const list = portsOf(m);
+  if (!list.length || !chosen || chosen === list[0].port) return "";
+  return list.map((p) => `${chosen + (p.port - list[0].port)}:${p.port}/${p.proto}`).join(",");
+}
+
+// chosenPort reads the host port back out of a saved ports option, for the edit form.
+function chosenPort(m, spec) {
+  const list = portsOf(m);
+  if (!spec || !list.length) return "";
+  const host = parseInt(String(spec).split(",")[0].split(":").slice(-2, -1)[0] || String(spec).split(":")[0], 10);
+  return host > 0 && host !== list[0].port && publishedPorts(m, host) === spec ? String(host) : "";
 }
 
 function collect() {
@@ -368,11 +397,18 @@ function collect() {
     const v = f.value.trim();
     if (o.secret) { if (v) req.secrets[o.key] = v; } else if (v !== "") req.options[o.key] = v;
   });
+  // The "Game port" box fills the ports option, unless the ports were typed under More settings.
+  if (!req.options.ports) {
+    const chosen = parseInt(form.elements.game_port.value, 10);
+    const spec = publishedPorts(m, chosen);
+    if (spec) req.options.ports = spec;
+  }
   return req;
 }
 
 form.addEventListener("input", (e) => {
   if (e.target === form.elements.id) idTouched = true;
+  if (e.target === form.elements.game_port && form.elements["opt:ports"]) form.elements["opt:ports"].value = ""; // the simple box takes over
   if (e.target === form.elements.display_name && !idTouched && !editing) form.elements.id.value = slug(e.target.value);
   schedulePreview();
 });
@@ -420,6 +456,7 @@ async function runPreview() {
   $("sum-status").textContent = p.fits ? "✓ Allowed by the operator's policy" : "✗ Outside the policy: " + (p.reason || "not allowed");
   sumRow(dl, "Container", [p.container]);
   sumRow(dl, "Image", [p.image, p.pinning ? "pinned by digest when installed" : ""].filter(Boolean));
+  sumRow(dl, "Players connect to", p.connect ? [p.connect] : []);
   sumRow(dl, "Ports", p.ports);
   sumRow(dl, "Data folder", p.folders);
   sumRow(dl, "Memory limit", p.memory ? [p.memory] : []);
@@ -522,6 +559,13 @@ function startEdit(g) {
   form.elements.id.value = g.id;
   form.elements.id.readOnly = true;
   form.elements.connect_address.value = g.connect_address || "";
+  // A ports option that is just a different first port shows in the simple "Game port" box, not twice.
+  const gp = chosenPort(moduleById(g.module), (g.options || {}).ports);
+  if (gp) {
+    form.elements.game_port.value = gp;
+    const adv = form.elements["opt:ports"];
+    if (adv) adv.value = "";
+  }
   if (g.options && g.options.image) form.elements.image.value = g.options.image;
   $("basics-title").textContent = `Settings for ${g.display_name || g.id}`;
   $("enable").textContent = "Save and recreate";

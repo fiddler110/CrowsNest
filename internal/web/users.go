@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 
@@ -26,7 +27,13 @@ type userView struct {
 	HasPassword bool      `json:"has_password"`
 	Google      bool      `json:"google"`
 	GoogleEmail string    `json:"google_email,omitempty"`
-	Self        bool      `json:"self"`
+	// OIDCEmail is the email an OIDC provider may sign them in as (first time).
+	OIDCEmail string `json:"oidc_email,omitempty"`
+	// Games is the player's allowlist; empty means every game.
+	Games []string `json:"games"`
+	// MFA is whether the user has an authenticator app set up.
+	MFA  bool `json:"mfa"`
+	Self bool `json:"self"`
 	// Managed users live in the users file and can be edited here; users
 	// that exist only in the Google env allowlist cannot.
 	Managed bool `json:"managed"`
@@ -38,7 +45,27 @@ type userBody struct {
 	Role     *string `json:"role"`
 	// GoogleEmail links a Google account to the user; "" on update removes it.
 	GoogleEmail *string `json:"google_email"`
-	Revoke      bool    `json:"revoke_sessions"`
+	// OIDCEmail links an OIDC sign-in email to the user; "" on update removes it.
+	OIDCEmail *string `json:"oidc_email"`
+	Revoke    bool    `json:"revoke_sessions"`
+	// ResetMFA removes the user's authenticator app (a lost phone) and signs them out.
+	ResetMFA bool `json:"reset_mfa"`
+	// Games limits a player to these game ids; an empty list means all games.
+	Games *[]string `json:"games"`
+}
+
+// checkGames validates an allowlist against the games the registry knows.
+func (a *App) checkGames(ids []string) ([]string, error) {
+	list, err := auth.ParseGameList(strings.Join(ids, ","))
+	if err != nil {
+		return nil, err
+	}
+	for _, id := range list {
+		if _, ok := a.Registry.Get(id); !ok {
+			return nil, errors.New("unknown game " + id)
+		}
+	}
+	return list, nil
 }
 
 func (a *App) userList(self string) []userView {
@@ -46,9 +73,9 @@ func (a *App) userList(self string) []userView {
 	byName := map[string]*userView{}
 	for name, rec := range snap {
 		byName[name] = &userView{Username: name, Role: rec.EffectiveRole(), HasPassword: rec.Hash != "",
-			Google: rec.GoogleEmail != "", GoogleEmail: rec.GoogleEmail, Managed: true}
+			Google: rec.GoogleEmail != "", GoogleEmail: rec.GoogleEmail, OIDCEmail: rec.OIDCEmail, Games: rec.Games, Managed: true}
 	}
-	if a.Google != nil {
+	if a.Google.Active() {
 		for _, name := range a.Google.Users {
 			v := byName[name]
 			if v == nil {
@@ -61,6 +88,10 @@ func (a *App) userList(self string) []userView {
 	out := make([]userView, 0, len(byName))
 	for _, v := range byName {
 		v.Self = v.Username == self
+		if v.Games == nil {
+			v.Games = []string{}
+		}
+		v.MFA = a.MFA != nil && a.MFA.Enabled(v.Username)
 		out = append(out, *v)
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Username < out[j].Username })
@@ -75,11 +106,43 @@ func (a *App) usersEnabled(w http.ResponseWriter, r *http.Request) bool {
 	return true
 }
 
+// adoptGoogleUsers writes a users-file entry for every Google allowlist user
+// that has none, so each can be edited in the panel.
+func (a *App) adoptGoogleUsers() {
+	if !a.Google.Active() {
+		return
+	}
+	names := make([]string, 0, len(a.Google.Users))
+	for _, n := range a.Google.Users {
+		names = append(names, n)
+	}
+	added, err := auth.AdoptUsers(a.Auth.Store.Path(), names)
+	if err != nil {
+		log.Printf("auth: add Google users to %s: %v", a.Auth.Store.Path(), err)
+		return
+	}
+	if len(added) > 0 {
+		log.Printf("auth: added Google allowlist users to %s: %s", a.Auth.Store.Path(), strings.Join(added, ", "))
+		if _, err := a.Auth.Store.Reload(); err != nil {
+			log.Printf("auth: reload users: %v", err)
+		}
+	}
+}
+
 func (a *App) handleListUsers(w http.ResponseWriter, r *http.Request) {
 	if !a.usersEnabled(w, r) {
 		return
 	}
-	writeJSON(w, http.StatusOK, map[string]any{"users": a.userList(actor(r)), "google_enabled": a.Google != nil})
+	a.adoptGoogleUsers()
+	type gameRef struct {
+		ID   string `json:"id"`
+		Name string `json:"name"`
+	}
+	refs := []gameRef{}
+	for _, d := range a.Registry.All() {
+		refs = append(refs, gameRef{d.ID, d.DisplayName})
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"users": a.userList(actor(r)), "google_enabled": a.Google.Active(), "games": refs})
 }
 
 func readUserBody(w http.ResponseWriter, r *http.Request) (userBody, bool) {
@@ -131,7 +194,7 @@ func (a *App) adminsAfter(name string, newRole auth.Role, remove bool) int {
 // it. forUser is the user being edited ("" when creating).
 func (a *App) checkGoogleEmail(email, forUser string) (string, error) {
 	email = strings.ToLower(strings.TrimSpace(email))
-	if a.Google == nil {
+	if !a.Google.Active() {
 		return "", errors.New("Google sign-in isn't enabled on this server")
 	}
 	if err := auth.ValidateEmail(email); err != nil {
@@ -205,14 +268,30 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "that user already exists", http.StatusConflict)
 		return
 	}
+	var allowed []string
+	if b.Games != nil {
+		l, err := a.checkGames(*b.Games)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		allowed = l
+	}
 	if err := auth.CreateUser(a.Auth.Store.Path(), name, hash, email, role); err != nil {
 		log.Printf("audit: %s create user %q failed: %v", actor(r), name, err)
 		http.Error(w, "could not save user", http.StatusInternalServerError)
 		return
 	}
 	how := ""
+	if len(allowed) > 0 {
+		if err := auth.SetGames(a.Auth.Store.Path(), name, allowed); err != nil {
+			http.Error(w, "user added but their games could not be saved", http.StatusInternalServerError)
+			return
+		}
+		how += ", games " + strings.Join(allowed, "/")
+	}
 	if email != "" {
-		how = ", Google " + email
+		how += ", Google " + email
 	}
 	a.userChanged(r, "created user "+name+" ("+string(role)+how+")")
 	writeJSON(w, http.StatusCreated, map[string]any{"users": a.userList(actor(r))})
@@ -259,6 +338,24 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			changes = append(changes, "role "+string(role))
 		}
 	}
+	if b.Games != nil {
+		list, err := a.checkGames(*b.Games)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if !slices.Equal(list, rec.Games) {
+			if err := auth.SetGames(path, name, list); err != nil {
+				http.Error(w, "could not save user", http.StatusInternalServerError)
+				return
+			}
+			if len(list) == 0 {
+				changes = append(changes, "games: all")
+			} else {
+				changes = append(changes, "games "+strings.Join(list, "/"))
+			}
+		}
+	}
 	if b.GoogleEmail != nil {
 		email := strings.TrimSpace(*b.GoogleEmail)
 		if email == "" {
@@ -288,6 +385,39 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	if b.OIDCEmail != nil {
+		email := strings.ToLower(strings.TrimSpace(*b.OIDCEmail))
+		if email != "" {
+			if err := auth.ValidateEmail(email); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			for other, orec := range a.Auth.Store.Snapshot() {
+				if orec.OIDCEmail == email && other != name {
+					http.Error(w, "that email is already linked to "+other, http.StatusBadRequest)
+					return
+				}
+			}
+		}
+		if email != rec.OIDCEmail {
+			if email == "" && rec.Hash == "" && rec.GoogleEmail == "" {
+				http.Error(w, "set a password first, or the user would have no way to sign in", http.StatusBadRequest)
+				return
+			}
+			if err := auth.SetOIDCEmail(path, name, email); err != nil {
+				http.Error(w, "could not save user", http.StatusInternalServerError)
+				return
+			}
+			if a.OIDC != nil {
+				_ = a.OIDC.Store.Unlink(name) // a new email must prove itself again
+			}
+			if email == "" {
+				changes = append(changes, "SSO email removed")
+			} else {
+				changes = append(changes, "SSO email "+email)
+			}
+		}
+	}
 	if b.Password != nil && *b.Password != "" {
 		if err := checkPassword(*b.Password); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -305,6 +435,16 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 		changes = append(changes, "password reset")
 		if name != self {
 			revoke = true // a reset should end sessions held under the old password
+		}
+	}
+	if b.ResetMFA {
+		if err := a.resetMFA(name); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		changes = append(changes, "authenticator app removed")
+		if name != self {
+			revoke = true
 		}
 	}
 	if revoke {
@@ -342,6 +482,12 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if a.adminsAfter(name, "", true) < 1 {
 		http.Error(w, "there must be at least one admin", http.StatusBadRequest)
 		return
+	}
+	if a.MFA != nil {
+		_ = a.MFA.Remove(name)
+	}
+	if a.OIDC != nil {
+		_ = a.OIDC.Store.Unlink(name)
 	}
 	if err := auth.DeleteUser(a.Auth.Store.Path(), name); err != nil {
 		http.Error(w, "could not delete user", http.StatusInternalServerError)
