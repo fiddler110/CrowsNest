@@ -414,6 +414,18 @@ func NestedBinds(a, b string) error {
 	return nil
 }
 
+// RestoreSuffix marks a game's one-shot restore container, <game>-restore. The
+// policy lists games by their own names, so a restore container is admitted by
+// the name of the game it belongs to.
+const RestoreSuffix = "-restore"
+
+func restoreBase(name string) string {
+	if b, ok := strings.CutSuffix(name, RestoreSuffix); ok && b != "" {
+		return b
+	}
+	return name
+}
+
 // Admit reports why a scope does not fit the envelope, or nil if it does.
 // The same check backs the dashboard's "does this fit?" preview and the
 // guard's own enforcement when it loads managed scopes.
@@ -422,7 +434,7 @@ func (p *Policy) Admit(s *Scope) error {
 		return errors.New("nil scope")
 	}
 	ex := p.exception(s.Name)
-	if ex == nil && len(p.Names) > 0 && !matchName(p.Names, s.Name) {
+	if ex == nil && len(p.Names) > 0 && !matchName(p.Names, restoreBase(s.Name)) {
 		return fmt.Errorf("container name %s is not in the policy's names", s.Name)
 	}
 	if ex == nil && len(p.Names) == 0 && s.Labels[OwnerLabel] != "true" {

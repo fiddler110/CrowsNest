@@ -248,3 +248,13 @@ func TestPolicyBackupsRoot(t *testing.T) {
 		}
 	}
 }
+
+func TestPolicyAdmitsRestoreContainerByTheGamesName(t *testing.T) {
+	p, _ := ParsePolicy([]byte(testPolicy))
+	if err := p.Admit(mustScope(t, scopeJSON("valheim-restore", "lloesche/valheim-server", ""))); err != nil {
+		t.Errorf("<game>-restore of a listed game was refused: %v", err)
+	}
+	if err := p.Admit(mustScope(t, scopeJSON("other-restore", "lloesche/valheim-server", ""))); err == nil {
+		t.Error("a restore container of an unlisted game was admitted")
+	}
+}

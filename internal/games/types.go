@@ -188,6 +188,8 @@ type BackupSpec struct {
 	LocalDir   string
 	BeforeStop bool
 	Keep       int
+	// CanRestore is true when the game can restore a backup from its folder.
+	CanRestore bool
 }
 
 // ConnectSecret is a labelled value shown on a game's dashboard card.

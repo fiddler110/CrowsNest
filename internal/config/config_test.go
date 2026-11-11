@@ -643,3 +643,18 @@ func TestLoad_BackupsRoot(t *testing.T) {
 		t.Error("dir and list_dir together were accepted")
 	}
 }
+
+func TestBackupConfig_RestoreNeedsDir(t *testing.T) {
+	ok := &BackupConfig{Exec: []string{"b"}, Dir: "/data/backups", Restore: []string{"/bin/sh", "-c", "true"}}
+	if err := ok.CheckKeep(); err != nil {
+		t.Errorf("valid restore: %v", err)
+	}
+	for name, b := range map[string]*BackupConfig{
+		"no dir":    {Exec: []string{"b"}, ListDir: "/x", Restore: []string{"/bin/sh"}},
+		"empty arg": {Exec: []string{"b"}, Dir: "/x", Restore: []string{"/bin/sh", " "}},
+	} {
+		if err := b.CheckKeep(); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}

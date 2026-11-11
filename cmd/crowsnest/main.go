@@ -32,6 +32,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/nightshutdown"
 	"github.com/fiddler110/crowsnest/internal/notify"
 	"github.com/fiddler110/crowsnest/internal/playerwatch"
+	"github.com/fiddler110/crowsnest/internal/restore"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
 	"github.com/fiddler110/crowsnest/internal/web"
@@ -314,6 +315,7 @@ func serve() error {
 		Templates:    templates,
 	}
 
+	var managedMgr *managed.Manager
 	if cfg.Managed.Dir != "" {
 		if cfg.Managed.PolicyEditable {
 			log.Printf("warning: managed.policy_editable is on: the panel can rewrite %s (it may only tighten it, but it can still remove limits it was given)", cfg.Managed.PolicyFile)
@@ -328,6 +330,7 @@ func serve() error {
 			return fmt.Errorf("managed games: %w", err)
 		}
 		app.Managed = mgr
+		managedMgr = mgr
 		log.Printf("managed games: enabled from the dashboard, state in %s, policy %s", cfg.Managed.Dir, cfg.Managed.PolicyFile)
 	}
 
@@ -346,6 +349,12 @@ func serve() error {
 	// own messages.
 	exclusivityMgr.Notifier = discordNotifier
 	backups.Notifier = discordNotifier
+	if managedMgr != nil && backupRoot != nil {
+		app.Restore = &restore.Manager{
+			Docker: docker, Control: exclusivityMgr, Backups: backups, Spec: managedMgr.RestoreSpec,
+			History: activity, Notifier: discordNotifier, BaseContext: ctx,
+		}
+	}
 	// Re-check the shared backups folder every minute: a drive that disappears
 	// or fills is announced once, and backups are refused until it is back.
 	go backups.RunMonitor(ctx, time.Minute, registry.All)

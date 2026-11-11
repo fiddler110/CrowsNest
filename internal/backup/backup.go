@@ -86,6 +86,39 @@ func (m *Manager) release(id string) {
 	m.mu.Unlock()
 }
 
+// ErrNoSuchFile means the named file is not among a game's backups.
+var ErrNoSuchFile = errors.New("backup: no such backup file")
+
+// Hold claims id for the caller, so no backup of it starts meanwhile; call
+// release when done. ok is false when a backup is already running.
+func (m *Manager) Hold(id string) (release func(), ok bool) {
+	if !m.claim(id) {
+		return nil, false
+	}
+	return func() { m.release(id) }, true
+}
+
+// Locate returns the position (0 = newest) of the named file among d's backup
+// files in the shared folder, or ErrNoSuchFile.
+func (m *Manager) Locate(d games.GameDef, name string) (int, error) {
+	if d.Backup == nil || d.Backup.LocalDir == "" {
+		return 0, ErrNotConfigured
+	}
+	if err := m.checkRoot(d); err != nil {
+		return 0, err
+	}
+	files, err := localFiles(d.Backup.LocalDir)
+	if err != nil {
+		return 0, err
+	}
+	for i, f := range files {
+		if f.Name == name {
+			return i, nil
+		}
+	}
+	return 0, ErrNoSuchFile
+}
+
 // Running reports whether a backup of id is in progress.
 func (m *Manager) Running(id string) bool {
 	m.mu.Lock()

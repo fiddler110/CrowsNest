@@ -22,6 +22,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/managed"
+	"github.com/fiddler110/crowsnest/internal/restore"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
 )
@@ -1093,6 +1094,33 @@ func TestBackupsHealth_EndpointAndBanner(t *testing.T) {
 	}
 	if ok, has := h.App.health(context.Background())["backups"]; !has || !ok {
 		t.Fatalf("health backups = %v, %v; want present and true", ok, has)
+	}
+}
+
+func TestRestore_AdminOnlyAndPreconditions(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	h := newHarnessFromDefs(t, docker, []games.GameDef{
+		{ID: "g", DisplayName: "g", ContainerName: "g", Status: &games.DockerStatusChecker{Docker: docker},
+			Backup: &games.BackupSpec{Exec: []string{"backup"}}},
+	})
+	post := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("POST", "/api/games/g/restore", []byte(body)))
+		return rec.Code
+	}
+	if got := post(`{"file":"a.tgz"}`); got != http.StatusNotFound {
+		t.Errorf("restore not configured = %d, want 404", got)
+	}
+	h.App.Restore = &restore.Manager{Docker: docker}
+	if got := post(`not json`); got != http.StatusBadRequest {
+		t.Errorf("bad body = %d, want 400", got)
+	}
+	if got := post(`{"file":"a.tgz"}`); got != http.StatusNotFound { // the game has no restore command
+		t.Errorf("game without a restore command = %d, want 404", got)
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	if got := post(`{"file":"a.tgz"}`); got != http.StatusForbidden {
+		t.Errorf("player restore = %d, want 403", got)
 	}
 }
 

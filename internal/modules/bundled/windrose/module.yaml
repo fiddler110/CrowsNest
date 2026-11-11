@@ -85,6 +85,7 @@ backup:
   exec: ["/bin/sh", "-c", "mkdir -p /home/steam/server-files/backups && tar czf /home/steam/server-files/backups/world-$(date +%Y%m%d-%H%M%S).tar.gz -C /home/steam/server-files/R5/Saved SaveProfiles && chown -R 1000:1000 /home/steam/server-files/backups"]
   dir: /home/steam/server-files/backups
   before_stop: true
+  restore: ["/bin/sh", "-c", "set -e; rm -rf /home/steam/server-files/R5/Saved/SaveProfiles; tar xzf \"$CROWSNEST_RESTORE_FILE\" -C /home/steam/server-files/R5/Saved; chown -R 1000:1000 /home/steam/server-files/R5/Saved/SaveProfiles"]
 
 options:
   - {key: server_name, label: Server name, default: My Windrose Server}

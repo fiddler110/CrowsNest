@@ -1115,6 +1115,31 @@ func TestSharedBackupsFolderPerGame(t *testing.T) {
 		}
 	}
 
+	// Each game has a restore container of its own: <id>-restore, from its image,
+	// with its folders; the guard loads those scopes under the same policy.
+	if spec, ok := m.RestoreSpec("minecraft-2", "manual-1.tgz"); !ok || spec.Name != "minecraft-2-restore" ||
+		!strings.Contains(strings.Join(spec.Binds, " "), "/mnt/usb/backups/minecraft-2:/data/backups:ro") {
+		t.Errorf("restore spec = %+v, %v", spec, ok)
+	}
+	if _, ok := m.RestoreSpec("nope", "x.tgz"); ok {
+		t.Error("a restore spec for a game that is not managed")
+	}
+	res, lerr := dockerguard.Sources{ManagedFile: m.path("scopes.json"), PolicyFile: m.PolicyFile, AllowedFile: dockerguard.AllowedPath(m.path("scopes.json"))}.Load()
+	if lerr != nil || len(res.Rejected) > 0 {
+		t.Fatalf("the guard rejected the scopes: %v %v", lerr, res)
+	}
+	names := map[string]bool{}
+	for _, sc := range res.Scopes {
+		names[sc.Name] = true
+	}
+	if !names["minecraft-restore"] || !names["minecraft-2-restore"] {
+		t.Errorf("scopes in force = %v", names)
+	}
+	if err := m.Enable(Request{ID: "mc-restore", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}}); err == nil ||
+		!strings.Contains(err.Error(), "-restore") {
+		t.Errorf("an id ending in -restore was accepted: %v", err)
+	}
+
 	// A drive that went missing stops the next game being created on it.
 	_ = os.Remove(filepath.Join(root, ".crowsnest-backups"))
 	err = m.Enable(Request{ID: "minecraft-3", Module: "minecraft", Options: map[string]string{"eula": "TRUE", "ports": "25567:25565/tcp"},

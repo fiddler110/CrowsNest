@@ -35,6 +35,7 @@ const (
 	KindUsers       = "users"
 	KindGames       = "games"
 	KindBackup      = "backup"
+	KindRestore     = "restore"
 	KindConsole     = "console"
 	KindCrash       = "crash"
 	KindCrashLoop   = "crash_loop"

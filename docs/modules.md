@@ -86,6 +86,14 @@ module never share a folder), and the panel lists and prunes it itself: no listi
 exec guard allows only the backup command. Without `backups_root`, `dir` behaves exactly like `list_dir`. Give
 `dir` or `list_dir`, not both. See the README's "A shared backups folder" for what to watch.
 
+`restore: [argv...]` (inside `backup:`, needs `dir`) makes each backup restorable from the dashboard: the argv is the
+entrypoint of a one-shot container, `<game id>-restore`, created from the game's pinned image with the game's data
+folders and its backup folder read-only, run while the game is stopped. The chosen file's full path arrives in
+`$CROWSNEST_RESTORE_FILE` (quote it in scripts; it is not substituted into the command). The command must replace
+the game's saves with the archive's contents and fix ownership; write it to match exactly what `exec` archives. Exit
+status 0 is success. The scope for that container is generated from the game's own, so it adds no ports, exec,
+folders or image. It is shown in the approval summary. See the README's "Restoring a backup".
+
 An optional `accent: "#rrggbb"` sets the colour of the game's dashboard card. Without one the card uses the
 default theme colour.
 

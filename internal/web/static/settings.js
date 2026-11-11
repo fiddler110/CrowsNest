@@ -123,7 +123,7 @@ loaders.audit = () => {
   const more = $("audit-more");
   const PAGE = 50;
   const KINDS = ["start", "stop", "auto_stop", "start_failed", "stop_failed", "join", "leave",
-    "settings", "users", "games", "backup", "console", "crash", "crash_loop"];
+    "settings", "users", "games", "backup", "restore", "console", "crash", "crash_loop"];
   KINDS.forEach((k) => form.elements.kind.append(new Option(k.replace("_", " "), k)));
   let offset = 0;
   const params = () => {

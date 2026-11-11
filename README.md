@@ -288,6 +288,40 @@ and the panel lists and prunes it directly, with no `docker exec` for either. Ad
 (the same path, separate from `games_root`) so the guard allows the bind. In the quickstart it is three commented
 lines: the volume in `compose.yaml`, `backups_root` in `config.yaml`, and `backups_root` in `policy/policy.yaml`.
 
+### Restoring a backup
+
+On a dashboard-enabled game whose module has a `restore:` command (Minecraft, Valheim and Windrose today; not
+Palworld, whose image's archive layout is not verified), each file in the **Backups** tab has a **Restore** button.
+It asks first, then:
+
+1. stops the game (when it keeps a backup before stopping, that backup is taken first, so the world as it was a
+   moment ago is the newest file in the list and is your way back);
+2. runs a one-shot container, `<game id>-restore`, from the game's own pinned image, with the game's data folders and
+   its backups folder (read-only), whose entrypoint is the module's `restore` command and which finds the chosen file in
+   `$CROWSNEST_RESTORE_FILE`; the container is removed afterwards;
+3. starts the game again if it was running.
+
+The result is in the activity log (kind `restore`) and in Discord. Things to watch:
+
+- **It replaces the current world.** The bundled commands delete the world folder and unpack the archive. If the
+  command fails half way, the game is left **stopped** with partly restored data and nothing is started; restore the
+  newest backup (the safety copy) or the file again.
+- **No safety copy when the game was stopped,** or when the module does not back up before stopping: there is nothing
+  to take one from. Back up first if the current world matters.
+- **A restore that would delete its own file is refused.** With `keep: N`, the safety backup pushes the oldest file
+  out; asking for that one is refused with a message, before anything is stopped.
+- **Only plain file names** inside the game's own folder are accepted, and only files that are listed there.
+- **The game may not restart by itself.** If the restart is refused (the active-game limit, or the restart cooldown),
+  the game stays stopped and you are told to start it.
+- **A new guard scope per game.** `<id>-restore` has the game's image and folders and nothing else (no ports, no
+  exec). The policy admits it by the game's own name, so no `names:` change is needed, and the id `<anything>-restore`
+  can no longer be used for a game. The panel rewrites the scopes at start, and the guard reloads them without a restart.
+- **File ownership.** The helper runs as root. The bundled commands chown the restored folder to the owner of the
+  data folder (Windrose: uid 1000), as the game expects.
+- **Older archives.** A restore command expects the layout its module's backup command writes (`world/`,
+  `worlds_local/`, `SaveProfiles/`). Archives made some other way are not understood.
+- **Config-file games** (a hand-written compose service) cannot restore from the dashboard; their backups stay where they are.
+
 ### What CrowsNest checks for you
 
 - **Every minute** the panel re-checks the folder: it is the one used before (the marker), it has at least 1 GiB
@@ -341,8 +375,8 @@ lines: the volume in `compose.yaml`, `backups_root` in `config.yaml`, and `backu
   `backups_root` yourself if you want them in the same place.
 - **A big backup volume needs space checks.** `doctor` warns under 5 GiB free. Backups of several worlds add up
   quickly, so set `keep`.
-- **Restore is not built yet.** Today a restore is by hand: stop the game, then unpack the file from
-  `<backups_root>/<id>` into the game's data folder.
+- **Restore is by button** for the modules that have a restore command (see "Restoring a backup"). For any other,
+  stop the game and unpack the file from `<backups_root>/<id>` into its data folder by hand.
 
 ### Admin console
 

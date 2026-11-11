@@ -409,6 +409,12 @@ type BackupConfig struct {
 	// two files per run keeps Keep/2 runs). Needs list_dir; the container needs
 	// sh, GNU find, sort, tail and cut.
 	Keep int `yaml:"keep"`
+	// Restore is the command that puts a backup back, run as the entrypoint of
+	// a one-shot container from the game's own image while the game is stopped.
+	// That container gets the game's data folders and its backup folder
+	// (read-only), and the chosen file's full path in $CROWSNEST_RESTORE_FILE.
+	// Only for dashboard-enabled games with Dir set and a shared backups folder.
+	Restore []string `yaml:"restore"`
 }
 
 // ExecListDir is the directory listed and pruned with docker exec: list_dir,
@@ -430,6 +436,14 @@ func (b *BackupConfig) CheckKeep() error {
 	}
 	if b.Keep < 0 {
 		return fmt.Errorf("keep (%d): must not be negative", b.Keep)
+	}
+	if len(b.Restore) > 0 && b.Dir == "" {
+		return fmt.Errorf("restore needs dir (the folder its backups are mounted at)")
+	}
+	for _, a := range b.Restore {
+		if strings.TrimSpace(a) == "" {
+			return fmt.Errorf("restore: empty argument")
+		}
 	}
 	if b.Keep > 0 && b.ExecListDir() == "" {
 		return fmt.Errorf("keep needs dir or list_dir (the directory to prune)")

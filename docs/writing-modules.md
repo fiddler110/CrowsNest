@@ -116,6 +116,10 @@ else: a pattern that does not match real output is the usual bug.
   only exec the guard allows for this game; without it, `dir` is listed with `find` over exec (`list_dir` is the same
   thing under its older name). The operator must have set `exec: true` in the policy. Write backup files directly in
   `dir` (not in sub-folders), and create `dir` in the command if the image may not have it.
+  Add `restore: ["/bin/sh", "-c", "..."]` to let the dashboard restore a file: it runs as the entrypoint of a
+  one-shot container of the game's image while the game is stopped, with the same folders (backups read-only) and the
+  chosen file in `"$CROWSNEST_RESTORE_FILE"`. Remove the old saves, unpack the archive exactly as your `exec` made it,
+  chown the result, and exit non-zero on any error (`set -e`). Test it on a copy of a real world first.
 - **Join details on the card:** `connect: [{label: Password, option: server_password}]` shows option values players
   need.
 - **Host steps:** `host_setup:` lists things only the operator can do (a firewall rule, a network), shown beside

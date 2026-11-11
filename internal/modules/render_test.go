@@ -304,3 +304,52 @@ func containsStr(l []string, s string) bool {
 	}
 	return false
 }
+
+func TestRenderRestoreContainer(t *testing.T) {
+	p := Platform{GamesRoot: "/srv/games", BackupsRoot: "/mnt/usb/backups", HostIP: "10.0.0.2"}
+	m, _ := Bundled().Manifest("minecraft")
+	r, err := m.Render(config.GameConfig{ID: "mc-2", ContainerName: "mc-2", Options: map[string]string{"data_dir": "mc-2"}}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The scope names <id>-restore with the game's image and folders, and no ports or exec.
+	rs := r.RestoreScope
+	if rs == nil || rs.Name != "mc-2-restore" || rs.Exec || len(rs.Ports) != 0 || !reflect.DeepEqual(rs.Binds, r.Scope.Binds) || !reflect.DeepEqual(rs.Images, r.Scope.Images) {
+		t.Fatalf("restore scope = %+v (game scope %+v)", rs, r.Scope)
+	}
+	spec, ok := r.RestoreSpec("manual-1.tgz")
+	if !ok || spec.Name != "mc-2-restore" || !spec.NoRestart || len(spec.Ports) != 0 || spec.Image != r.Service.Image {
+		t.Fatalf("spec = %+v, %v", spec, ok)
+	}
+	if !reflect.DeepEqual(spec.Env, []string{"CROWSNEST_RESTORE_FILE=/data/backups/manual-1.tgz"}) {
+		t.Errorf("env = %v", spec.Env)
+	}
+	if len(spec.Entrypoint) == 0 || spec.Entrypoint[0] != "/bin/sh" {
+		t.Errorf("entrypoint = %v", spec.Entrypoint)
+	}
+	// The backups folder is read-only for the helper; the data folder is not.
+	for _, b := range spec.Binds {
+		ro := strings.HasSuffix(b, ":ro")
+		if strings.Contains(b, "/mnt/usb/backups/") != ro {
+			t.Errorf("bind %s: backups must be :ro and data must not be", b)
+		}
+	}
+	if len(spec.Binds) != len(r.Scope.Binds) {
+		t.Errorf("binds = %v, scope binds = %v", spec.Binds, r.Scope.Binds)
+	}
+	// ScopesJSON carries both scopes.
+	b, _ := ScopesJSON([]*Rendered{r})
+	if !strings.Contains(string(b), `"mc-2-restore"`) {
+		t.Errorf("scopes JSON has no restore scope: %s", b)
+	}
+	// Without a shared folder, or for a module with no restore command, there is nothing.
+	r2, _ := m.Render(config.GameConfig{ID: "mc-3", ContainerName: "mc-3"}, Platform{GamesRoot: "/srv/games"})
+	if _, ok := r2.RestoreSpec("x.tgz"); ok || r2.RestoreScope != nil {
+		t.Error("a restore container without a backups folder")
+	}
+	pal, _ := Bundled().Manifest("palworld")
+	r3, _ := pal.Render(config.GameConfig{ID: "pal", ContainerName: "pal"}, p)
+	if _, ok := r3.RestoreSpec("x.tgz"); ok || r3.RestoreScope != nil {
+		t.Error("palworld has no verified restore command")
+	}
+}

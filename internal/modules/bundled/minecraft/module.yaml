@@ -37,6 +37,7 @@ backup:
   exec: ["/bin/sh", "-c", "mkdir -p /data/backups && rcon-cli save-off >/dev/null; rcon-cli save-all flush >/dev/null; tar czf /data/backups/manual-$(date +%Y%m%d-%H%M%S).tar.gz -C /data world; s=$?; rcon-cli save-on >/dev/null; exit $s"]
   dir: /data/backups
   before_stop: true
+  restore: ["/bin/sh", "-c", "set -e; rm -rf /data/world; tar xzf \"$CROWSNEST_RESTORE_FILE\" -C /data; chown -R \"$(stat -c %u:%g /data)\" /data/world"]
 
 options:
   - {key: eula, label: "Accept the Minecraft EULA (https://aka.ms/MinecraftEULA): TRUE to accept", default: "FALSE"}

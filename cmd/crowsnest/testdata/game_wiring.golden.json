@@ -27,7 +27,8 @@
       "ListDir": "/palworld/backups",
       "LocalDir": "",
       "BeforeStop": true,
-      "Keep": 0
+      "Keep": 0,
+      "CanRestore": false
     },
     "CanCountPlayers": true
   },
@@ -63,7 +64,8 @@
       "ListDir": "/config/backups",
       "LocalDir": "",
       "BeforeStop": true,
-      "Keep": 0
+      "Keep": 0,
+      "CanRestore": false
     },
     "CanCountPlayers": true
   },
@@ -99,7 +101,8 @@
       "ListDir": "/home/steam/server-files/backups",
       "LocalDir": "",
       "BeforeStop": true,
-      "Keep": 0
+      "Keep": 0,
+      "CanRestore": false
     },
     "CanCountPlayers": true
   }

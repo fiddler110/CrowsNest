@@ -363,6 +363,9 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	if !idRe.MatchString(r.ID) {
 		return g, nil, errors.New("id must be 2-31 lowercase letters, digits or dashes, starting with a letter")
 	}
+	if strings.HasSuffix(r.ID, modules.RestoreSuffix) {
+		return g, nil, fmt.Errorf("id may not end in %q: that name is the one-shot container that restores a backup", modules.RestoreSuffix)
+	}
 	mf, ok := m.Modules.Manifest(r.Module)
 	if !ok {
 		return g, nil, fmt.Errorf("module %q is not installed", r.Module)
@@ -464,6 +467,19 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 // backupFor is the module's backup block for game id. With a shared backups
 // folder and a module that names a backup dir, the panel reads that game's own
 // folder (<backups_root>/<id>) instead of listing through docker exec.
+// RestoreSpec is the one-shot container that restores file into game id, or
+// false when the game is not a dashboard game or its module cannot restore.
+func (m *Manager) RestoreSpec(id, file string) (dockerctl.CreateSpec, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.entries {
+		if e.ID == id && e.rendered != nil {
+			return e.rendered.RestoreSpec(file)
+		}
+	}
+	return dockerctl.CreateSpec{}, false
+}
+
 func (m *Manager) backupFor(mf *modules.Manifest, id string) *config.BackupConfig {
 	if mf.Backup == nil {
 		return nil
@@ -1339,6 +1355,13 @@ func (m *Manager) Restore(ctx context.Context) error {
 		}
 		m.entries = append(m.entries, e)
 		installs = append(installs, todo{e, g})
+	}
+	// Re-issue the scopes so a game installed before an upgrade gets any scope
+	// the new version added (a restore container).
+	if len(m.entries) > 0 {
+		if err := m.writeScopes(); err != nil {
+			log.Printf("managed: rewriting the guard scopes: %v", err)
+		}
 	}
 	m.mu.Unlock()
 	for _, t := range installs {

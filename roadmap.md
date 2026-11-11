@@ -163,7 +163,10 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   token refuse a folder that is not the one used before (unmounted external drive). The watch-outs (permissions, the
   panel being able to delete, ids as folder names, nothing deleted on disable, retention counts files) are in the
   README under "A shared backups folder". Not built:
-  - **Restore.** Declared per module (stop the game, unpack a chosen file); needs the folder above, now in place.
+  - **Restore: done** for Minecraft, Valheim and Windrose (a Restore button per file; a one-shot `<id>-restore`
+    container runs the module's `restore:` command while the game is stopped). Open: Palworld (confirm what its image's
+    `backup` archives contain before writing a command), a restore for config-file games, and trying each command on
+    a real world; the tests use a fake engine.
   - **Offsite copy.** A restic/rclone sidecar reading the same folder; CrowsNest itself should not hold the credentials.
   - **Config-file games** (hand-written compose) still back up inside their own data; they would need the bind added by hand.
   - **Backups-folder detail in the UI** (last backup per game, orphan folders): the dashboard shows a banner and

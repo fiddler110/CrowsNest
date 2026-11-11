@@ -29,6 +29,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/hoststats"
 	"github.com/fiddler110/crowsnest/internal/memadmit"
 	"github.com/fiddler110/crowsnest/internal/memo"
+	"github.com/fiddler110/crowsnest/internal/restore"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
 )
@@ -55,6 +56,8 @@ type App struct {
 	History *history.Store
 	// Backups runs and lists per-game backups (admin only). Optional.
 	Backups *backup.Manager
+	// Restore puts a chosen backup back (admin only). Optional.
+	Restore *restore.Manager
 	// Managed backs the Games API (enable games from the dashboard). Optional.
 	Managed ManagedGames
 	// MetricsToken, when set, serves GET /metrics (Prometheus) to a scraper
@@ -199,6 +202,7 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/games/{id}/console/action", a.requireAdmin(http.HandlerFunc(a.handleConsoleAction)))
 	mux.Handle("POST /api/games/{id}/console/raw", a.requireAdmin(http.HandlerFunc(a.handleConsoleRaw)))
 	mux.Handle("POST /api/games/{id}/backup", a.requireAdmin(http.HandlerFunc(a.handleBackup)))
+	mux.Handle("POST /api/games/{id}/restore", a.requireAdmin(http.HandlerFunc(a.handleRestore)))
 	mux.Handle("GET /api/backups/health", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackupsHealth))))
 	mux.Handle("GET /api/games/{id}/backups", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackups))))
 	mux.Handle("GET /api/host", a.requireSession(http.HandlerFunc(a.handleHost)))
@@ -577,6 +581,40 @@ func (a *App) handleBackup(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleRestore starts restoring one backup file of a game in the background.
+// The body names the file: {"file": "<name>"}. The game is stopped (and started
+// again if it was running), so the caller has already confirmed it.
+func (a *App) handleRestore(w http.ResponseWriter, r *http.Request) {
+	d, ok := a.gameOr404(w, r)
+	if !ok {
+		return
+	}
+	if a.Restore == nil {
+		http.Error(w, "restoring is not configured", http.StatusNotFound)
+		return
+	}
+	var body struct {
+		File string `json:"file"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	switch err := a.Restore.Request(r.Context(), d, body.File, actor(r)); {
+	case err == nil:
+		w.WriteHeader(http.StatusAccepted)
+	case errors.Is(err, restore.ErrNotConfigured):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, restore.ErrBadFile):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, restore.ErrBusy), errors.Is(err, restore.ErrWouldPrune), errors.Is(err, backup.ErrRootUnavailable):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		log.Printf("web: restore %s: %v", d.ID, err)
+		http.Error(w, publicError(err), http.StatusBadGateway)
+	}
+}
+
 // handleBackupsHealth reports the shared backups folder's latest check: whether
 // it is usable, free space, problems, and folders no game uses (admin only).
 func (a *App) handleBackupsHealth(w http.ResponseWriter, r *http.Request) {
@@ -597,15 +635,18 @@ func (a *App) handleBackups(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "backups are not configured", http.StatusNotFound)
 		return
 	}
+	canRestore := a.Restore != nil && d.Backup != nil && d.Backup.CanRestore
+	busy := a.Backups.Running(d.ID) || (a.Restore != nil && a.Restore.Running(d.ID))
 	files, err := a.Backups.List(r.Context(), d)
 	switch {
 	case errors.Is(err, backup.ErrNotConfigured):
-		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": a.Backups.Running(d.ID)})
+		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": busy})
 	case err != nil:
 		// Usually just "the container isn't running".
-		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": a.Backups.Running(d.ID), "unavailable": true})
+		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": busy, "unavailable": true})
 	default:
-		writeJSON(w, http.StatusOK, map[string]any{"files": files, "running": a.Backups.Running(d.ID)})
+		writeJSON(w, http.StatusOK, map[string]any{"files": files, "running": busy, "restorable": canRestore,
+			"restoring": a.Restore != nil && a.Restore.Running(d.ID)})
 	}
 }
 

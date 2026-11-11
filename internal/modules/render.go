@@ -183,6 +183,9 @@ type Rendered struct {
 	// is Repo:Tag until Pin names one exact image by digest.
 	Repo, Tag string
 	Scope     GuardScope
+	// RestoreScope is the guard scope of the game's one-shot restore container
+	// (<id>-restore), or nil when the module has no restore command.
+	RestoreScope *GuardScope
 	// EnvVars are the .env variables the service reads, name -> default
 	// ("" for secrets and unset values), in a stable order.
 	EnvVars []EnvVar
@@ -190,6 +193,8 @@ type Rendered struct {
 	// What the dashboard needs to create the container itself: literal bind
 	// mounts (host:container), memory and stop grace.
 	binds     []string
+	backupDir string // the container path the game's backup folder is mounted at ("" = none)
+	restore   []string
 	nets      []NetEndpoint
 	secopts   []string
 	memory    string
@@ -347,6 +352,8 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		}
 		scope.Binds = append(scope.Binds, scopeHost)
 		r.binds = append(r.binds, scopeHost+":"+m.Backup.Dir)
+		r.backupDir = m.Backup.Dir
+		r.restore = m.Backup.Restore
 	}
 
 	seen := map[string]bool{}
@@ -392,7 +399,41 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		svc.Environment = append(svc.Environment, name+"="+val)
 	}
 	r.Service, r.Scope = svc, scope
+	if len(r.restore) > 0 {
+		rs := GuardScope{
+			Name: g.ID + RestoreSuffix, Images: scope.Images, Networks: scope.Networks,
+			Ports: []GuardPort{}, Binds: append([]string{}, scope.Binds...), Labels: scope.Labels,
+		}
+		r.RestoreScope = &rs
+	}
 	return r, nil
+}
+
+// RestoreSuffix names a game's one-shot restore container: <id>-restore. Its
+// guard scope shares the game's image and folders, nothing else.
+const RestoreSuffix = "-restore"
+
+// RestoreSpec is the one-shot container that restores file (a plain name inside
+// the game's backup folder): the game's own image with its data folders and its
+// backup folder read-only, the module's restore command as the entrypoint and
+// the file's path in CROWSNEST_RESTORE_FILE. It is never published and never
+// restarts. ok is false when the module has no restore command.
+func (r *Rendered) RestoreSpec(file string) (dockerctl.CreateSpec, bool) {
+	if len(r.restore) == 0 || r.backupDir == "" || r.RestoreScope == nil {
+		return dockerctl.CreateSpec{}, false
+	}
+	binds := make([]string, len(r.binds))
+	for i, b := range r.binds {
+		if strings.HasSuffix(b, ":"+r.backupDir) {
+			b += ":ro"
+		}
+		binds[i] = b
+	}
+	return dockerctl.CreateSpec{
+		Name: r.RestoreScope.Name, Image: r.Service.Image, Labels: r.Service.Labels,
+		Network: r.nets[0].Name, Binds: binds, Entrypoint: r.restore, NoRestart: true,
+		Env: []string{"CROWSNEST_RESTORE_FILE=" + strings.TrimRight(r.backupDir, "/") + "/" + file},
+	}, true
 }
 
 type renderPort struct {
@@ -481,6 +522,9 @@ func ScopesJSON(rs []*Rendered) ([]byte, error) {
 	scopes := make([]GuardScope, 0, len(rs))
 	for _, r := range rs {
 		scopes = append(scopes, r.Scope)
+		if r.RestoreScope != nil {
+			scopes = append(scopes, *r.RestoreScope)
+		}
 	}
 	return json.MarshalIndent(scopes, "", "  ")
 }
