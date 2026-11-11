@@ -345,6 +345,9 @@ func serve() error {
 	// own messages.
 	exclusivityMgr.Notifier = discordNotifier
 	backups.Notifier = discordNotifier
+	// Re-check the shared backups folder every minute: a drive that disappears
+	// or fills is announced once, and backups are refused until it is back.
+	go backups.RunMonitor(ctx, time.Minute, registry.All)
 
 	crashes := crashwatch.New(registry, docker)
 	crashes.Crashes = cfg.CrashLoop.Crashes

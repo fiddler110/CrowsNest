@@ -49,7 +49,9 @@ type File struct {
 type Manager struct {
 	Docker *dockerctl.Client
 	// Root is the shared backups folder; needed for games with a LocalDir.
-	Root     *Root
+	Root *Root
+	// MinFree is the free space (bytes) below which a backup is refused; 0 means DefaultMinFree.
+	MinFree  int64
 	History  history.Recorder
 	Notifier Notifier
 
@@ -59,6 +61,7 @@ type Manager struct {
 	mu      sync.Mutex
 	running map[string]bool
 	wg      sync.WaitGroup
+	health  healthState
 }
 
 // Wait blocks until background backups finish (tests, shutdown).
@@ -97,7 +100,8 @@ func (m *Manager) RunBackup(ctx context.Context, d games.GameDef, actor string) 
 	if d.Backup == nil || len(d.Backup.Exec) == 0 {
 		return ErrNotConfigured
 	}
-	if err := m.checkRoot(d); err != nil {
+	if err := m.preflight(d); err != nil {
+		m.refused(d, actor, err)
 		return err
 	}
 	if !m.claim(d.ID) {
@@ -115,11 +119,19 @@ func (m *Manager) run(ctx context.Context, d games.GameDef, actor string) error 
 	if !up {
 		return ErrNotRunning
 	}
+	var before []File
+	if d.Backup.LocalDir != "" {
+		before, _ = localFiles(d.Backup.LocalDir)
+	}
 	began := time.Now()
 	_, err = m.Docker.ExecTimeout(ctx, d.ContainerName, runTimeout, d.Backup.Exec...)
+	if err == nil && d.Backup.LocalDir != "" {
+		// An exit status of 0 is not proof: confirm a new, non-empty file landed.
+		err = verifyNewFile(d.Backup.LocalDir, before, began)
+	}
 	if err != nil {
 		log.Printf("backup: %s failed: %v", d.ID, err)
-		m.record(d.ID, actor, "failed: "+tail(err.Error()))
+		m.record(d.ID, actor, "failed: "+tail(err.Error())+permissionHint(err.Error(), d.Backup.LocalDir))
 		return fmt.Errorf("backup of %s failed", d.ID)
 	}
 	took := time.Since(began).Round(time.Second)
@@ -149,7 +161,8 @@ func (m *Manager) Request(ctx context.Context, d games.GameDef, actor string) er
 	if d.Backup == nil || len(d.Backup.Exec) == 0 {
 		return ErrNotConfigured
 	}
-	if err := m.checkRoot(d); err != nil {
+	if err := m.preflight(d); err != nil {
+		m.refused(d, actor, err)
 		return err
 	}
 	up, err := m.Docker.Running(ctx, d.ContainerName)

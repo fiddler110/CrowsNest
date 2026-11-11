@@ -288,6 +288,23 @@ and the panel lists and prunes it directly, with no `docker exec` for either. Ad
 (the same path, separate from `games_root`) so the guard allows the bind. In the quickstart it is three commented
 lines: the volume in `compose.yaml`, `backups_root` in `config.yaml`, and `backups_root` in `policy/policy.yaml`.
 
+### What CrowsNest checks for you
+
+- **Every minute** the panel re-checks the folder: it is the one used before (the marker), it has at least 1 GiB
+  free, and the panel can write to each game's folder. A problem is recorded in the activity log, sent to Discord
+  once (and again when it clears), shown as a banner on the dashboard, and exported as `crowsnest_backups_ok` and
+  `crowsnest_backups_free_bytes` on `/metrics`. While it lasts, backups are refused rather than written somewhere
+  wrong. `GET /api/backups/health` (admin) returns the details, including folders no game uses (left behind by
+  disabled or renamed games).
+- **A refused backup is never silent.** A scheduled or before-stop backup that cannot run is recorded and
+  notified. Stopping a game still goes ahead.
+- **Exit status 0 is not trusted.** After a backup the panel checks that a new, non-empty file appeared in the
+  game's folder; otherwise the backup is recorded as failed and old backups are not pruned.
+- **Permission errors say what to do.** A failure containing "permission denied" names the folder and the fix.
+- **Not covered:** the first time `backups_root` is set, a missing drive cannot be told apart from an empty new
+  one (the marker is created on whatever is there). Check that the drive is mounted before the first start;
+  `crowsnest doctor` shows the free space and whether the folder shares a disk with the system.
+
 ### Things to watch with a shared backups folder
 
 - **A missing external drive looks like an empty folder.** If the host path does not exist when Docker starts the

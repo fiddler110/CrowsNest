@@ -1071,6 +1071,31 @@ func TestBackup_AdminOnlyAndPreconditions(t *testing.T) {
 	}
 }
 
+func TestBackupsHealth_EndpointAndBanner(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	h := newHarnessFromDefs(t, docker, nil)
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("GET", path, nil))
+		return rec
+	}
+	if got := get("/api/backups/health").Code; got != http.StatusNotFound {
+		t.Fatalf("no shared folder = %d, want 404", got)
+	}
+	if _, has := h.App.health(context.Background())["backups"]; has {
+		t.Fatal("health reports backups with no shared folder")
+	}
+	mount := t.TempDir()
+	root := &backup.Root{Mount: mount, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state")}
+	h.App.Backups = &backup.Manager{Docker: docker, Root: root}
+	if got := get("/api/backups/health").Code; got != http.StatusOK {
+		t.Fatalf("health = %d, want 200", got)
+	}
+	if ok, has := h.App.health(context.Background())["backups"]; !has || !ok {
+		t.Fatalf("health backups = %v, %v; want present and true", ok, has)
+	}
+}
+
 type fakeConsole struct{ ran []string }
 
 func (f *fakeConsole) Actions() []games.ConsoleAction {

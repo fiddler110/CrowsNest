@@ -199,6 +199,7 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/games/{id}/console/action", a.requireAdmin(http.HandlerFunc(a.handleConsoleAction)))
 	mux.Handle("POST /api/games/{id}/console/raw", a.requireAdmin(http.HandlerFunc(a.handleConsoleRaw)))
 	mux.Handle("POST /api/games/{id}/backup", a.requireAdmin(http.HandlerFunc(a.handleBackup)))
+	mux.Handle("GET /api/backups/health", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackupsHealth))))
 	mux.Handle("GET /api/games/{id}/backups", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackups))))
 	mux.Handle("GET /api/host", a.requireSession(http.HandlerFunc(a.handleHost)))
 	mux.Handle("GET /api/health", a.requireSession(http.HandlerFunc(a.handleHealth)))
@@ -576,6 +577,16 @@ func (a *App) handleBackup(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// handleBackupsHealth reports the shared backups folder's latest check: whether
+// it is usable, free space, problems, and folders no game uses (admin only).
+func (a *App) handleBackupsHealth(w http.ResponseWriter, r *http.Request) {
+	if a.Backups == nil || a.Backups.Root == nil {
+		http.Error(w, "no shared backups folder is configured", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, a.Backups.Health())
+}
+
 // handleBackups lists a game's backup files, newest first.
 func (a *App) handleBackups(w http.ResponseWriter, r *http.Request) {
 	d, ok := a.gameOr404(w, r)
@@ -630,7 +641,11 @@ func (a *App) health(ctx context.Context) map[string]bool {
 		}
 		return true
 	})
-	return map[string]bool{"docker": err == nil && ok}
+	h := map[string]bool{"docker": err == nil && ok}
+	if a.Backups != nil && a.Backups.Root != nil {
+		h["backups"] = a.Backups.Healthy()
+	}
+	return h
 }
 
 type infoResult struct {

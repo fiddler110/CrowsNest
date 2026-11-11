@@ -166,7 +166,13 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   - **Restore.** Declared per module (stop the game, unpack a chosen file); needs the folder above, now in place.
   - **Offsite copy.** A restic/rclone sidecar reading the same folder; CrowsNest itself should not hold the credentials.
   - **Config-file games** (hand-written compose) still back up inside their own data; they would need the bind added by hand.
-  - **Backups-folder status in the UI** (free space, last backup per game); `crowsnest doctor` covers it for now.
+  - **Backups-folder detail in the UI** (last backup per game, orphan folders): the dashboard shows a banner and
+    `GET /api/backups/health` has the detail, but there is no page for it yet.
+  - **First-use guard.** If the drive is missing the very first time `backups_root` is set, the marker lands on the
+    empty system-disk folder and is trusted. Needs an explicit confirmation or a host-side mount check.
+  Also done 2026-11-11: a one-minute folder monitor (marker, 1 GiB free, per-game writability) with one alert per
+  change, a dashboard banner and metrics; refused scheduled backups are recorded and notified; a backup must leave a
+  new non-empty file or it counts as failed; permission errors carry a hint.
 - [x] **Crash-loop detection and Prometheus `/metrics` (done 2026-11-11).** `internal/crashwatch` reads each
   container's last exit; non-zero exits other than a stop (0, 143, and 137 unless OOM-killed) are crashes,
   and `crash_loop.crashes` within `window_minutes` raises one alert (activity log + Discord). `GET /metrics`

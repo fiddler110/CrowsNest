@@ -78,6 +78,18 @@ func (a *App) handleMetrics(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	if a.Backups != nil && a.Backups.Root != nil {
+		h := a.Backups.Health()
+		metric("crowsnest_backups_ok", "1 while the shared backups folder passes its checks.", "gauge")
+		ok := 0
+		if a.Backups.Healthy() {
+			ok = 1
+		}
+		fmt.Fprintf(&b, "crowsnest_backups_ok %d\n", ok)
+		metric("crowsnest_backups_free_bytes", "Free space in the shared backups folder.", "gauge")
+		fmt.Fprintf(&b, "crowsnest_backups_free_bytes %d\n", h.Free)
+	}
+
 	snap, _ := a.hostMemo.Do(r.Context(), "host", 5*time.Second, func(context.Context) hoststats.Snapshot {
 		return hoststats.Read(a.HostPaths)
 	})

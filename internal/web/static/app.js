@@ -514,6 +514,8 @@ setInterval(() => document.querySelectorAll(".game-card").forEach(renderIdleTime
 // every 30s, and straight away whenever the game list fails to load.
 function applyHealth(health) {
   document.getElementById("docker-banner").hidden = health.docker !== false;
+  const bb = document.getElementById("backups-banner");
+  if (bb) bb.hidden = health.backups !== false;
 }
 
 async function refreshHealth() {
