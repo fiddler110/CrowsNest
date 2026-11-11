@@ -286,3 +286,48 @@ func TestCheckHealthAndMonitor(t *testing.T) {
 		t.Fatalf("after recovery: healthy=%v notifications=%v", m.Healthy(), n.msgs)
 	}
 }
+
+func TestRemoveGameDir(t *testing.T) {
+	mount := t.TempDir()
+	root := &Root{Mount: mount, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state"), ConfirmNew: true}
+	if err := root.EnsureGameDir("mc"); err != nil {
+		t.Fatal(err)
+	}
+	if err := root.EnsureGameDir("keep"); err != nil {
+		t.Fatal(err)
+	}
+	outside := t.TempDir()
+	_ = os.WriteFile(filepath.Join(outside, "precious"), []byte("x"), 0o600)
+	_ = os.WriteFile(filepath.Join(mount, "mc", "a.tgz"), []byte("x"), 0o600)
+	_ = os.WriteFile(filepath.Join(mount, "keep", "b.tgz"), []byte("x"), 0o600)
+	// A game can leave a link to anywhere in its own folder; it must go as a link.
+	_ = os.Symlink(outside, filepath.Join(mount, "mc", "link"))
+	if err := root.RemoveGameDir("mc"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "mc")); !os.IsNotExist(err) {
+		t.Error("folder still there")
+	}
+	if _, err := os.Stat(filepath.Join(outside, "precious")); err != nil {
+		t.Error("followed a link out of the folder")
+	}
+	if _, err := os.Stat(filepath.Join(mount, "keep", "b.tgz")); err != nil {
+		t.Error("another game's backups were touched")
+	}
+	if err := root.RemoveGameDir("mc"); err != nil {
+		t.Errorf("a missing folder is not an error: %v", err)
+	}
+	for _, bad := range []string{"", "..", "a/b", "."} {
+		if err := root.RemoveGameDir(bad); err == nil {
+			t.Errorf("RemoveGameDir(%q) succeeded", bad)
+		}
+	}
+	// An unmounted drive (no marker any more) deletes nothing.
+	_ = os.Remove(filepath.Join(mount, ".crowsnest-backups"))
+	if err := root.RemoveGameDir("keep"); !errors.Is(err, ErrRootUnavailable) {
+		t.Errorf("unverified root: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(mount, "keep", "b.tgz")); err != nil {
+		t.Error("deleted on an unverified root")
+	}
+}

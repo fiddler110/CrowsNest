@@ -1217,8 +1217,9 @@ func TestConsole_ActionsRawToggleAndAudit(t *testing.T) {
 }
 
 type fakeManaged struct {
-	enabled []managed.Request
-	allowed []string
+	enabled  []managed.Request
+	allowed  []string
+	disabled []string
 }
 
 func (f *fakeManaged) Catalogue() []managed.ModuleInfo {
@@ -1229,9 +1230,12 @@ func (f *fakeManaged) Preview(managed.Request) (*managed.Plan, error) {
 	return &managed.Plan{Fits: true}, nil
 }
 func (f *fakeManaged) Enable(r managed.Request) error { f.enabled = append(f.enabled, r); return nil }
-func (f *fakeManaged) Disable(string) error           { return nil }
-func (f *fakeManaged) Update(managed.Request) error   { return nil }
-func (f *fakeManaged) Refresh(string) error           { return nil }
+func (f *fakeManaged) Disable(id string, o managed.DisableOptions) error {
+	f.disabled = append(f.disabled, fmt.Sprintf("%s data=%v backups=%v", id, o.Data, o.Backups))
+	return nil
+}
+func (f *fakeManaged) Update(managed.Request) error { return nil }
+func (f *fakeManaged) Refresh(string) error         { return nil }
 func (f *fakeManaged) Policy() (managed.PolicyState, error) {
 	return managed.PolicyState{Policy: managed.PolicyDoc{Names: []string{"x"}}}, nil
 }
@@ -1463,5 +1467,39 @@ func TestAudit_AdminFilteredFeed(t *testing.T) {
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
 	if code, _, _ := get(""); code != http.StatusForbidden {
 		t.Fatalf("player = %d, want 403", code)
+	}
+}
+
+// Deleting a game's data is irreversible: it needs the id typed and the password.
+func TestDisableDeletingDataAsksForIdAndPassword(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	hash, _ := auth.HashPassword("s3cret-pw")
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin, Hash: hash}}
+	h.App.Auth.Users = h.App.Auth.Sessions.Users
+	fm := &fakeManaged{}
+	h.App.Managed = fm
+	do := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("DELETE", "/api/managed/games/minecraft", []byte(body)))
+		return rec.Code
+	}
+	for name, body := range map[string]string{
+		"no id":          `{"delete_data":true,"password":"s3cret-pw"}`,
+		"wrong id":       `{"delete_data":true,"confirm_id":"other","password":"s3cret-pw"}`,
+		"no password":    `{"delete_data":true,"confirm_id":"minecraft"}`,
+		"wrong password": `{"delete_backups":true,"confirm_id":"minecraft","password":"nope-nope"}`,
+		"unknown field":  `{"delete_everything":true}`,
+	} {
+		if c := do(body); c == http.StatusNoContent || len(fm.disabled) != 0 {
+			t.Errorf("%s: %d, disabled = %v", name, c, fm.disabled)
+		}
+	}
+	if c := do(`{"delete_data":true,"delete_backups":true,"confirm_id":"minecraft","password":"s3cret-pw"}`); c != http.StatusNoContent ||
+		len(fm.disabled) != 1 || fm.disabled[0] != "minecraft data=true backups=true" {
+		t.Errorf("confirmed: %d %v", c, fm.disabled)
+	}
+	// A plain disable needs neither, and deletes nothing.
+	if c := do(""); c != http.StatusNoContent || fm.disabled[1] != "minecraft data=false backups=false" {
+		t.Errorf("plain disable: %d %v", c, fm.disabled)
 	}
 }

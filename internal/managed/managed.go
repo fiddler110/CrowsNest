@@ -71,6 +71,9 @@ type Manager struct {
 	// Busy, when set, reports a game that is mid start/stop. A start still
 	// pulling has no container yet, so Docker.Running alone would miss it.
 	Busy func(id string) bool
+	// RunHelper runs a one-shot container to completion (the data cleaner);
+	// needed only for Disable with DisableOptions.Data.
+	RunHelper func(ctx context.Context, spec dockerctl.CreateSpec) error
 
 	mu      sync.Mutex
 	ctx     context.Context
@@ -362,6 +365,9 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	var g config.GameConfig
 	if !idRe.MatchString(r.ID) {
 		return g, nil, errors.New("id must be 2-31 lowercase letters, digits or dashes, starting with a letter")
+	}
+	if strings.HasSuffix(r.ID, modules.CleanSuffix) {
+		return g, nil, fmt.Errorf("id may not end in %q: that name is the one-shot container that empties a game's data", modules.CleanSuffix)
 	}
 	if strings.HasSuffix(r.ID, modules.RestoreSuffix) {
 		return g, nil, fmt.Errorf("id may not end in %q: that name is the one-shot container that restores a backup", modules.RestoreSuffix)
@@ -1163,9 +1169,17 @@ func (m *Manager) reinstall(r Request, op reinstallOp) error {
 	return nil
 }
 
+// DisableOptions says what Disable deletes besides the game itself.
+type DisableOptions struct {
+	Data    bool // empty the game's data folders (a one-shot <id>-clean container)
+	Backups bool // delete the game's folder in the shared backups folder
+}
+
 // Disable removes a stopped game: its container, dashboard entry, scope and
-// secrets. Its data folder is left untouched.
-func (m *Manager) Disable(id string) error {
+// secrets. Its data folders and backups are kept unless o says otherwise;
+// when it does, they are deleted first, so a failure leaves the game listed
+// and the deletion can be retried.
+func (m *Manager) Disable(id string, o DisableOptions) error {
 	m.mu.Lock()
 	e := m.find(id)
 	m.mu.Unlock()
@@ -1186,9 +1200,39 @@ func (m *Manager) Disable(id string) error {
 	if running {
 		return errors.New("stop the game before disabling it")
 	}
+	if o.Backups && (m.Backups == nil || m.Platform.BackupsRoot == "") {
+		return errors.New("this panel has no shared backups folder, so there is nothing to delete there")
+	}
+	var clean dockerctl.CreateSpec
+	if o.Data {
+		var ok bool
+		m.mu.Lock()
+		if e.rendered != nil {
+			clean, ok = e.rendered.CleanSpec()
+		}
+		m.mu.Unlock()
+		if !ok || m.RunHelper == nil {
+			return errors.New("this game has no data folders the panel can empty")
+		}
+	}
+	if o.Backups {
+		if err := m.Backups.Verify(); err != nil { // refuse before anything is deleted
+			return err
+		}
+	}
+	if o.Data {
+		if err := m.RunHelper(ctx, clean); err != nil {
+			return fmt.Errorf("emptying the data folders failed (nothing else was changed): %w", err)
+		}
+	}
 	if ok, _ := m.Docker.Exists(ctx, id); ok {
 		if err := m.Docker.Remove(ctx, id); err != nil {
 			return err
+		}
+	}
+	if o.Backups {
+		if err := m.Backups.RemoveGameDir(id); err != nil {
+			return fmt.Errorf("deleting the backups failed: %w", err)
 		}
 	}
 	m.mu.Lock()

@@ -166,7 +166,9 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   - **Restore: done** for Minecraft, Valheim and Windrose (a Restore button per file; a one-shot `<id>-restore`
     container runs the module's `restore:` command while the game is stopped). Open: Palworld (confirm what its image's
     `backup` archives contain before writing a command), a restore for config-file games, and trying each command on
-    a real world; the tests use a fake engine.
+    a real world (Minecraft was tried live on the test stack 2026-11-11: backup, restore and safety backup work).
+  - **Disable and delete: done.** `DELETE /api/managed/games/{id}` takes `delete_data` / `delete_backups` (id typed +
+    password); data goes through a one-shot `<id>-clean` container, backups are removed by the panel through `os.Root`.
   - **Offsite copy.** A restic/rclone sidecar reading the same folder; CrowsNest itself should not hold the credentials.
   - **Config-file games** (hand-written compose) still back up inside their own data; they would need the bind added by hand.
   - **Backups-folder detail in the UI** (last backup per game, orphan folders): the dashboard shows a banner and

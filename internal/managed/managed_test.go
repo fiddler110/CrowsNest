@@ -3,6 +3,7 @@ package managed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"github.com/fiddler110/crowsnest/internal/backup"
 	"net"
@@ -162,7 +163,7 @@ func TestEnableAndDisable(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc, err := dockerguard.LoadScopes(string(scopes))
-	if err != nil || len(sc) != 1 {
+	if err != nil || len(sc) != 2 { // the game and its data cleaner
 		t.Fatalf("scopes.json: %v\n%s", err, scopes)
 	}
 	pol, _ := dockerguard.LoadPolicy(m.PolicyFile)
@@ -184,20 +185,20 @@ func TestEnableAndDisable(t *testing.T) {
 	}
 
 	fd.running["minecraft"] = true
-	if err := m.Disable("minecraft"); err == nil {
+	if err := m.Disable("minecraft", DisableOptions{}); err == nil {
 		t.Error("a running game was disabled")
 	}
 	fd.running["minecraft"] = false
 	// A start still pulling has no running container yet: the start/stop manager says it is busy.
 	m.Busy = func(id string) bool { return id == "minecraft" }
-	if err := m.Disable("minecraft"); err == nil || fd.have["minecraft"] == false {
+	if err := m.Disable("minecraft", DisableOptions{}); err == nil || fd.have["minecraft"] == false {
 		t.Errorf("disabled a game that is starting or stopping: err=%v", err)
 	}
 	if err := m.Update(Request{ID: "minecraft", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}}); err == nil {
 		t.Error("changed a game that is starting or stopping")
 	}
 	m.Busy = nil
-	if err := m.Disable("minecraft"); err != nil {
+	if err := m.Disable("minecraft", DisableOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := m.Registry.Get("minecraft"); ok || fd.have["minecraft"] {
@@ -1146,5 +1147,81 @@ func TestSharedBackupsFolderPerGame(t *testing.T) {
 		Secrets: map[string]string{"rcon_password": "x"}})
 	if err == nil {
 		waitState(t, m, "minecraft-3", StateFailed)
+	}
+}
+
+func TestDisableCanDeleteDataAndBackups(t *testing.T) {
+	m, fd := newManager(t)
+	root := t.TempDir()
+	pol, _ := os.ReadFile(m.PolicyFile)
+	if err := os.WriteFile(m.PolicyFile, append(pol, []byte("\nbackups_root: /mnt/usb/backups\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Platform.BackupsRoot, m.Platform.BackupsMount = "/mnt/usb/backups", root
+	m.Backups = &backup.Root{Mount: root, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state"), ConfirmNew: true}
+	var helper []dockerctl.CreateSpec
+	var helperErr error
+	m.RunHelper = func(_ context.Context, s dockerctl.CreateSpec) error { helper = append(helper, s); return helperErr }
+	enable := func(id string) {
+		t.Helper()
+		if err := m.Enable(Request{ID: id, Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}); err != nil {
+			t.Fatal(err)
+		}
+		waitState(t, m, id, StateReady)
+		_ = os.WriteFile(filepath.Join(root, id, "b.tgz"), []byte("x"), 0o600)
+	}
+	enable("minecraft")
+
+	// A failed cleaner changes nothing: the game stays, its backups stay.
+	helperErr = errors.New("find: permission denied")
+	if err := m.Disable("minecraft", DisableOptions{Data: true, Backups: true}); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Disable = %v", err)
+	}
+	if _, ok := m.Registry.Get("minecraft"); !ok || !fd.have["minecraft"] {
+		t.Error("a failed data deletion removed the game")
+	}
+	if _, err := os.Stat(filepath.Join(root, "minecraft", "b.tgz")); err != nil {
+		t.Error("backups were deleted although the data deletion failed")
+	}
+
+	// Data only: the helper runs with the data folder alone, backups stay.
+	helperErr, helper = nil, nil
+	if err := m.Disable("minecraft", DisableOptions{Data: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(helper) != 1 || helper[0].Name != "minecraft-clean" || len(helper[0].Binds) != 1 || !strings.HasSuffix(helper[0].Binds[0], ":/data") {
+		t.Fatalf("helper = %+v", helper)
+	}
+	if _, err := os.Stat(filepath.Join(root, "minecraft", "b.tgz")); err != nil {
+		t.Error("backups were deleted although only data was asked for")
+	}
+
+	// Backups only: no helper, the folder is gone.
+	enable("minecraft")
+	helper = nil
+	if err := m.Disable("minecraft", DisableOptions{Backups: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(helper) != 0 {
+		t.Error("the data cleaner ran for a backups-only deletion")
+	}
+	if _, err := os.Stat(filepath.Join(root, "minecraft")); !os.IsNotExist(err) {
+		t.Errorf("backup folder left behind: %v", err)
+	}
+
+	// An unverifiable backups folder refuses before anything else is touched.
+	enable("minecraft")
+	os.Remove(filepath.Join(root, ".crowsnest-backups"))
+	helper = nil
+	if err := m.Disable("minecraft", DisableOptions{Data: true, Backups: true}); err == nil || len(helper) != 0 {
+		t.Errorf("Disable = %v, helper runs = %d", err, len(helper))
+	}
+}
+
+func TestIdMayNotEndInClean(t *testing.T) {
+	m, _ := newManager(t)
+	err := m.Enable(Request{ID: "minecraft-clean", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}})
+	if err == nil || !strings.Contains(err.Error(), "-clean") {
+		t.Fatalf("Enable = %v", err)
 	}
 }

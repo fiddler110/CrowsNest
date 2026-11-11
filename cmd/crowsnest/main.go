@@ -329,6 +329,9 @@ func serve() error {
 		if err := mgr.Restore(ctx); err != nil {
 			return fmt.Errorf("managed games: %w", err)
 		}
+		mgr.RunHelper = func(ctx context.Context, spec dockerctl.CreateSpec) error {
+			return docker.RunOnce(ctx, spec, 10*time.Minute, time.Second)
+		}
 		app.Managed = mgr
 		managedMgr = mgr
 		log.Printf("managed games: enabled from the dashboard, state in %s, policy %s", cfg.Managed.Dir, cfg.Managed.PolicyFile)

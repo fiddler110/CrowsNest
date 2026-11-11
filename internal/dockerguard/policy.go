@@ -419,9 +419,15 @@ func NestedBinds(a, b string) error {
 // the name of the game it belongs to.
 const RestoreSuffix = "-restore"
 
+// CleanSuffix marks a game's one-shot container that empties its data
+// folders, <game>-clean; admitted by the game's own name like a restore.
+const CleanSuffix = "-clean"
+
 func restoreBase(name string) string {
-	if b, ok := strings.CutSuffix(name, RestoreSuffix); ok && b != "" {
-		return b
+	for _, suf := range []string{RestoreSuffix, CleanSuffix} {
+		if b, ok := strings.CutSuffix(name, suf); ok && b != "" {
+			return b
+		}
 	}
 	return name
 }

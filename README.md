@@ -288,6 +288,26 @@ and the panel lists and prunes it directly, with no `docker exec` for either. Ad
 (the same path, separate from `games_root`) so the guard allows the bind. In the quickstart it is three commented
 lines: the volume in `compose.yaml`, `backups_root` in `config.yaml`, and `backups_root` in `policy/policy.yaml`.
 
+### Disabling a game and deleting its data
+
+**Games, Disable** removes the container and takes the game off the dashboard; its data folders and backups stay,
+so it can be enabled again. **Disable and delete…** (admin only, the game must be stopped) can also delete:
+
+- **its data folders:** the world, configs and everything else the game saved. The panel never gets write access to
+  game folders for this. It runs a one-shot `<game id>-clean` container from the game's own pinned image, with only
+  that game's data folders mounted, running one fixed command (`find <folder> -mindepth 1 -delete` on each) and then
+  removed. The empty folder itself stays, because the panel cannot remove a folder it has no access to.
+- **its backups:** the game's `<backups_root>/<id>` folder, removed by the panel itself, and only after the backups
+  folder passes the same drive check as a backup does (an unmounted drive deletes nothing).
+
+The two are separate ticks, both off by default. Deleting needs the game's id typed out and your password, like
+widening the guard, and is recorded in the activity log. Delete the data without the backups and you can still bring
+the world back with Restore after enabling the game again. If emptying the folders fails, nothing else is changed and
+the game stays listed. Each game now uses up to three guard scopes (the game, its restore helper and its clean
+helper), which count towards `max_scopes` in `policy.yaml`.
+
+Only dashboard-enabled games can do this; a game set up by hand in `config.yaml` has to be cleaned up by hand.
+
 ### Restoring a backup
 
 On a dashboard-enabled game whose module has a `restore:` command (Minecraft, Valheim and Windrose today; not
@@ -364,8 +384,8 @@ The result is in the activity log (kind `restore`) and in Discord. Things to wat
   servers (`palworld`, `palworld-2`, `palworld-friends`) keep three separate sets, and one game cannot read or
   overwrite another's. The folder is named after the game's **id**, which cannot be changed later: renaming means
   moving the folder yourself.
-- **Disabling a game never deletes its backups.** The folder stays in `backups_root`. Delete it by hand when you
-  are sure.
+- **Disabling a game keeps its backups unless you say otherwise.** The folder stays in `backups_root`. To remove
+  it with the game, use **Disable and delete…** (below), or delete it by hand when you are sure.
 - **`backups_root` and `games_root` must be separate** folders, neither inside the other (the policy refuses
   otherwise), and `backups_root` must be the same host path in `config.yaml`, `policy.yaml` and the compose volume.
 - **Retention counts files.** `keep: N` keeps the N newest files in a game's folder, so a backup that writes two

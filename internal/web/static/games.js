@@ -129,7 +129,7 @@ function renderFleet(configured) {
       const ok = await confirmAction({
         eyebrow: "// decommission",
         title: `Disable ${name}?`,
-        message: "The container is removed and the game leaves the dashboard. Its data folder is kept, so it can be enabled again later.",
+        message: "The container is removed and the game leaves the dashboard. Its data folders and backups are kept, so it can be enabled again later. To delete them too, use "Disable and delete…".",
         confirmLabel: "Disable",
         danger: true,
       });
@@ -140,8 +140,14 @@ function renderFleet(configured) {
       toast(`${name} disabled.`, "ok");
       await loadGames();
     });
-    row.append(edit, upd, back, del);
-    c.append(row);
+    const wipe = el("button", "btn btn-danger", "Disable and delete…");
+    wipe.type = "button"; wipe.disabled = busy;
+    const form = el("div", "wipe-form");
+    form.hidden = true;
+    wipe.addEventListener("click", () => { form.hidden = !form.hidden; });
+    buildWipeForm(form, g, wipe);
+    row.append(edit, upd, back, del, wipe);
+    c.append(row, form);
     root.append(c);
   });
   configured.forEach((g) => {
@@ -562,3 +568,48 @@ function selectFromHash() {
   if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 window.addEventListener("hashchange", selectFromHash);
+
+// buildWipeForm fills the inline "Disable and delete" form of one game: two
+// separate ticks (data folders, backups), the game's id typed out, and the
+// admin's password. Nothing is deleted without all of them.
+function buildWipeForm(form, g, toggle) {
+  const name = g.display_name || g.id;
+  const tick = (label) => {
+    const l = el("label", "wipe-tick");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    l.append(cb, document.createTextNode(" " + label));
+    return [l, cb];
+  };
+  const [dataL, dataCB] = tick("Delete its data folders (the world, configs and everything else the game saved)");
+  const [bakL, bakCB] = tick("Delete its backups too (without them a deleted world cannot be restored)");
+  const id = document.createElement("input");
+  id.type = "text"; id.placeholder = `Type ${g.id} to confirm`; id.autocomplete = "off";
+  const pw = document.createElement("input");
+  pw.type = "password"; pw.placeholder = "Your password"; pw.autocomplete = "current-password";
+  const go = el("button", "btn btn-danger", "Disable and delete");
+  go.type = "button";
+  const no = el("button", "btn btn-ghost", "Cancel");
+  no.type = "button";
+  const err = el("p", "settings-error");
+  err.hidden = true;
+  no.addEventListener("click", () => { form.hidden = true; });
+  go.addEventListener("click", async () => {
+    err.hidden = true;
+    if (!dataCB.checked && !bakCB.checked) { err.textContent = "Tick what to delete, or use plain Disable."; err.hidden = false; return; }
+    go.disabled = true;
+    const res = await callAPI(`/api/managed/games/${encodeURIComponent(g.id)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ delete_data: dataCB.checked, delete_backups: bakCB.checked, confirm_id: id.value.trim(), password: pw.value }),
+    });
+    go.disabled = false;
+    pw.value = "";
+    if (!res.ok) { err.textContent = await errorText(res, "Disable"); err.hidden = false; return; }
+    toast(`${name} disabled and its data deleted.`, "ok");
+    await loadGames();
+  });
+  form.append(
+    el("p", "allow-note", "The game must be stopped. This cannot be undone."),
+    dataL, bakL, id, pw, go, no, err);
+  toggle.setAttribute("aria-expanded", "false");
+}

@@ -102,7 +102,7 @@ func TestRenderedFilesAreValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	scopes, err := dockerguard.LoadScopes(strings.ReplaceAll(string(js), "${USERDIR}", "/srv/games"))
-	if err != nil || len(scopes) != 2 {
+	if err != nil || len(scopes) != 4 { // each game and its data cleaner
 		t.Fatalf("guard rejected the scopes: %v\n%s", err, js)
 	}
 	cf, err := ComposeFile(rs, "")
@@ -351,5 +351,36 @@ func TestRenderRestoreContainer(t *testing.T) {
 	r3, _ := pal.Render(config.GameConfig{ID: "pal", ContainerName: "pal"}, p)
 	if _, ok := r3.RestoreSpec("x.tgz"); ok || r3.RestoreScope != nil {
 		t.Error("palworld has no verified restore command")
+	}
+}
+
+func TestRenderCleanContainer(t *testing.T) {
+	p := Platform{GamesRoot: "/srv/games", BackupsRoot: "/mnt/usb/backups", HostIP: "10.0.0.2"}
+	m, _ := Bundled().Manifest("minecraft")
+	r, err := m.Render(config.GameConfig{ID: "mc-2", ContainerName: "mc-2", Options: map[string]string{"data_dir": "mc-2"}}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := r.CleanScope
+	if cs == nil || cs.Name != "mc-2-clean" || cs.Exec || len(cs.Ports) != 0 || !reflect.DeepEqual(cs.Images, r.Scope.Images) {
+		t.Fatalf("clean scope = %+v", cs)
+	}
+	// Only the data folder: never the backups folder.
+	if !reflect.DeepEqual(cs.Binds, []string{"/srv/games/mc-2"}) {
+		t.Errorf("clean scope binds = %v", cs.Binds)
+	}
+	spec, ok := r.CleanSpec()
+	if !ok || spec.Name != "mc-2-clean" || !spec.NoRestart || len(spec.Ports) != 0 || spec.Image != r.Service.Image {
+		t.Fatalf("spec = %+v, %v", spec, ok)
+	}
+	if !reflect.DeepEqual(spec.Binds, []string{"/srv/games/mc-2:/data"}) {
+		t.Errorf("binds = %v", spec.Binds)
+	}
+	want := []string{"/bin/sh", "-c", cleanScript, "sh", "/data"}
+	if !reflect.DeepEqual(spec.Entrypoint, want) {
+		t.Errorf("entrypoint = %v, want %v", spec.Entrypoint, want)
+	}
+	if b, _ := ScopesJSON([]*Rendered{r}); !strings.Contains(string(b), `"mc-2-clean"`) {
+		t.Errorf("scopes JSON has no clean scope: %s", b)
 	}
 }

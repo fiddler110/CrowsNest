@@ -149,3 +149,25 @@ func pruneLocal(dir string, keep int) (int, error) {
 	}
 	return removed, nil
 }
+
+// RemoveGameDir deletes <mount>/<id> and everything in it, after checking the
+// root is the right drive (an unmounted drive must never look like a success).
+// It goes through os.Root, so a link a game left in its folder is removed as a
+// link, never followed. A folder that is already gone is not an error.
+func (r *Root) RemoveGameDir(id string) error {
+	if id == "" || id != filepath.Base(id) || id == "." || id == ".." {
+		return fmt.Errorf("backup: %q is not a game id", id)
+	}
+	if err := r.Verify(); err != nil {
+		return err
+	}
+	root, err := os.OpenRoot(r.Mount)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if err := root.RemoveAll(id); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	return nil
+}

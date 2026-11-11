@@ -318,7 +318,7 @@ func TestPinnedCreateThroughRealGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := dockerguard.Sources{ManagedFile: scopesFile, PolicyFile: m.PolicyFile}.Load()
-	if err != nil || res.Managed != 1 {
+	if err != nil || res.Managed != 2 { // the game and its data cleaner
 		t.Fatalf("load: %+v %v", res, err)
 	}
 	guard := dockerguard.New(sock, res.Scopes)

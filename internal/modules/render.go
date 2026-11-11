@@ -186,6 +186,9 @@ type Rendered struct {
 	// RestoreScope is the guard scope of the game's one-shot restore container
 	// (<id>-restore), or nil when the module has no restore command.
 	RestoreScope *GuardScope
+	// CleanScope is the guard scope of the one-shot container that empties
+	// the game's data folders (<id>-clean), or nil when it has none.
+	CleanScope *GuardScope
 	// EnvVars are the .env variables the service reads, name -> default
 	// ("" for secrets and unset values), in a stable order.
 	EnvVars []EnvVar
@@ -195,6 +198,7 @@ type Rendered struct {
 	binds     []string
 	backupDir string // the container path the game's backup folder is mounted at ("" = none)
 	restore   []string
+	dataBinds []string // host:container for the data folders only
 	nets      []NetEndpoint
 	secopts   []string
 	memory    string
@@ -341,6 +345,9 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		r.binds = append(r.binds, scopeHost+":"+d.Path)
 	}
 
+	r.dataBinds = append([]string{}, r.binds...)
+	dataScope := append([]string{}, scope.Binds...)
+
 	// Each game's backups go to their own folder, named after its id, so
 	// several servers of one game never share (or overwrite) a set.
 	if m.Backup != nil && m.Backup.Dir != "" && p.BackupsRoot != "" {
@@ -406,7 +413,42 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		}
 		r.RestoreScope = &rs
 	}
+	if len(r.dataBinds) > 0 {
+		cs := GuardScope{
+			Name: g.ID + CleanSuffix, Images: scope.Images, Networks: scope.Networks,
+			Ports: []GuardPort{}, Binds: dataScope, Labels: scope.Labels,
+		}
+		r.CleanScope = &cs
+	}
 	return r, nil
+}
+
+// CleanSuffix names a game's one-shot container that empties its data
+// folders: <id>-clean. Its guard scope has the game's image and data folders
+// (never the backups folder), nothing else.
+const CleanSuffix = "-clean"
+
+// cleanScript empties each folder named in its arguments, keeping the folder
+// itself (it may be a mount point).
+const cleanScript = `set -e; for d in "$@"; do find "$d" -mindepth 1 -delete; done`
+
+// CleanSpec is the one-shot container that deletes everything inside the
+// game's data folders: its own image, only the data folders mounted, a fixed
+// command (not the module's). It is never published and never restarts.
+// ok is false when the game has no data folders.
+func (r *Rendered) CleanSpec() (dockerctl.CreateSpec, bool) {
+	if r.CleanScope == nil || len(r.dataBinds) == 0 {
+		return dockerctl.CreateSpec{}, false
+	}
+	argv := []string{"/bin/sh", "-c", cleanScript, "sh"}
+	for _, b := range r.dataBinds {
+		i := strings.LastIndex(b, ":")
+		argv = append(argv, b[i+1:])
+	}
+	return dockerctl.CreateSpec{
+		Name: r.CleanScope.Name, Image: r.Service.Image, Labels: r.Service.Labels,
+		Network: r.nets[0].Name, Binds: r.dataBinds, Entrypoint: argv, NoRestart: true,
+	}, true
 }
 
 // RestoreSuffix names a game's one-shot restore container: <id>-restore. Its
@@ -524,6 +566,9 @@ func ScopesJSON(rs []*Rendered) ([]byte, error) {
 		scopes = append(scopes, r.Scope)
 		if r.RestoreScope != nil {
 			scopes = append(scopes, *r.RestoreScope)
+		}
+		if r.CleanScope != nil {
+			scopes = append(scopes, *r.CleanScope)
 		}
 	}
 	return json.MarshalIndent(scopes, "", "  ")

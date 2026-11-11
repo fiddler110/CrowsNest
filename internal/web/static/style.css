@@ -648,3 +648,8 @@ a.btn { text-decoration: none; }
 .audit-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.85rem; }
 .audit-table th, .audit-table td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border-strong); vertical-align: top; }
 .audit-table td:last-child { overflow-wrap: anywhere; }
+
+.wipe-form { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.6rem; padding: 0.7rem; border: 1px solid var(--border); border-radius: 8px; }
+.wipe-form[hidden] { display: none; }
+.wipe-tick { display: flex; align-items: flex-start; gap: 0.4rem; font-size: 0.85rem; }
+.wipe-form input[type="text"], .wipe-form input[type="password"] { max-width: 22rem; }
