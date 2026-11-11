@@ -169,6 +169,7 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
     a real world (Minecraft was tried live on the test stack 2026-11-11: backup, restore and safety backup work).
   - **Disable and delete: done.** `DELETE /api/managed/games/{id}` takes `delete_data` / `delete_backups` (id typed +
     password); data goes through a one-shot `<id>-clean` container, backups are removed by the panel through `os.Root`.
+    Empty `games/<id>` folders left behind are swept from the host by `quickstart/sweep-empty-games.sh` (+ systemd timer).
   - **Offsite copy.** A restic/rclone sidecar reading the same folder; CrowsNest itself should not hold the credentials.
   - **Config-file games** (hand-written compose) still back up inside their own data; they would need the bind added by hand.
   - **Backups-folder detail in the UI** (last backup per game, orphan folders): the dashboard shows a banner and

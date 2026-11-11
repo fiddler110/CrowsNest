@@ -308,6 +308,28 @@ helper), which count towards `max_scopes` in `policy.yaml` (default 64, so about
 
 Only dashboard-enabled games can do this; a game set up by hand in `config.yaml` has to be cleaned up by hand.
 
+### Cleaning up empty game folders
+
+"Disable and delete…" leaves the game's own folder behind, empty, and the panel cannot remove it (it has no access
+to `games_root` itself, on purpose). `quickstart/sweep-empty-games.sh` does that from the host:
+
+```
+quickstart/sweep-empty-games.sh -n /srv/games      # dry run: lists what it would remove
+quickstart/sweep-empty-games.sh /srv/games         # removes them
+```
+
+It runs `rmdir` on folders directly under `games_root` that are empty, so it cannot delete anything with a file in
+it, and it never follows links. It skips folders changed in the last hour (`-a MINUTES`), and any folder a Docker
+container mounts, so a game that is set up but has not run yet keeps its folder. If Docker cannot be asked, it
+removes nothing. To run it daily, edit the paths and user in `quickstart/crowsnest-sweep.service`, then:
+
+```
+sudo cp quickstart/crowsnest-sweep.{service,timer} /etc/systemd/system/
+sudo systemctl enable --now crowsnest-sweep.timer
+```
+
+This stays outside the panel on purpose: giving it write access to `games_root` would let it change every game's world.
+
 ### Restoring a backup
 
 On a dashboard-enabled game whose module has a `restore:` command (Minecraft, Valheim and Windrose today; not
