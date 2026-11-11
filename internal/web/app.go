@@ -57,6 +57,11 @@ type App struct {
 	Backups *backup.Manager
 	// Managed backs the Games API (enable games from the dashboard). Optional.
 	Managed ManagedGames
+	// MetricsToken, when set, serves GET /metrics (Prometheus) to a scraper
+	// presenting it as a bearer token. Empty leaves the route out.
+	MetricsToken string
+	// Crashes adds crash counts to /metrics. Optional.
+	Crashes CrashStats
 	// HostPaths are the mounted paths whose free space /api/host reports.
 	HostPaths []string
 	Templates *Templates
@@ -164,6 +169,9 @@ const maxSwitchBodyBytes = 4096
 // Routes registers the dashboard, login/logout, and game-control API on
 // mux.
 func (a *App) Routes(mux *http.ServeMux) {
+	if a.MetricsToken != "" {
+		mux.HandleFunc("GET /metrics", a.handleMetrics)
+	}
 	mux.HandleFunc("GET /setup", a.handleSetupPage)
 	mux.HandleFunc("POST /setup", a.handleSetup)
 	mux.HandleFunc("GET /login", a.handleLoginPage)

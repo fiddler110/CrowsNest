@@ -25,6 +25,7 @@ type fakeEngine struct {
 	stats   []string // successive stats bodies (last repeats)
 	logBody []byte
 	noVer   bool
+	inspect string // overrides the /json body
 }
 
 func (f *fakeEngine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -50,6 +51,8 @@ func (f *fakeEngine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case strings.HasPrefix(p, "/containers/ghost/"):
 		w.WriteHeader(404)
 		fmt.Fprint(w, `{"message":"No such container: ghost"}`)
+	case strings.HasSuffix(p, "/json") && f.inspect != "":
+		fmt.Fprint(w, f.inspect)
 	case strings.HasSuffix(p, "/json"):
 		fmt.Fprintf(w, `{"Id":"abc","State":{"Running":%v,"StartedAt":"2026-01-02T03:04:05.123456789Z","FinishedAt":"0001-01-01T00:00:00Z"},"Config":{"Tty":%v}}`, f.running, f.tty)
 	case strings.HasSuffix(p, "/logs"):

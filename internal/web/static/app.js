@@ -772,6 +772,8 @@ window.addEventListener("beforeunload", () => {
       case "stop_failed": return [`${game} failed to stop${note}`, true];
       case "join": return [`${who} joined ${game}`, false];
       case "leave": return [`${who} left ${game}`, false];
+      case "crash": return [`${game} crashed (${e.detail})`, true];
+      case "crash_loop": return [`${game} is crash-looping (${e.detail})`, true];
       case "settings": return [`${who} changed settings${note}`, false];
       case "users": return [`${who} ${e.detail || "changed users"}`, false];
       case "backup": return [`${who} backed up ${game}${note}`, false];

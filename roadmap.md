@@ -166,8 +166,11 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   image. (done: Roll back on the Games page recreates a dashboard game on its
   previous digest, and Update image says whether anything changed. Not built:
   an "update available" check that asks the registry without pulling.)
-- [ ] **Crash-loop detection** with a Discord/ntfy alert; **Prometheus
-  `/metrics`**.
+- [x] **Crash-loop detection and Prometheus `/metrics` (done 2026-11-11).** `internal/crashwatch` reads each
+  container's last exit; non-zero exits other than a stop (0, 143, and 137 unless OOM-killed) are crashes,
+  and `crash_loop.crashes` within `window_minutes` raises one alert (activity log + Discord). `GET /metrics`
+  (bearer token from `server.metrics_token_env`) exposes game up/players/crashes and host memory, load and disk.
+  ntfy is not wired (Discord only). Untested against a real crashing container.
 - [ ] **Mod and config file editing**, files declared in the manifest.
 
 ### C. Verify and harden (against real servers)

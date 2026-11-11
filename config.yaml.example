@@ -9,6 +9,8 @@ server:
   addr: ":5000"
   session_secret_file: /app/.session_secret   # generated on first run if absent
   tz: "America/New_York"                      # IANA name; used by night_shutdown and logs
+  # metrics_token_env: CROWSNEST_METRICS_TOKEN   # names an env var; when it is set, GET /metrics serves
+  #                                               # Prometheus metrics to `Authorization: Bearer <token>`
   # trusted_proxies: ["10.0.0.0/8"]           # CIDRs allowed to set X-Forwarded-For
   # docker_host: tcp://dockerproxy:2375       # route docker/compose calls through a
                                                # docker-socket-proxy instead of the raw
@@ -49,6 +51,13 @@ night_shutdown:                # off by default — a preset curfew is a stronge
 notifications:                 # Discord webhook, posted on both idle and night auto-stop
   discord_webhook_url_env: DISCORD_WEBHOOK_URL   # names an env var; unset/empty = disabled
   # player_events: false          # join/leave messages are on whenever a webhook is set
+
+# A game that crashes (non-zero exit, not a normal stop) this many times inside the window is
+# reported once: an entry in the activity log and, with a webhook above, a Discord message.
+# crash_loop:
+#   enabled: true
+#   crashes: 3
+#   window_minutes: 15
 
 users_file: /app/users.env     # <NAME>_PASSWORD_HASH entries; managed by `crowsnest set-password`
 

@@ -144,6 +144,21 @@ games:
 	}
 }
 
+func TestLoad_CrashLoopDefaultsAndValidation(t *testing.T) {
+	base := "users_file: /u\ngames:\n  - {id: a, display_name: A, container_name: a, compose_file: /c.yaml, compose_profile: a, compose_service: a}\n"
+	cfg, err := Load(writeConfig(t, base))
+	if err != nil || cfg.CrashLoop.Crashes != 3 || cfg.CrashLoop.WindowMinutes != 15 || cfg.CrashLoop.Enabled != nil {
+		t.Fatalf("defaults = %+v, %v", cfg.CrashLoop, err)
+	}
+	cfg, err = Load(writeConfig(t, base+"crash_loop: {crashes: 5, window_minutes: 30, enabled: false}\n"))
+	if err != nil || cfg.CrashLoop.Crashes != 5 || cfg.CrashLoop.WindowMinutes != 30 || *cfg.CrashLoop.Enabled {
+		t.Fatalf("explicit = %+v, %v", cfg.CrashLoop, err)
+	}
+	if _, err := Load(writeConfig(t, base+"crash_loop: {crashes: -1}\n")); err == nil {
+		t.Fatal("accepted crashes: -1")
+	}
+}
+
 func TestLoad_NightShutdownAndNotifications(t *testing.T) {
 	path := writeConfig(t, `
 users_file: /app/users.env

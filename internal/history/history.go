@@ -36,6 +36,8 @@ const (
 	KindGames       = "games"
 	KindBackup      = "backup"
 	KindConsole     = "console"
+	KindCrash       = "crash"
+	KindCrashLoop   = "crash_loop"
 )
 
 // Event is one line of the log.

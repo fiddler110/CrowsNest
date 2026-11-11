@@ -21,6 +21,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/auth"
 	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/config"
+	"github.com/fiddler110/crowsnest/internal/crashwatch"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/exclusivity"
 	"github.com/fiddler110/crowsnest/internal/games"
@@ -277,20 +278,28 @@ func serve() error {
 	exclusivityMgr.OnChange = func(id string) { hub.Poke(id); hub.Signal() }
 	go hub.Run(ctx)
 
+	var metricsToken string
+	if env := cfg.Server.MetricsTokenEnv; env != "" {
+		if metricsToken = os.Getenv(env); metricsToken == "" {
+			log.Printf("warning: server.metrics_token_env names %s, which is not set: /metrics stays off", env)
+		}
+	}
+
 	app := &web.App{
-		Hub:         hub,
-		Registry:    registry,
-		Docker:      docker,
-		Exclusivity: exclusivityMgr,
-		Auth:        authSvc,
-		Setup:       setup,
-		Google:      google,
-		Settings:    settingsStore,
-		TimeZone:    cfg.Server.TZ,
-		History:     activity,
-		HostPaths:   cfg.Server.HostDiskPaths,
-		Backups:     backups,
-		Templates:   templates,
+		MetricsToken: metricsToken,
+		Hub:          hub,
+		Registry:     registry,
+		Docker:       docker,
+		Exclusivity:  exclusivityMgr,
+		Auth:         authSvc,
+		Setup:        setup,
+		Google:       google,
+		Settings:     settingsStore,
+		TimeZone:     cfg.Server.TZ,
+		History:      activity,
+		HostPaths:    cfg.Server.HostDiskPaths,
+		Backups:      backups,
+		Templates:    templates,
 	}
 
 	if cfg.Managed.Dir != "" {
@@ -324,6 +333,16 @@ func serve() error {
 	// own messages.
 	exclusivityMgr.Notifier = discordNotifier
 	backups.Notifier = discordNotifier
+
+	crashes := crashwatch.New(registry, docker)
+	crashes.Crashes = cfg.CrashLoop.Crashes
+	crashes.Window = time.Duration(cfg.CrashLoop.WindowMinutes) * time.Minute
+	crashes.History = activity
+	crashes.Notifier = discordNotifier
+	app.Crashes = crashes
+	if cfg.CrashLoop.Enabled == nil || *cfg.CrashLoop.Enabled {
+		go crashes.Run(ctx)
+	}
 
 	// Both auto-stop loops always run and re-read the settings store each
 	// tick, so toggling or retuning them from the dashboard applies at once.

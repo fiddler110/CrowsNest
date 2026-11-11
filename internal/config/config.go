@@ -40,6 +40,7 @@ type Config struct {
 	IdleShutdown  *IdleShutdownConfig  `yaml:"idle_shutdown"`
 	NightShutdown *NightShutdownConfig `yaml:"night_shutdown"`
 	Notifications *NotificationsConfig `yaml:"notifications"`
+	CrashLoop     *CrashLoopConfig     `yaml:"crash_loop"`
 	Auth          AuthConfig           `yaml:"auth"`
 	UsersFile     string               `yaml:"users_file"`
 	// ModulesDir is an optional directory of <id>/module.yaml game modules
@@ -121,6 +122,12 @@ type ServerConfig struct {
 	// from that header when the request's RemoteAddr is in this list.
 	// Empty (the default) means never trust it.
 	TrustedProxies []string `yaml:"trusted_proxies"`
+
+	// MetricsTokenEnv names an environment variable holding a bearer token.
+	// When that variable is set, GET /metrics serves Prometheus metrics to a
+	// scraper sending `Authorization: Bearer <token>`. Empty (the default), or
+	// an unset variable, leaves /metrics off.
+	MetricsTokenEnv string `yaml:"metrics_token_env"`
 
 	// DockerHost, when set, points every docker/docker-compose CLI call at
 	// this daemon instead of the local /var/run/docker.sock — e.g.
@@ -228,6 +235,15 @@ type NightShutdownConfig struct {
 	// MinUptimeMinutes protects a game started inside the window: it is not
 	// stopped until it has been up this long. Defaults to 30.
 	MinUptimeMinutes int `yaml:"min_uptime_minutes"`
+}
+
+// CrashLoopConfig tunes crash-loop alerts: a game that crashes Crashes times
+// within WindowMinutes is reported once (activity log, and Discord when a
+// webhook is set) until it has gone a full window without reaching that again.
+type CrashLoopConfig struct {
+	Enabled       *bool `yaml:"enabled"` // default true
+	Crashes       int   `yaml:"crashes"`
+	WindowMinutes int   `yaml:"window_minutes"`
 }
 
 // NotificationsConfig holds outbound-notification settings shared by
@@ -487,6 +503,15 @@ func (c *Config) applyDefaults() {
 	if c.Notifications == nil {
 		c.Notifications = &NotificationsConfig{}
 	}
+	if c.CrashLoop == nil {
+		c.CrashLoop = &CrashLoopConfig{}
+	}
+	if c.CrashLoop.Crashes == 0 {
+		c.CrashLoop.Crashes = 3
+	}
+	if c.CrashLoop.WindowMinutes == 0 {
+		c.CrashLoop.WindowMinutes = 15
+	}
 
 	if g := c.Auth.Google; g != nil {
 		if g.ClientIDEnv == "" {
@@ -566,6 +591,9 @@ func (c *Config) validate() error {
 	}
 	if c.Server.MaxActiveGames < 1 {
 		return fmt.Errorf("max active games (%d): must be >= 1", c.Server.MaxActiveGames)
+	}
+	if c.CrashLoop.Crashes < 1 || c.CrashLoop.WindowMinutes < 1 {
+		return fmt.Errorf("crash_loop: crashes (%d) and window_minutes (%d) must be at least 1", c.CrashLoop.Crashes, c.CrashLoop.WindowMinutes)
 	}
 	if _, err := c.Server.Location(); err != nil {
 		return fmt.Errorf("server.tz (%s): %w", c.Server.TZ, err)

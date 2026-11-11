@@ -236,6 +236,20 @@ spent in each game. That comes from join and leave events, so it only covers gam
 read. Entries older than `server.history_retention_days` (default 180) are pruned. Keep the file on the same
 persistent mount as the settings file.
 
+Settings has an **Audit log** pane (admins) that filters the same log by game, kind, user, text and date.
+
+**Crash loops.** Every 30 seconds CrowsNest reads each game container's last exit from Docker. A run that ended with
+an exit code other than 0 or 143 (a normal stop) counts as a crash; 137 counts only when Docker says the kernel
+killed it for memory, because `docker stop` produces 137 too when a game outlasts its grace period. Each crash is
+logged. A game that crashes `crash_loop.crashes` times (default 3) within `crash_loop.window_minutes` (default 15) is
+reported once as a crash loop, in the log and in Discord when a webhook is set, and again only after it has gone a
+full window below the threshold. Crashes from before CrowsNest started are not counted.
+
+**Metrics.** Set `server.metrics_token_env` to the name of an environment variable holding a token, and
+`GET /metrics` serves Prometheus metrics (game up/players/crashes/crash-looping, host memory, load and disk) to a
+scraper sending `Authorization: Bearer <token>`. With no token the route does not exist. It is outside the login
+session, so if the panel is reachable from the internet, treat the token like a password.
+
 A strip under the fleet banner shows host memory, load and free disk space for the paths in
 `server.host_disk_paths`, and turns red when a disk is under 10% free or memory is nearly full. Mount the disk your
 game data and images live on (read-only is fine) and list its path to watch it.
@@ -260,6 +274,10 @@ dashboard).
 With `before_stop: true` CrowsNest also takes a backup each time it stops that game on purpose, after the world is
 saved, so an "update on start" pull always has a fresh backup behind it. A failed backup is logged and never stops
 the game from stopping.
+
+With `keep: N` (and `list_dir`) CrowsNest deletes all but the newest N files in `list_dir` after each successful
+backup, using one more exec command the guard allows. It counts files, and the container needs `sh`, GNU `find`,
+`sort`, `tail` and `cut`.
 
 ### Admin console
 
@@ -367,6 +385,8 @@ CSRF token. The dashboard itself uses `GET /api/events`, one stream of state cha
 | `POST` | `/api/games/{id}/switch` | Stop whichever game is running, then start this one |
 | `POST` | `/api/games/{id}/stop` | Stop the game (accepted, runs in the background; status shows `stopping`) |
 | `GET` | `/api/activity` | Recent activity and playtime per player (`?limit=`, `?game=`) |
+| `GET` | `/api/audit` | The full activity log, filtered and paged (**admin only**; `?game=`, `?kind=`, `?actor=`, `?q=`, `?since=`, `?until=`, `?offset=`, `?limit=`) |
+| `GET` | `/metrics` | Prometheus metrics, only when `server.metrics_token_env` is set; bearer token, no session |
 | `GET` | `/api/host` | Host memory, load and disk space |
 | `GET` | `/api/health` | Whether CrowsNest can reach Docker |
 | `GET` | `/api/games/{id}/logs` | SSE stream of `docker logs -f` (**admin only**) |
