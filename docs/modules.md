@@ -74,7 +74,11 @@ Bots are never counted. Without `rcon_addr` the game still starts and stops, but
 See the step-by-step [guide to writing a module](writing-modules.md), and check yours with
 `crowsnest module check <dir> --log <captured log>`.
 
-A module may also carry a `backup:` block (`exec`, `list_dir`, `before_stop`, same meaning as the config.yaml block).
+A module may also carry a `backup:` block (`exec`, `list_dir`, `before_stop`, `keep`, same meaning as the config.yaml block).
+`keep: N` (needs `list_dir`) makes CrowsNest delete all but the newest N files in `list_dir` after each successful
+backup, with one more fixed `docker exec` (`sh`, GNU `find`, `sort`, `tail`, `cut` in the image; `rm -f` on direct
+children only). It counts files, so a backup that writes two files per run keeps N/2 runs. A failed prune is logged
+and shown in the activity log and never fails the backup.
 It applies to games enabled from the dashboard only; games in `config.yaml` keep their own.
 
 An optional `accent: "#rrggbb"` sets the colour of the game's dashboard card. Without one the card uses the

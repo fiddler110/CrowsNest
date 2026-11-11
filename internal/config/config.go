@@ -347,6 +347,22 @@ type BackupConfig struct {
 	// (manual, switch, idle or night), after the world is saved, so a fresh
 	// backup always exists before an update-on-start pull.
 	BeforeStop bool `yaml:"before_stop"`
+	// Keep, when above zero, deletes all but the newest Keep files in ListDir
+	// after each successful backup (it counts files, so a backup that writes
+	// two files per run keeps Keep/2 runs). Needs list_dir; the container needs
+	// sh, GNU find, sort, tail and cut.
+	Keep int `yaml:"keep"`
+}
+
+// CheckKeep rejects a retention count that can't work.
+func (b *BackupConfig) CheckKeep() error {
+	if b.Keep < 0 {
+		return fmt.Errorf("keep (%d): must not be negative", b.Keep)
+	}
+	if b.Keep > 0 && b.ListDir == "" {
+		return fmt.Errorf("keep needs list_dir (the directory to prune)")
+	}
+	return nil
 }
 
 // Load reads, defaults, and validates the config.yaml at path.
@@ -534,6 +550,9 @@ func (c *Config) validate() error {
 		if b := g.Backup; b != nil {
 			if len(b.Exec) == 0 || strings.TrimSpace(b.Exec[0]) == "" {
 				return fmt.Errorf("games[%s].backup.exec: a command is required", g.ID)
+			}
+			if err := b.CheckKeep(); err != nil {
+				return fmt.Errorf("games[%s].backup: %w", g.ID, err)
 			}
 			if b.ListDir != "" && !strings.HasPrefix(b.ListDir, "/") {
 				return fmt.Errorf("games[%s].backup.list_dir (%s): must be an absolute path inside the container", g.ID, b.ListDir)

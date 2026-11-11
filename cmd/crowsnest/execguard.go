@@ -31,6 +31,9 @@ func execRules(cfg *config.Config) []execguard.Rule {
 		if g.Backup.ListDir != "" {
 			rules = append(rules, execguard.Rule{Container: g.ContainerName, Cmd: backup.ListArgs(g.Backup.ListDir)})
 		}
+		if g.Backup.Keep > 0 {
+			rules = append(rules, execguard.Rule{Container: g.ContainerName, Cmd: backup.PruneArgs(g.Backup.ListDir, g.Backup.Keep)})
+		}
 	}
 	return rules
 }

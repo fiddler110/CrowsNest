@@ -119,7 +119,15 @@ func (m *Manager) run(ctx context.Context, d games.GameDef, actor string) error 
 	}
 	took := time.Since(began).Round(time.Second)
 	log.Printf("backup: %s done in %s", d.ID, took)
-	m.record(d.ID, actor, "done in "+took.String())
+	detail := "done in " + took.String()
+	if d.Backup.Keep > 0 {
+		// The backup itself succeeded; a failed prune only leaves old files.
+		if _, err := m.Docker.ExecTimeout(ctx, d.ContainerName, listTimeout, PruneArgs(d.Backup.ListDir, d.Backup.Keep)...); err != nil {
+			log.Printf("backup: %s prune failed: %v", d.ID, err)
+			detail += "; pruning old backups failed: " + tail(err.Error())
+		}
+	}
+	m.record(d.ID, actor, detail)
 	return nil
 }
 
@@ -189,6 +197,16 @@ func (m *Manager) List(ctx context.Context, d games.GameDef) ([]File, error) {
 // the exec guard can allowlist precisely this command and nothing broader.
 func ListArgs(dir string) []string {
 	return []string{"find", dir, "-maxdepth", "1", "-type", "f", "-printf", "%T@ %s %f\\n"}
+}
+
+// pruneScript deletes every regular file in $1 except the newest $2. It only
+// removes direct children of $1, with rm -f (never -r).
+const pruneScript = `find "$1" -maxdepth 1 -type f -printf '%T@ %f\n' | sort -rn | tail -n +"$(($2 + 1))" | cut -d' ' -f2- | while IFS= read -r f; do rm -f -- "$1/$f"; done`
+
+// PruneArgs is the exact command that keeps the newest keep files in dir. Like
+// ListArgs it is exported so the exec guard allowlists precisely this command.
+func PruneArgs(dir string, keep int) []string {
+	return []string{"sh", "-c", pruneScript, "sh", dir, strconv.Itoa(keep)}
 }
 
 // parseList reads `find -printf "%T@ %s %f"` output: epoch seconds (maybe

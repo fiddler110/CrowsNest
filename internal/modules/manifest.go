@@ -266,6 +266,9 @@ func (m *Manifest) validate() error {
 		if len(m.Backup.Exec) == 0 || m.Backup.Exec[0] == "" {
 			return fmt.Errorf("module %q: backup.exec must be a command", m.ID)
 		}
+		if err := m.Backup.CheckKeep(); err != nil {
+			return fmt.Errorf("module %q: backup: %w", m.ID, err)
+		}
 		if m.Backup.ListDir != "" && !strings.HasPrefix(m.Backup.ListDir, "/") {
 			return fmt.Errorf("module %q: backup.list_dir must be an absolute path", m.ID)
 		}

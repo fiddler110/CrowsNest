@@ -123,6 +123,7 @@ games:
     # backup:
     #   exec: ["backup"]
     #   list_dir: /palworld/backups
+    #   keep: 14                      # optional: after each backup, delete all but the newest 14 files in list_dir
     #   before_stop: true      # also back up every time CrowsNest stops it on purpose
 
 # Enable and configure games from the dashboard, inside an operator policy

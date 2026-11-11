@@ -39,7 +39,7 @@ func backupSpec(b *config.BackupConfig) *BackupSpec {
 	if b == nil {
 		return nil
 	}
-	return &BackupSpec{Exec: b.Exec, ListDir: b.ListDir, BeforeStop: b.BeforeStop}
+	return &BackupSpec{Exec: b.Exec, ListDir: b.ListDir, BeforeStop: b.BeforeStop, Keep: b.Keep}
 }
 
 // DockerTarget converts a GameDef's container/compose identity into a

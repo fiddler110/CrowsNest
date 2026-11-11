@@ -157,7 +157,11 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
 - [ ] **Whitelist, ban and kick actions**, declared per module and run via
   RCON or the adapter (Phase 2+).
 - [ ] **Backup retention, restore button and offsite copy** (restic/rclone).
-  Backups and the admin panel exist; restore and retention do not.
+  (done 2026-11-11: retention, `backup.keep` prunes `list_dir` after each successful backup via one
+  more allowlisted exec, shown in the module approval summary. Not built: restore, which has to be
+  declared per module because the way to put a backup back differs by image and the world must not
+  be live while it happens; offsite copy, which needs something that can read the data folder,
+  outside the exec-only model.)
 - [ ] **"Update available" and one-click rollback** to the last-known-good
   image. (done: Roll back on the Games page recreates a dashboard game on its
   previous digest, and Update image says whether anything changed. Not built:

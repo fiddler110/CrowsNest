@@ -184,6 +184,7 @@ type BackupSpec struct {
 	Exec       []string
 	ListDir    string
 	BeforeStop bool
+	Keep       int
 }
 
 // ConnectSecret is a labelled value shown on a game's dashboard card.

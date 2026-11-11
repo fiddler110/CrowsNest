@@ -1361,6 +1361,9 @@ func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, err
 		if mf.Backup.ListDir != "" {
 			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.ListArgs(mf.Backup.ListDir)})
 		}
+		if mf.Backup.Keep > 0 {
+			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.PruneArgs(mf.Backup.ListDir, mf.Backup.Keep)})
+		}
 	}
 	return rules, nil
 }
