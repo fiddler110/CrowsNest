@@ -147,8 +147,10 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
 - [ ] **Profile page**: display name, "my sessions", sign out of all
   devices. Needs a **server-side session store** (today revocation is one
   `ValidAfter` timestamp per user) to offer "revoke this device".
-- [ ] **Admin audit view**: filterable UI over the existing activity log
-  (`/api/activity`, 180-day retention).
+- [x] **Admin audit view (done 2026-11-11).** Settings, Audit log: filter the
+  activity log by game, kind, user, text and date range, paged 50 at a time
+  (`GET /api/audit`, admin only, shows the admin kinds the logbook hides from
+  players). No export yet.
 - [ ] **Per-user Discord notices** (opt in per game).
 - [ ] **Scheduled starts/stops** (deferred from the 2026-11-07 review) and
   **Discord slash commands** (deferred). Land after the Phase 4 state hub.

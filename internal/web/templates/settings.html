@@ -14,6 +14,7 @@
     <a href="#general" data-pane="general"><svg class="icon"><use href="#i-gear"/></svg>General</a>
     <a href="#users" data-pane="users"><svg class="icon"><use href="#i-users"/></svg>Users</a>
     <a href="#policy" data-pane="policy"><svg class="icon"><use href="#i-info"/></svg>Game policy</a>
+    <a href="#audit" data-pane="audit"><svg class="icon"><use href="#i-info"/></svg>Audit log</a>
     <a href="#modules" data-pane="modules"><svg class="icon"><use href="#i-play"/></svg>Game modules</a>
   </nav>
 
@@ -117,6 +118,31 @@
         <p class="hero-sub">Games that may go beyond the limits above, each exactly as listed. They are written in policy.yaml on the host and can't be added or changed from here.</p>
         <ul id="policy-exceptions-list" class="users-list"></ul>
       </div>
+    </section>
+
+    <section class="settings-pane" data-pane="audit" hidden>
+      <h1>Audit log</h1>
+      <p class="hero-sub">Everything the panel recorded: starts, stops, joins, settings and user changes, console use. Kept for the retention period set in config.yaml.</p>
+      <form id="audit-form" class="pane-form" autocomplete="off">
+        <div class="setting-row audit-filters">
+          <label class="field">Game <select name="game"><option value="">All</option></select></label>
+          <label class="field">Kind <select name="kind"><option value="">All</option></select></label>
+          <label class="field">Who <input type="text" name="actor" spellcheck="false" autocapitalize="none"></label>
+        </div>
+        <div class="setting-row audit-filters">
+          <label class="field">Search <input type="text" name="q" spellcheck="false"></label>
+          <label class="field">From <input type="date" name="since"></label>
+          <label class="field">To (inclusive) <input type="date" name="until"></label>
+        </div>
+        <div class="pane-actions">
+          <button id="audit-reset" class="btn btn-ghost" type="button">Clear</button>
+          <button class="btn btn-primary" type="submit">Filter</button>
+        </div>
+      </form>
+      <table class="audit-table"><thead><tr><th>When</th><th>Kind</th><th>Game</th><th>Who</th><th>Detail</th></tr></thead>
+        <tbody id="audit-rows"></tbody></table>
+      <p id="audit-empty" class="settings-help field-note" hidden>No matching events.</p>
+      <div class="pane-actions"><button id="audit-more" class="btn btn-ghost" type="button" hidden>Load more</button></div>
     </section>
 
     <section class="settings-pane" data-pane="modules" hidden>

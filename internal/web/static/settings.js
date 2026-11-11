@@ -116,6 +116,56 @@ function renderPerGame(v) {
   });
 }
 
+// ---------- Audit log ----------
+loaders.audit = () => {
+  const form = $("audit-form");
+  const rows = $("audit-rows");
+  const more = $("audit-more");
+  const PAGE = 50;
+  const KINDS = ["start", "stop", "auto_stop", "start_failed", "stop_failed", "join", "leave",
+    "settings", "users", "games", "backup", "console"];
+  KINDS.forEach((k) => form.elements.kind.append(new Option(k.replace("_", " "), k)));
+  let offset = 0;
+  const params = () => {
+    const p = new URLSearchParams({ limit: String(PAGE), offset: String(offset) });
+    ["game", "kind", "actor", "q", "since"].forEach((n) => { if (form.elements[n].value.trim()) p.set(n, form.elements[n].value.trim()); });
+    // "To" is inclusive of the chosen day; the API's bound is exclusive.
+    const to = form.elements.until.value;
+    if (to) { const d = new Date(to + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() + 1); p.set("until", d.toISOString().slice(0, 10)); }
+    return p;
+  };
+  const load = async (reset) => {
+    if (reset) { offset = 0; rows.replaceChildren(); }
+    const res = await callAPI("/api/audit?" + params());
+    if (!res.ok) { toast(await errorText(res, "Loading the audit log"), "error"); return; }
+    const data = await res.json();
+    data.events.forEach((e) => {
+      const tr = document.createElement("tr");
+      const when = document.createElement("td");
+      when.textContent = new Date(e.t).toLocaleString([], { year: "numeric", month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      tr.append(when);
+      [e.kind, e.game || "", e.actor || "", e.detail || ""].forEach((v) => {
+        const td = document.createElement("td");
+        td.textContent = v;
+        tr.append(td);
+      });
+      rows.append(tr);
+    });
+    offset += data.events.length;
+    more.hidden = !data.more;
+    $("audit-empty").hidden = rows.children.length > 0;
+  };
+  // Game choices come from the settings feed, which lists every game.
+  (async () => {
+    const res = await callAPI("/api/settings");
+    if (res.ok) ((await res.json()).games || []).forEach((g) => form.elements.game.append(new Option(g.name || g.id, g.id)));
+  })();
+  form.addEventListener("submit", (e) => { e.preventDefault(); load(true); });
+  $("audit-reset").addEventListener("click", () => { form.reset(); load(true); });
+  more.addEventListener("click", () => load(false));
+  load(true);
+};
+
 // ---------- Users ----------
 loaders.users = () => {
   const list = $("users-list");

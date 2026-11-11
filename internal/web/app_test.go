@@ -1370,3 +1370,45 @@ func TestHandleSwitch_CooldownIs429(t *testing.T) {
 		t.Fatalf("switch = %d (Retry-After %q), want 429", rec.Code, rec.Header().Get("Retry-After"))
 	}
 }
+
+func TestAudit_AdminFilteredFeed(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	store, err := history.Open(filepath.Join(t.TempDir(), "events.jsonl"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.History = store
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
+	store.Record(history.KindUsers, "", "tester", "added ann")
+	store.Record(history.KindJoin, "windrose", "ann", "")
+	store.Record(history.KindJoin, "windrose", "bob", "")
+
+	get := func(query string) (int, []history.Event, bool) {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.req("GET", "/api/audit"+query, nil))
+		var out struct {
+			Events []history.Event `json:"events"`
+			More   bool            `json:"more"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out.Events, out.More
+	}
+	// Admin kinds that the dashboard logbook hides for players are visible here.
+	if code, ev, _ := get("?kind=users"); code != 200 || len(ev) != 1 || ev[0].Detail != "added ann" {
+		t.Fatalf("kind=users = %d %+v", code, ev)
+	}
+	if _, ev, more := get("?kind=join&limit=1"); len(ev) != 1 || ev[0].Actor != "bob" || !more {
+		t.Fatalf("paged = %+v more=%v", ev, more)
+	}
+	if _, ev, _ := get("?actor=ann&since=2000-01-01"); len(ev) != 1 {
+		t.Fatalf("actor+since = %+v", ev)
+	}
+	if code, _, _ := get("?since=yesterday"); code != http.StatusBadRequest {
+		t.Fatalf("bad since = %d, want 400", code)
+	}
+
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	if code, _, _ := get(""); code != http.StatusForbidden {
+		t.Fatalf("player = %d, want 403", code)
+	}
+}

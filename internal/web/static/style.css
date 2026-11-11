@@ -643,3 +643,7 @@ a.btn { text-decoration: none; }
 .pergame-row { margin: 0.8rem 0 0; padding: 0.2rem 0.9rem 0.9rem; border: 1px solid var(--border-strong); border-radius: 10px; }
 .pergame-row legend { padding: 0 0.4rem; font-weight: 600; }
 .pergame-row .setting-row { flex-wrap: wrap; }
+.audit-filters > .field { flex: 1; min-width: 8rem; }
+.audit-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.85rem; }
+.audit-table th, .audit-table td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border-strong); vertical-align: top; }
+.audit-table td:last-child { overflow-wrap: anywhere; }

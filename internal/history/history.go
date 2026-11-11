@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -158,6 +159,65 @@ func (s *Store) RecentExcluding(limit int, game string, kinds ...string) []Event
 		}
 	}
 	return out
+}
+
+// Filter selects events for Query. Zero fields match everything.
+type Filter struct {
+	Game  string
+	Kinds []string // any of these kinds; empty means all
+	Actor string   // exact match
+	Text  string   // case-insensitive substring of the actor, game or detail
+	Since time.Time
+	Until time.Time // exclusive
+}
+
+func (f Filter) match(e Event) bool {
+	if f.Game != "" && e.Game != f.Game {
+		return false
+	}
+	if len(f.Kinds) > 0 && !slices.Contains(f.Kinds, e.Kind) {
+		return false
+	}
+	if f.Actor != "" && e.Actor != f.Actor {
+		return false
+	}
+	if !f.Since.IsZero() && e.Time.Before(f.Since) {
+		return false
+	}
+	if !f.Until.IsZero() && !e.Time.Before(f.Until) {
+		return false
+	}
+	if f.Text != "" {
+		t := strings.ToLower(f.Text)
+		if !strings.Contains(strings.ToLower(e.Actor+"\n"+e.Game+"\n"+e.Detail), t) {
+			return false
+		}
+	}
+	return true
+}
+
+// Query returns up to limit events matching f, newest first, skipping the
+// first offset matches. more reports whether further matches exist.
+func (s *Store) Query(f Filter, offset, limit int) (events []Event, more bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events = []Event{}
+	skipped := 0
+	for i := len(s.events) - 1; i >= 0; i-- {
+		e := s.events[i]
+		if !f.match(e) {
+			continue
+		}
+		if skipped < offset {
+			skipped++
+			continue
+		}
+		if len(events) == limit {
+			return events, true
+		}
+		events = append(events, e)
+	}
+	return events, false
 }
 
 // Prune drops events older than the retention period, rewriting the file

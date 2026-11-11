@@ -186,6 +186,7 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/games/{id}/players", a.requireSession(http.HandlerFunc(a.handlePlayers)))
 	mux.Handle("GET /api/games/{id}/info", a.requireSession(http.HandlerFunc(a.handleInfo)))
 	mux.Handle("GET /api/activity", a.requireSession(http.HandlerFunc(a.handleActivity)))
+	mux.Handle("GET /api/audit", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleAudit))))
 	mux.Handle("GET /api/games/{id}/console", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleConsole))))
 	mux.Handle("POST /api/games/{id}/console/action", a.requireAdmin(http.HandlerFunc(a.handleConsoleAction)))
 	mux.Handle("POST /api/games/{id}/console/raw", a.requireAdmin(http.HandlerFunc(a.handleConsoleRaw)))
@@ -498,6 +499,49 @@ func (a *App) handleActivity(w http.ResponseWriter, r *http.Request) {
 		"events":   a.History.RecentExcluding(limit, r.URL.Query().Get("game"), hide...),
 		"playtime": a.History.Playtime(),
 	})
+}
+
+// handleAudit is the admin audit view's feed: every kind of event, filtered
+// by game, kind(s), actor, free text and time range, one page at a time.
+// Query: game, kind (comma list), actor, q, since, until (RFC 3339 or
+// YYYY-MM-DD), offset, limit.
+func (a *App) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if a.History == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []history.Event{}, "more": false})
+		return
+	}
+	q := r.URL.Query()
+	f := history.Filter{Game: q.Get("game"), Actor: q.Get("actor"), Text: q.Get("q")}
+	if k := q.Get("kind"); k != "" {
+		f.Kinds = strings.Split(k, ",")
+	}
+	parse := func(name string) (time.Time, bool) {
+		v := q.Get(name)
+		if v == "" {
+			return time.Time{}, true
+		}
+		for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+			if t, err := time.Parse(layout, v); err == nil {
+				return t, true
+			}
+		}
+		http.Error(w, name+": want an RFC 3339 time or YYYY-MM-DD", http.StatusBadRequest)
+		return time.Time{}, false
+	}
+	var ok bool
+	if f.Since, ok = parse("since"); !ok {
+		return
+	}
+	if f.Until, ok = parse("until"); !ok {
+		return
+	}
+	limit := defaultActivityLimit
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		limit = min(n, maxActivityLimit)
+	}
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	events, more := a.History.Query(f, max(offset, 0), limit)
+	writeJSON(w, http.StatusOK, map[string]any{"events": events, "more": more})
 }
 
 // handleBackup starts a backup of one game in the background.
