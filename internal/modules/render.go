@@ -226,7 +226,7 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 	}
 	scope := GuardScope{
 		Name: g.ID, Images: []string{image}, Networks: []string{network},
-		Ports: []GuardPort{}, Binds: []string{}, Labels: svc.Labels, Exec: true,
+		Ports: []GuardPort{}, Binds: []string{}, Labels: svc.Labels, Exec: m.Backup != nil,
 	}
 	// optVal is an instance's option, or the module's default for it.
 	optVal := func(key string) string {

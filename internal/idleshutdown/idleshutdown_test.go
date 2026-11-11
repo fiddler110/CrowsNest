@@ -382,3 +382,24 @@ func TestTick_HubReadingConfirmedBeforeStop(t *testing.T) {
 		t.Fatalf("stopped = %v, want one stop once confirmed empty", stopper.stopped)
 	}
 }
+
+// A player present on the first tick that sees the game online (the tick
+// only seeds the timer) still ends the startup grace: once they leave, the
+// short idle timer applies, not the hour.
+func TestTick_PlayerOnSeedingTickEndsStartupGrace(t *testing.T) {
+	status := &fakeStatus{status: games.StatusOnline}
+	players := &fakePlayers{count: 2, ok: true}
+	m, stopper, clock := newTestManager(t, status, players, 15*time.Minute)
+	m.StartupGrace = time.Hour
+
+	m.Tick(context.Background()) // seeds the timer with players already on
+
+	*clock = clock.Add(time.Minute)
+	players.count = 0
+	m.Tick(context.Background()) // they left
+	*clock = clock.Add(16 * time.Minute)
+	m.Tick(context.Background())
+	if len(stopper.stopped) != 1 {
+		t.Fatalf("stopped = %v, want [windrose] 15m after the players left, not after the startup grace", stopper.stopped)
+	}
+}
