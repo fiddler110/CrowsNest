@@ -124,6 +124,7 @@ func (s *GoogleConfStore) Save(v GoogleSettings) error {
 	if err != nil {
 		return err
 	}
+	// #nosec G117 -- ClientSecret holds the sealed (encrypted) value
 	out, _ := json.MarshalIndent(googleConfFile{Enabled: v.Enabled, ClientID: v.ClientID, RedirectURL: v.RedirectURL, ClientSecret: enc}, "", "  ")
 	s.mu.Lock()
 	defer s.mu.Unlock()

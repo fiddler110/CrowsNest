@@ -92,7 +92,7 @@ func newExecProxy(ctx context.Context, listen, upstream string) (*http.Server, e
 
 // serveUntilDone runs srv until ctx ends, then shuts it down.
 func serveUntilDone(ctx context.Context, srv *http.Server) error {
-	go func() {
+	go func() { // #nosec G118 -- ctx has ended by now; the shutdown needs a fresh deadline of its own
 		<-ctx.Done()
 		sc, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()

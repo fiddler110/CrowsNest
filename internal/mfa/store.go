@@ -76,7 +76,7 @@ func (s *Store) now() time.Time {
 func purpose(user string) string { return "totp:" + user }
 
 func (s *Store) saveLocked() error {
-	out, err := json.MarshalIndent(s.users, "", "  ")
+	out, err := json.MarshalIndent(s.users, "", "  ") // #nosec G117 -- the TOTP secrets are stored sealed (see vault)
 	if err != nil {
 		return err
 	}

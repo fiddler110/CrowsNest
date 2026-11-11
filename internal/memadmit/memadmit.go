@@ -48,7 +48,7 @@ type Budget struct {
 func New(file string) *Budget {
 	b := &Budget{file: file, peaks: map[string]uint64{}}
 	if file != "" {
-		if raw, err := os.ReadFile(file); err == nil {
+		if raw, err := os.ReadFile(file); err == nil { // #nosec G304 -- the operator's configured peaks file
 			_ = json.Unmarshal(raw, &b.peaks)
 		}
 	}

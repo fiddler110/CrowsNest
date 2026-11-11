@@ -570,5 +570,8 @@ func ramEstimate(m *Manifest, given map[string]string) uint64 {
 		log.Printf("%s: %v; memory admission skips this game", m.ID, err)
 		return 0
 	}
+	if n < 0 {
+		return 0
+	}
 	return uint64(n)
 }
