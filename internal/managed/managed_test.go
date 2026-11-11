@@ -1085,7 +1085,7 @@ func TestSharedBackupsFolderPerGame(t *testing.T) {
 		t.Fatal(err)
 	}
 	m.Platform.BackupsRoot, m.Platform.BackupsMount = "/mnt/usb/backups", root
-	m.Backups = &backup.Root{Mount: root, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state")}
+	m.Backups = &backup.Root{Mount: root, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state"), ConfirmNew: true}
 
 	for _, id := range []string{"minecraft", "minecraft-2"} {
 		req := Request{ID: id, Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}

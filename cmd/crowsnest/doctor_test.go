@@ -114,9 +114,14 @@ func TestDoctor_BackupsFolder(t *testing.T) {
 		code := runDoctor(cfg, fakePing{}, &out)
 		return code, out.String()
 	}
-	if code, out := run(); code != 0 || !strings.Contains(out, "has not been used yet") || !strings.Contains(out, "0775") {
-		t.Fatalf("fresh folder: exit %d\n%s", code, out)
+	if code, out := run(); code != 1 || !strings.Contains(out, "backups_confirm_new") {
+		t.Fatalf("unconfirmed new folder: exit %d\n%s", code, out)
 	}
+	cfg.Platform.BackupsConfirmNew = true
+	if code, out := run(); code != 0 || !strings.Contains(out, "folder is new") || !strings.Contains(out, "0775") {
+		t.Fatalf("confirmed new folder: exit %d\n%s", code, out)
+	}
+	cfg.Platform.BackupsConfirmNew = false
 	// Used before, then the drive goes away: empty folder, no marker.
 	state := filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "backups-root")
 	if err := os.WriteFile(state, []byte("tok\n"), 0o600); err != nil {

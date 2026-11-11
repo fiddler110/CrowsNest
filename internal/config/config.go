@@ -100,6 +100,12 @@ type PlatformConfig struct {
 	// game's backup folder, which the panel creates. A game whose user is not
 	// the panel's needs 0777, or the folder chowned to it on the host.
 	BackupsDirMode string `yaml:"backups_dir_mode"`
+	// BackupsConfirmNew lets CrowsNest start using a backups folder it has no
+	// record of and that carries no marker. Without it that case is refused,
+	// because an unmounted drive looks exactly like a new empty folder. Set it
+	// once you have checked the drive is mounted; it is needed again only if
+	// you reset the remembered folder.
+	BackupsConfirmNew bool `yaml:"backups_confirm_new"`
 	// HostIP is the host address game ports are published on (default 0.0.0.0).
 	HostIP string `yaml:"host_ip"`
 	// GamesNetwork is the existing docker network games join (default

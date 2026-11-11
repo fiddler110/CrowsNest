@@ -205,8 +205,13 @@ func doctorBackups(r *doctorReport, cfg *config.Config) {
 	case known != "" && known != onDisk:
 		r.add(docFail, "the backups folder is not the one CrowsNest used before (its marker is missing or different): an unmounted external drive looks exactly like this",
 			"mount the drive; if you moved the backups on purpose, delete "+state+" and restart")
+	case known == "" && onDisk == "" && !cfg.Platform.BackupsConfirmNew:
+		r.add(docFail, "CrowsNest has not used this backups folder before and it holds no marker (an unmounted drive looks exactly like this)",
+			"check the right drive is mounted at backups_root, then set platform.backups_confirm_new: true and restart")
+	case known == "" && onDisk == "":
+		r.add(docInfo, "the backups folder is new; CrowsNest will mark it on first use", "")
 	case known == "":
-		r.add(docInfo, "the backups folder has not been used yet; CrowsNest marks it on first use", "")
+		r.add(docInfo, "the backups folder already carries a CrowsNest marker; it will be adopted", "")
 	default:
 		r.add(docOK, "the backups folder is the one used before", "")
 	}

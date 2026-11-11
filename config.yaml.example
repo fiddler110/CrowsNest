@@ -142,6 +142,7 @@ games:
 #   host_ip: 10.0.0.2
 #   backups_root: /mnt/usb/backups   # optional shared backups folder: <backups_root>/<game id> per game (see README, Backups)
 #   backups_mount: /game-backups     # where the panel sees it; mount the host folder there, read-write
+#   backups_confirm_new: true        # required on first use: confirms the drive is really mounted (see README, Backups)
 #   backups_dir_mode: "0775"         # "0777" if a game runs as a different user than the panel
 # managed:
 #   dir: /app/data/managed

@@ -301,9 +301,11 @@ lines: the volume in `compose.yaml`, `backups_root` in `config.yaml`, and `backu
 - **Exit status 0 is not trusted.** After a backup the panel checks that a new, non-empty file appeared in the
   game's folder; otherwise the backup is recorded as failed and old backups are not pruned.
 - **Permission errors say what to do.** A failure containing "permission denied" names the folder and the fix.
-- **Not covered:** the first time `backups_root` is set, a missing drive cannot be told apart from an empty new
-  one (the marker is created on whatever is there). Check that the drive is mounted before the first start;
-  `crowsnest doctor` shows the free space and whether the folder shares a disk with the system.
+- **First use needs your confirmation.** A folder with no marker that CrowsNest has never seen is refused, since
+  a missing drive looks exactly like that. After checking that the right drive is mounted at `backups_root`, set
+  `platform.backups_confirm_new: true` and restart; CrowsNest then marks the folder, and from then on a missing
+  drive is caught. A drive that already carries a marker (a reinstall, or a second panel) is adopted without the
+  flag. `crowsnest doctor` says which case you are in.
 
 ### Things to watch with a shared backups folder
 

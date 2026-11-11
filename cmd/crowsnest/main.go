@@ -257,7 +257,8 @@ func serve() error {
 		mode, _ := cfg.Platform.DirMode() // validated when the config loads
 		backupRoot = &backup.Root{
 			Mount: cfg.Platform.BackupsMount, Mode: mode,
-			StateFile: filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "backups-root"),
+			StateFile:  filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "backups-root"),
+			ConfirmNew: cfg.Platform.BackupsConfirmNew,
 		}
 		if err := backupRoot.Verify(); err != nil {
 			log.Printf("warning: %v (backups to the shared folder are refused until this is fixed)", err)

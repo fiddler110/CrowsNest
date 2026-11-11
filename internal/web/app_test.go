@@ -1086,7 +1086,7 @@ func TestBackupsHealth_EndpointAndBanner(t *testing.T) {
 		t.Fatal("health reports backups with no shared folder")
 	}
 	mount := t.TempDir()
-	root := &backup.Root{Mount: mount, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state")}
+	root := &backup.Root{Mount: mount, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state"), ConfirmNew: true}
 	h.App.Backups = &backup.Manager{Docker: docker, Root: root}
 	if got := get("/api/backups/health").Code; got != http.StatusOK {
 		t.Fatalf("health = %d, want 200", got)

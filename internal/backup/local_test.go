@@ -15,11 +15,38 @@ import (
 func newRoot(t *testing.T) (*Root, string) {
 	t.Helper()
 	mount := t.TempDir()
-	return &Root{Mount: mount, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "backups-root")}, mount
+	return &Root{Mount: mount, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "backups-root"), ConfirmNew: true}, mount
+}
+
+func TestRoot_FirstUseNeedsConfirmation(t *testing.T) {
+	r, mount := newRoot(t)
+	r.ConfirmNew = false
+	// An unmounted drive on first use looks like a new empty folder: refuse it.
+	if err := r.Verify(); !errors.Is(err, ErrRootUnavailable) || !strings.Contains(err.Error(), "backups_confirm_new") {
+		t.Fatalf("unconfirmed first use = %v", err)
+	}
+	if err := r.EnsureGameDir("pal"); err == nil {
+		t.Fatal("a game folder was created in an unconfirmed folder")
+	}
+	if _, err := os.Stat(filepath.Join(mount, "pal")); err == nil {
+		t.Fatal("game folder exists")
+	}
+	if _, err := os.Stat(filepath.Join(mount, markerName)); err == nil || readToken(r.StateFile) != "" {
+		t.Fatal("marker or state written without confirmation")
+	}
+	r.ConfirmNew = true
+	if err := r.Verify(); err != nil {
+		t.Fatalf("confirmed: %v", err)
+	}
+	r.ConfirmNew = false // once marked, the flag is no longer needed
+	if err := r.Verify(); err != nil {
+		t.Fatalf("after first use: %v", err)
+	}
 }
 
 func TestRoot_FirstUseThenDriveGoesMissing(t *testing.T) {
 	r, mount := newRoot(t)
+	r.ConfirmNew = true
 	if err := r.Verify(); err != nil {
 		t.Fatalf("first use: %v", err)
 	}

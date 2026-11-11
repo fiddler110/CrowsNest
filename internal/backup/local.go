@@ -29,6 +29,9 @@ type Root struct {
 	Mount     string      // where the panel sees the folder, e.g. /game-backups
 	Mode      os.FileMode // permission bits for each game's folder
 	StateFile string      // remembers the marker token; "" skips the check (tests)
+	// ConfirmNew is the operator's statement that a folder with no marker and
+	// no remembered token is the right one. Without it such a folder is refused.
+	ConfirmNew bool
 }
 
 func readToken(path string) string {
@@ -55,6 +58,10 @@ func (r *Root) Verify() error {
 	case known != "" && onDisk != known:
 		return fmt.Errorf("%w: %s no longer carries the marker CrowsNest left there (an unmounted drive shows up as an empty folder). "+
 			"If you moved the backups on purpose, delete %s and restart", ErrRootUnavailable, r.Mount, r.StateFile)
+	case known == "" && onDisk == "" && !r.ConfirmNew:
+		return fmt.Errorf("%w: CrowsNest has not used %s before and it holds no marker. An unmounted drive looks exactly like this. "+
+			"Once you have checked the right drive is mounted there, set platform.backups_confirm_new: true and restart",
+			ErrRootUnavailable, r.Mount)
 	case known == "" && onDisk == "":
 		var b [16]byte
 		if _, err := rand.Read(b[:]); err != nil {

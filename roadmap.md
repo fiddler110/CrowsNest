@@ -168,8 +168,7 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   - **Config-file games** (hand-written compose) still back up inside their own data; they would need the bind added by hand.
   - **Backups-folder detail in the UI** (last backup per game, orphan folders): the dashboard shows a banner and
     `GET /api/backups/health` has the detail, but there is no page for it yet.
-  - **First-use guard.** If the drive is missing the very first time `backups_root` is set, the marker lands on the
-    empty system-disk folder and is trusted. Needs an explicit confirmation or a host-side mount check.
+  - **First-use guard:** done, see `platform.backups_confirm_new`; a host-side mount check remains optional.
   Also done 2026-11-11: a one-minute folder monitor (marker, 1 GiB free, per-game writability) with one alert per
   change, a dashboard banner and metrics; refused scheduled backups are recorded and notified; a backup must leave a
   new non-empty file or it counts as failed; permission errors carry a hint.
