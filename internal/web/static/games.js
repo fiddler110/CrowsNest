@@ -302,6 +302,7 @@ function buildForm(values = {}) {
   const m = moduleById(selected);
   $("image-field").hidden = !(m && m.needs_image);
   form.elements.image.required = !!(m && m.needs_image);
+  buildVersion(m, values.tag || "");
   $("options").replaceChildren();
   $("options-more").replaceChildren();
   if (!m) return;
@@ -352,6 +353,40 @@ function buildForm(values = {}) {
   $("options").hidden = !main.length;
 }
 
+// buildVersion fills the Image version choice: the default tag (latest), the image's stable release when the
+// module knows one, or a specific tag typed in to hold the game on one version.
+function buildVersion(m, tag) {
+  const sel = form.elements.version;
+  sel.replaceChildren();
+  if (!m) return;
+  const def = m.default_tag || "latest";
+  const add = (value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; sel.append(o); };
+  add("default", def === "latest" ? "Latest (follows the newest release)" : `${def} (the module's default)`);
+  if (m.stable_tag && m.stable_tag !== def) add("stable", `Stable (${m.stable_tag})`);
+  add("custom", "Pin to a specific version…");
+  const known = tag === "" || tag === def ? "default" : (tag === m.stable_tag ? "stable" : "custom");
+  sel.value = known;
+  form.elements.version_tag.value = known === "custom" ? tag : "";
+  syncVersion();
+}
+
+function syncVersion() {
+  const custom = form.elements.version.value === "custom";
+  form.elements.version_tag.hidden = !custom;
+  form.elements.version_tag.required = custom;
+  $("version-help").textContent = custom
+    ? "Any tag the image publishes. The game stays on it until you change it here."
+    : "The container runs the exact image the tag pointed to when it was set up. Update image on the card moves it on.";
+}
+
+// chosenTag is the image tag the form asks for, or "" for the module's default.
+function chosenTag(m) {
+  const v = form.elements.version.value;
+  if (v === "stable") return m.stable_tag || "";
+  if (v === "custom") return form.elements.version_tag.value.trim();
+  return "";
+}
+
 // firstPort is the module's main game port (the first it publishes), from "8211/udp" style entries.
 function firstPort(m) {
   const list = portsOf(m);
@@ -391,6 +426,8 @@ function collect() {
     options: {}, secrets: {},
   };
   if (m.needs_image && form.elements.image.value.trim()) req.options.image = form.elements.image.value.trim();
+  const tag = chosenTag(m);
+  if (tag) req.options.tag = tag;
   [...(m.options || []), { key: "data_dir" }, { key: "ports" }, { key: "ram" }].forEach((o) => {
     const f = form.elements["opt:" + o.key];
     if (!f) return;
@@ -407,6 +444,7 @@ function collect() {
 }
 
 form.addEventListener("input", (e) => {
+  if (e.target === form.elements.version) syncVersion();
   if (e.target === form.elements.id) idTouched = true;
   if (e.target === form.elements.game_port && form.elements["opt:ports"]) form.elements["opt:ports"].value = ""; // the simple box takes over
   if (e.target === form.elements.display_name && !idTouched && !editing) form.elements.id.value = slug(e.target.value);

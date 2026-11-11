@@ -14,6 +14,7 @@
 package managed
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -194,12 +195,16 @@ type PortNote struct {
 }
 
 type ModuleInfo struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	NeedsImage  bool     `json:"needs_image"` // the module has no image of its own
-	Description string   `json:"description,omitempty"`
-	Image       string   `json:"image,omitempty"`
-	Ports       []string `json:"ports,omitempty"` // "25565/tcp"
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	NeedsImage  bool   `json:"needs_image"` // the module has no image of its own
+	Description string `json:"description,omitempty"`
+	Image       string `json:"image,omitempty"`
+	// DefaultTag is the tag a game follows unless told otherwise; StableTag is
+	// the image's stable-release tag, when the module knows one.
+	DefaultTag string   `json:"default_tag,omitempty"`
+	StableTag  string   `json:"stable_tag,omitempty"`
+	Ports      []string `json:"ports,omitempty"` // "25565/tcp"
 	// PortNotes says what each published port is for, as the module declares it.
 	PortNotes []PortNote `json:"port_notes,omitempty"`
 	// Allowed is whether the operator switched this module on. Bundled is whether
@@ -238,6 +243,7 @@ const (
 
 var (
 	idRe    = regexp.MustCompile(`^[a-z][a-z0-9-]{1,30}$`)
+	tagRe   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 	reserve = map[string]bool{"image": true, "tag": true, "ports": true, "data_dir": true, "ram": true}
 )
 
@@ -254,7 +260,8 @@ func (m *Manager) Catalogue() []ModuleInfo {
 		rt := mf.Runtime
 		mi := ModuleInfo{ID: mf.ID, Name: mf.Name, NeedsImage: mf.Runtime.Image == "",
 			NeedsException: len(rt.SecOpts) > 0 || len(rt.Networks) > 0 || rt.GamesIPv4Option != "",
-			Description:    mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil}
+			Description:    mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil,
+			DefaultTag: cmp.Or(rt.Tag, "latest"), StableTag: rt.StableTag}
 		for _, p := range mf.Runtime.Ports {
 			mi.Ports = append(mi.Ports, modules.PortSpec(p))
 			mi.PortNotes = append(mi.PortNotes, PortNote{Port: modules.PortSpec(p), Why: p.Why})
@@ -411,6 +418,9 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		}
 		if err := plainValue(k, v); err != nil {
 			return g, nil, err
+		}
+		if k == "tag" && v != "" && !tagRe.MatchString(v) {
+			return g, nil, fmt.Errorf("image version %q: use letters, digits, dots, dashes and underscores only (no digest or repository)", v)
 		}
 		if k == "ram" && v != "" {
 			if _, err := modules.SizeBytes("ram", v); err != nil {

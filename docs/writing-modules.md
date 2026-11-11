@@ -30,6 +30,7 @@ description: "One or two sentences for the Games page."
 runtime:
   ram: 2g               # typical memory use; see "Memory" below
   image: example/mygame-server   # repository, no tag. Leave it out to make the operator choose the image.
+  stable_tag: stable    # optional: the image's stable-release tag; the dashboard offers it next to latest
   stop_grace: 30s       # time Docker waits for the server to save before it is killed
   data_dir: MyGame      # folder under games_root for this game's data
   ports:

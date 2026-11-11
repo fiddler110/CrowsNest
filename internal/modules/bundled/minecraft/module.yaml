@@ -15,6 +15,7 @@ description: "Java edition server (itzg/minecraft-server): vanilla, Paper, Fabri
 runtime:
   ram: 3g                # typical use; admission swaps in the measured peak after a run
   image: itzg/minecraft-server
+  stable_tag: stable        # the image's stable release, next to latest
   stop_grace: 60s           # the image saves the world on SIGTERM
   data_dir: Minecraft
   ports:

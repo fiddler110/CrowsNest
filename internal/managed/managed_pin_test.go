@@ -372,3 +372,43 @@ func TestSecretsSealRoundTrip(t *testing.T) {
 		t.Error("opened a secret moved to another game")
 	}
 }
+
+// The image version a game follows is its tag option: the catalogue offers the module's stable tag, a
+// chosen tag is what gets pulled and pinned, and a malformed one is refused.
+func TestImageVersionChoice(t *testing.T) {
+	m, fd := newManager(t)
+	var mc ModuleInfo
+	for _, mi := range m.Catalogue() {
+		if mi.ID == "minecraft" {
+			mc = mi
+		}
+	}
+	if mc.DefaultTag != "latest" || mc.StableTag != "stable" {
+		t.Fatalf("catalogue tags: %+v", mc)
+	}
+	bad := mcReq
+	bad.Options = map[string]string{"eula": "TRUE", "tag": "latest@sha256:abc"}
+	if err := m.Enable(bad); err == nil {
+		t.Error("accepted a tag with an @")
+	}
+	req := mcReq
+	req.Options = map[string]string{"eula": "TRUE", "tag": "stable"}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	if in := info(t, m, "minecraft"); in.Image != "itzg/minecraft-server:stable" {
+		t.Errorf("followed %q, want the stable tag", in.Image)
+	}
+	if img, _ := fd.lastCreate(); !strings.HasPrefix(img, "itzg/minecraft-server@sha256:") {
+		t.Errorf("created %q: want the digest of the stable tag", img)
+	}
+	// switching the version re-pulls and re-pins
+	if err := m.Update(Request{ID: "minecraft", Options: map[string]string{"eula": "TRUE", "tag": "java21"}}); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	if in := info(t, m, "minecraft"); in.Image != "itzg/minecraft-server:java21" {
+		t.Errorf("after switching: %q", in.Image)
+	}
+}

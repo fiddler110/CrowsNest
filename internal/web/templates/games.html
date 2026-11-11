@@ -45,6 +45,11 @@
         <input type="text" name="image" spellcheck="false" autocapitalize="none" placeholder="e.g. docker.io/itzg/minecraft-server">
         <small>This module has no image of its own, so say which one to run.</small></label>
 
+      <label class="field" id="version-field">Image version
+        <select name="version"></select>
+        <input type="text" name="version_tag" spellcheck="false" autocapitalize="none" placeholder="e.g. 1.21.4 or java21" hidden>
+        <small id="version-help"></small></label>
+
       <h3 class="step-title"><span class="step-num">3</span> Settings</h3>
       <div id="options" class="options"></div>
       <details id="more" class="more">

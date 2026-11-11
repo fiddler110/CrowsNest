@@ -23,8 +23,12 @@ import (
 type Runtime struct {
 	RestartCooldown time.Duration `yaml:"restart_cooldown"`
 
-	Image     string        `yaml:"image"` // repository, no tag
-	Tag       string        `yaml:"tag"`   // default "latest"
+	Image string `yaml:"image"` // repository, no tag
+	Tag   string `yaml:"tag"`   // default "latest"
+	// StableTag names the image's stable-release tag (e.g. "stable"), when it
+	// publishes one. The dashboard offers it next to "latest"; an image without
+	// one leaves it empty and only offers latest or a version typed in.
+	StableTag string        `yaml:"stable_tag"`
 	StopGrace time.Duration `yaml:"stop_grace"`
 	Memory    string        `yaml:"memory"` // compose mem_limit, e.g. 10g
 	// RAM is the memory the game typically uses, e.g. 6g. It is only a
