@@ -256,6 +256,10 @@ func serve() error {
 	backups := &backup.Manager{Docker: docker, History: activity, BaseContext: ctx}
 	exclusivityMgr.Backups = backups
 	exclusivityMgr.MaxActiveFunc = func() int { return settingsStore.Get().MaxActiveGames }
+	exclusivityMgr.CooldownFunc = func(id string) (time.Duration, bool) {
+		secs, ok := settingsStore.Get().CooldownOverride(id)
+		return time.Duration(secs) * time.Second, ok
+	}
 	if budget := newMemoryBudget(cfg, registry); budget != nil {
 		exclusivityMgr.Memory = budget
 		go sampleMemory(ctx, budget, docker, registry)
@@ -333,6 +337,13 @@ func serve() error {
 		v := settingsStore.Get()
 		return v.IdleEnabled, time.Duration(v.IdleMinutes) * time.Minute
 	}
+	idle.GameIdle = func(id string) (time.Duration, bool) {
+		v := settingsStore.Get()
+		if g, ok := v.PerGame[id]; ok && g.IdleMinutes != nil {
+			return time.Duration(*g.IdleMinutes) * time.Minute, true
+		}
+		return 0, false
+	}
 	idle.Notifier = discordNotifier
 	idle.History = activity
 	idle.Hub = hub
@@ -355,6 +366,7 @@ func serve() error {
 		v := settingsStore.Get()
 		return v.NightEnabled, v.NightStartHour, v.NightEndHour
 	}
+	night.GameOverride = func(id string) (bool, bool) { return settingsStore.Get().NightOverride(id) }
 	night.Notifier = discordNotifier
 	night.History = activity
 	night.Hub = hub

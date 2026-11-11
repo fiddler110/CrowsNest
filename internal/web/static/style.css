@@ -640,3 +640,6 @@ a.btn { text-decoration: none; }
 .host-choice { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.35rem; }
 .host-choice legend { padding: 0; margin-bottom: 0.3rem; }
 .host-choice input[type="text"] { margin-left: 0.5rem; max-width: 12rem; }
+.pergame-row { margin: 0.8rem 0 0; padding: 0.2rem 0.9rem 0.9rem; border: 1px solid var(--border-strong); border-radius: 10px; }
+.pergame-row legend { padding: 0 0.4rem; font-weight: 600; }
+.pergame-row .setting-row { flex-wrap: wrap; }

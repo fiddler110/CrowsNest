@@ -88,3 +88,58 @@ func TestModify_AtomicAndValidated(t *testing.T) {
 		t.Fatal("a rejected Modify changed the values")
 	}
 }
+
+func intp(n int) *int { return &n }
+
+func TestPerGame_ReplaceRemoveAndValidate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "settings.json")
+	s, _ := New(defaults(), path)
+	night := false
+	if _, err := s.Modify(func(v *Values) error {
+		v.PerGame = map[string]GameValues{"valheim": {IdleMinutes: intp(5), NightShutdown: &night}, "palworld": {RestartCooldownSeconds: intp(0)}}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v := s.Get()
+	if on, set := v.NightOverride("valheim"); !set || on {
+		t.Fatalf("night override = %v %v", on, set)
+	}
+	if secs, set := v.CooldownOverride("palworld"); !set || secs != 0 {
+		t.Fatalf("cooldown override = %v %v", secs, set)
+	}
+	if _, set := v.CooldownOverride("valheim"); set {
+		t.Fatal("valheim has no cooldown override")
+	}
+	// Editing a snapshot must not reach the store.
+	v.PerGame["valheim"] = GameValues{}
+	if s.Get().PerGame["valheim"].IdleMinutes == nil {
+		t.Fatal("Get shares its map with the store")
+	}
+	// An all-empty entry is dropped; a rejected change leaves the map alone.
+	if _, err := s.Modify(func(v *Values) error { v.PerGame["valheim"] = GameValues{}; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.Get().PerGame["valheim"]; ok {
+		t.Fatal("empty entry kept")
+	}
+	if _, err := s.Modify(func(v *Values) error { v.PerGame["palworld"] = GameValues{IdleMinutes: intp(0)}; return nil }); err == nil {
+		t.Fatal("accepted idle_minutes 0")
+	}
+	if _, err := s.Modify(func(v *Values) error {
+		v.PerGame["palworld"] = GameValues{RestartCooldownSeconds: intp(MaxCooldownSeconds + 1)}
+		return nil
+	}); err == nil {
+		t.Fatal("accepted an oversized cooldown")
+	}
+	if secs, _ := s.Get().CooldownOverride("palworld"); secs != 0 {
+		t.Fatal("a rejected Modify changed the live map")
+	}
+	s2, err := New(defaults(), path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, set := s2.Get().CooldownOverride("palworld"); !set {
+		t.Fatal("override not persisted")
+	}
+}

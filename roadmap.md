@@ -136,9 +136,12 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   the real-server checks in track C. Hash-pinned remote install is done (`crowsnest module
   install|update|remove|list`, a lock file, an approval summary and re-approval on change); a web
   UI for it and signed catalogs are not built.
-- [ ] **Per-game settings** (idle timeout, restart cooldown, max players,
-  night opt-out per game, instead of global only). Comes from manifest
-  `params` and `runtime`: Phase 1-2, form in Phase 5.
+- [ ] **Per-game settings** (done 2026-11-11: idle timeout, restart cooldown
+  and night opt-in/out per game, as overrides in `settings.json` (`per_game`),
+  edited under Settings, General; each falls back to the global value or the
+  module's default, applies at once, and is audit-logged. Not built: max
+  players, which needs a per-module way to push the limit into the game's own
+  config.)
 - [ ] **Per-user, per-game permissions** (a friend can start Palworld but not
   see Windrose). Needs stable game/profile ids: Phase 2, UI in Phase 5.
 - [ ] **Profile page**: display name, "my sessions", sign out of all

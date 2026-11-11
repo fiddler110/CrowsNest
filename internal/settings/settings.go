@@ -20,7 +20,28 @@ const (
 	MaxIdleMinutes = 24 * 60
 	MinActiveGames = 1
 	MaxActiveGames = 32
+	// MaxCooldownSeconds caps a per-game restart cooldown override.
+	MaxCooldownSeconds = 3600
+	// maxGameKeyLen bounds the length of a per-game key.
+	maxGameKeyLen = 64
 )
+
+// GameValues are one game's overrides of the global settings. A nil field
+// means "no override": the global value (or the module's own default) applies.
+type GameValues struct {
+	// IdleMinutes replaces the global idle timeout for this game.
+	IdleMinutes *int `json:"idle_minutes,omitempty"`
+	// NightShutdown opts this game in (true) or out (false) of overnight
+	// shutdown, over the game's own default.
+	NightShutdown *bool `json:"night_shutdown,omitempty"`
+	// RestartCooldownSeconds replaces the minimum wait between stopping this
+	// game and starting it again; 0 turns the wait off.
+	RestartCooldownSeconds *int `json:"restart_cooldown_seconds,omitempty"`
+}
+
+func (g GameValues) empty() bool {
+	return g.IdleMinutes == nil && g.NightShutdown == nil && g.RestartCooldownSeconds == nil
+}
 
 // Values is the full set of runtime-adjustable options. The JSON tags are
 // the wire format for both the settings file and /api/settings.
@@ -46,6 +67,52 @@ type Values struct {
 	// to games that have an RCON address. Off by default; the fixed-action
 	// console is always available to admins.
 	RawConsole bool `json:"raw_console"`
+
+	// PerGame holds per-game overrides keyed by game id. A body that names a
+	// game replaces that game's entry (null or all-empty removes it); games it
+	// does not name are left alone.
+	PerGame map[string]GameValues `json:"per_game,omitempty"`
+}
+
+// clone returns v with its own PerGame map, so a caller may edit it without
+// touching the store's copy.
+func (v Values) clone() Values {
+	if v.PerGame != nil {
+		m := make(map[string]GameValues, len(v.PerGame))
+		for k, g := range v.PerGame {
+			m[k] = g
+		}
+		v.PerGame = m
+	}
+	return v
+}
+
+// prune drops overrides that override nothing.
+func (v *Values) prune() {
+	for k, g := range v.PerGame {
+		if g.empty() {
+			delete(v.PerGame, k)
+		}
+	}
+	if len(v.PerGame) == 0 {
+		v.PerGame = nil
+	}
+}
+
+// NightOverride reports a per-game night-shutdown choice, if one is set.
+func (v Values) NightOverride(id string) (enabled, set bool) {
+	if g := v.PerGame[id]; g.NightShutdown != nil {
+		return *g.NightShutdown, true
+	}
+	return false, false
+}
+
+// CooldownOverride reports a per-game restart cooldown in seconds, if one is set.
+func (v Values) CooldownOverride(id string) (seconds int, set bool) {
+	if g := v.PerGame[id]; g.RestartCooldownSeconds != nil {
+		return *g.RestartCooldownSeconds, true
+	}
+	return 0, false
 }
 
 // Validate reports the first out-of-range field.
@@ -64,6 +131,17 @@ func (v Values) Validate() error {
 	}
 	if v.MaxActiveGames < MinActiveGames || v.MaxActiveGames > MaxActiveGames {
 		return fmt.Errorf("max_active_games (%d): must be %d-%d", v.MaxActiveGames, MinActiveGames, MaxActiveGames)
+	}
+	for id, g := range v.PerGame {
+		if id == "" || len(id) > maxGameKeyLen {
+			return fmt.Errorf("per_game: bad game id %q", id)
+		}
+		if g.IdleMinutes != nil && (*g.IdleMinutes < MinIdleMinutes || *g.IdleMinutes > MaxIdleMinutes) {
+			return fmt.Errorf("per_game %s idle_minutes (%d): must be %d-%d", id, *g.IdleMinutes, MinIdleMinutes, MaxIdleMinutes)
+		}
+		if g.RestartCooldownSeconds != nil && (*g.RestartCooldownSeconds < 0 || *g.RestartCooldownSeconds > MaxCooldownSeconds) {
+			return fmt.Errorf("per_game %s restart_cooldown_seconds (%d): must be 0-%d", id, *g.RestartCooldownSeconds, MaxCooldownSeconds)
+		}
 	}
 	return nil
 }
@@ -99,20 +177,24 @@ func New(defaults Values, path string) (*Store, error) {
 	if err := v.Validate(); err != nil {
 		return nil, fmt.Errorf("settings: %s: %w", path, err)
 	}
+	v = v.clone()
+	v.prune()
 	s.v = v
 	return s, nil
 }
 
-// Get returns a snapshot of the current values.
+// Get returns a snapshot of the current values; the caller may keep it.
 func (s *Store) Get() Values {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.v
+	return s.v.clone()
 }
 
 // Update validates v, persists it (atomically: temp file + rename) and, only
 // if that succeeds, makes it current.
 func (s *Store) Update(v Values) error {
+	v = v.clone()
+	v.prune()
 	if err := v.Validate(); err != nil {
 		return err
 	}
@@ -134,12 +216,13 @@ func (s *Store) Update(v Values) error {
 func (s *Store) Modify(fn func(*Values) error) (Values, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	v := s.v
+	v := s.v.clone() // fn may edit PerGame in place; never the live map
 	if err := fn(&v); err != nil {
-		return s.v, err
+		return s.v.clone(), err
 	}
+	v.prune()
 	if err := v.Validate(); err != nil {
-		return s.v, err
+		return s.v.clone(), err
 	}
 	if s.path != "" {
 		if err := writeAtomic(s.path, v); err != nil {
@@ -147,7 +230,7 @@ func (s *Store) Modify(fn func(*Values) error) (Values, error) {
 		}
 	}
 	s.v = v
-	return v, nil
+	return v.clone(), nil
 }
 
 func writeAtomic(path string, v Values) error {

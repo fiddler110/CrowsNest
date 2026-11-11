@@ -180,6 +180,11 @@ type Manager struct {
 	// the limit is checked, so it can change at runtime.
 	MaxActiveFunc func() int
 
+	// CooldownFunc, when set, overrides a game's restart cooldown (from its
+	// module) at each start. ok is false when the game has no override; a
+	// zero duration with ok turns the cooldown off.
+	CooldownFunc func(id string) (time.Duration, bool)
+
 	// Memory, when set, refuses a start the host has no memory for, on top
 	// of the active-game limit. Optional: nil means only the limit applies.
 	Memory MemoryAdmitter
@@ -429,7 +434,7 @@ func (m *Manager) startLocked(ctx context.Context, id string, announce bool, swi
 		// could recreate it if its config changed — not what Start means.)
 		return nil
 	}
-	if target.RestartCooldown > 0 {
+	if m.cooldownOf(target) > 0 {
 		if rem := m.cooldownRemaining(ctx, target); rem > 0 {
 			return &CooldownError{Game: id, Remaining: rem}
 		}
@@ -463,7 +468,18 @@ func (m *Manager) admitMemory(id, stopping string) error {
 	return m.Memory.Admit(id, claimed, freed)
 }
 
-// cooldownRemaining is how much of d's RestartCooldown is left, measured
+// cooldownOf is d's restart cooldown: the CooldownFunc override when it has
+// one, else the game's own.
+func (m *Manager) cooldownOf(d games.GameDef) time.Duration {
+	if m.CooldownFunc != nil {
+		if c, ok := m.CooldownFunc(d.ID); ok {
+			return c
+		}
+	}
+	return d.RestartCooldown
+}
+
+// cooldownRemaining is how much of d's restart cooldown is left, measured
 // from the later of the last panel stop and the container's own
 // State.FinishedAt — so a crash, an external `docker stop`, or a stop from
 // before a CrowsNest restart all count too.
@@ -477,7 +493,7 @@ func (m *Manager) cooldownRemaining(ctx context.Context, d games.GameDef) time.D
 	if last.IsZero() {
 		return 0
 	}
-	return d.RestartCooldown - time.Since(last)
+	return m.cooldownOf(d) - time.Since(last)
 }
 
 // launchStart runs target's docker/compose start in the background. Caller
@@ -740,7 +756,7 @@ func (m *Manager) beginSwitch(from, to string) (*switchOp, error) {
 	}
 	// Refuse before stopping anything: startLocked would reject the target
 	// after `from` was already down, leaving nothing running.
-	if toDef.RestartCooldown > 0 {
+	if m.cooldownOf(toDef) > 0 {
 		if rem := m.cooldownRemaining(context.Background(), toDef); rem > 0 {
 			return nil, &CooldownError{Game: to, Remaining: rem}
 		}

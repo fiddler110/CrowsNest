@@ -403,3 +403,20 @@ func TestTick_PlayerOnSeedingTickEndsStartupGrace(t *testing.T) {
 		t.Fatalf("stopped = %v, want [windrose] 15m after the players left, not after the startup grace", stopper.stopped)
 	}
 }
+
+func TestGameIdleOverridesGlobal(t *testing.T) {
+	status := &fakeStatus{status: games.StatusOnline}
+	players := &fakePlayers{count: 0, ok: true}
+	m, _, clock := newTestManager(t, status, players, 15*time.Minute)
+	m.GameIdle = func(id string) (time.Duration, bool) { return 5 * time.Minute, id == "windrose" }
+
+	m.Tick(context.Background())
+	m.Tick(context.Background())
+	if left, ok := m.IdleRemaining("windrose"); !ok || left != 5*time.Minute {
+		t.Fatalf("remaining = %v, %v; want 5m, true", left, ok)
+	}
+	*clock = clock.Add(2 * time.Minute)
+	if left, _ := m.IdleRemaining("windrose"); left != 3*time.Minute {
+		t.Fatalf("remaining = %v, want 3m", left)
+	}
+}

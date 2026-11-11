@@ -934,3 +934,22 @@ func TestConfirmSwitch_MemoryCountsWhatTheSourceFrees(t *testing.T) {
 		t.Fatalf("the source must keep running after a refused switch, active = %q", id)
 	}
 }
+
+func TestRequestStart_CooldownFuncOverridesModule(t *testing.T) {
+	docker := newStaticFakeDocker(t, []string{"a"}, nil)
+	reg := newRegistry(t, docker, "a")
+	def, _ := reg.Get("a")
+	def.RestartCooldown = time.Hour
+	reg, err := games.NewRegistry([]games.GameDef{def})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := newTestManager(t, reg, docker)
+	m.CooldownFunc = func(string) (time.Duration, bool) { return 0, true } // override: no wait
+	if err := m.Stop(context.Background(), "a"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RequestStart(context.Background(), "a"); err != nil {
+		t.Fatalf("start with cooldown overridden to 0 = %v, want nil", err)
+	}
+}

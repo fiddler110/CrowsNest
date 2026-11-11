@@ -269,3 +269,39 @@ func TestGetSettings_IncludesTimeZoneButPutRefusesIt(t *testing.T) {
 		t.Errorf("PUT with tz = %d, want 400", rec.Code)
 	}
 }
+
+func TestSettings_PerGameOverrides(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	store, err := settings.New(settings.Values{IdleMinutes: 15, NightStartHour: 23, NightEndHour: 5, MaxActiveGames: 1}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.Settings = store
+	put := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(http.MethodPut, "/api/settings", []byte(body)))
+		return rec.Code
+	}
+	if c := put(`{"per_game":{"windrose":{"idle_minutes":5,"night_shutdown":false}}}`); c != http.StatusOK {
+		t.Fatalf("PUT per_game = %d", c)
+	}
+	v := store.Get()
+	if g := v.PerGame["windrose"]; g.IdleMinutes == nil || *g.IdleMinutes != 5 || v.IdleMinutes != 15 {
+		t.Fatalf("stored %+v", v)
+	}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/settings", nil))
+	var got struct {
+		PerGame map[string]map[string]any `json:"per_game"`
+		Games   []map[string]any          `json:"games"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil || got.PerGame["windrose"]["idle_minutes"] != float64(5) || len(got.Games) == 0 {
+		t.Fatalf("GET = %s", rec.Body)
+	}
+	if c := put(`{"per_game":{"windrose":{"idle_minutes":0}}}`); c != http.StatusBadRequest {
+		t.Errorf("idle_minutes 0 = %d, want 400", c)
+	}
+	if c := put(`{"per_game":{"windrose":null}}`); c != http.StatusOK || len(store.Get().PerGame) != 0 {
+		t.Errorf("null entry = %d, per_game %v; want 200 and cleared", c, store.Get().PerGame)
+	}
+}

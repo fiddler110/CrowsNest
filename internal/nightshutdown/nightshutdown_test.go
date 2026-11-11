@@ -221,3 +221,20 @@ func TestTick_SkipsWhenStartTimeUnavailable(t *testing.T) {
 		t.Fatalf("stopped = %v, want none when uptime can't be read", stopper.stopped)
 	}
 }
+
+func TestTick_GameOverrideOptsOutAndIn(t *testing.T) {
+	status := &fakeStatus{status: games.StatusOnline}
+	players := &fakePlayers{count: 0, ok: true}
+	m, stopper, _ := newTestManager(t, status, players)
+
+	m.GameOverride = func(string) (bool, bool) { return false, true } // opted out
+	m.Tick(context.Background())
+	if len(stopper.stopped) != 0 {
+		t.Fatalf("stopped = %v, want none for an opted-out game", stopper.stopped)
+	}
+	m.GameOverride = func(string) (bool, bool) { return false, false } // no override: default is eligible
+	m.Tick(context.Background())
+	if len(stopper.stopped) != 1 {
+		t.Fatalf("stopped = %v, want one with no override", stopper.stopped)
+	}
+}

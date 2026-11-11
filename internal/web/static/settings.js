@@ -30,6 +30,7 @@ loaders.general = () => {
     fields.forEach((n) => {
       if (input(n).type === "checkbox") input(n).checked = !!v[n]; else input(n).value = v[n];
     });
+    renderPerGame(v);
     // tz is for display only; the body sent back is built from fields alone.
     if (v.tz) {
       $("night-tz").textContent = `Hours are in the server's time zone, ${v.tz}.`;
@@ -48,6 +49,72 @@ loaders.general = () => {
     toast("Settings saved.", "ok");
   });
 };
+
+// ---------- Per-game overrides (General pane) ----------
+// One row per game; an empty box means "no override". The whole per_game map
+// is sent on save, with null for games left entirely empty.
+function renderPerGame(v) {
+  const form = $("pergame-form");
+  const list = $("pergame-list");
+  const errorEl = $("pergame-error");
+  const games = v.games || [];
+  if (!games.length) return;
+  form.hidden = false;
+  const per = v.per_game || {};
+  const numberField = (label, name, max, value, hint) => {
+    const l = document.createElement("label");
+    l.className = "field";
+    l.append(label);
+    const i = document.createElement("input");
+    i.type = "number"; i.name = name; i.min = name === "idle_minutes" ? "1" : "0"; i.max = String(max);
+    i.placeholder = hint;
+    if (value != null) i.value = value;
+    l.append(i);
+    return l;
+  };
+  games.forEach((g) => {
+    const o = per[g.id] || {};
+    const fs = document.createElement("fieldset");
+    fs.className = "pergame-row";
+    fs.dataset.game = g.id;
+    const lg = document.createElement("legend");
+    lg.textContent = g.name || g.id;
+    const row = document.createElement("div");
+    row.className = "setting-row";
+    row.append(
+      numberField("Idle minutes", "idle_minutes", 1440, o.idle_minutes, `${v.idle_minutes} (global)`),
+      numberField("Restart wait (seconds)", "restart_cooldown_seconds", 3600, o.restart_cooldown_seconds,
+        `${g.restart_cooldown_seconds} (game default)`),
+    );
+    const night = document.createElement("label");
+    night.className = "field";
+    night.append("Overnight shutdown");
+    const sel = document.createElement("select");
+    sel.name = "night_shutdown";
+    [["", `Default (${g.night_shutdown ? "included" : "left running"})`], ["true", "Included"], ["false", "Left running"]]
+      .forEach(([val, text]) => { const op = new Option(text, val); sel.append(op); });
+    sel.value = o.night_shutdown == null ? "" : String(o.night_shutdown);
+    night.append(sel);
+    row.append(night);
+    fs.append(lg, row);
+    list.append(fs);
+  });
+  form.addEventListener("submit", async (e) => {
+    e.preventDefault();
+    const per_game = {};
+    list.querySelectorAll("fieldset").forEach((fs) => {
+      const int = (n) => { const x = fs.querySelector(`[name=${n}]`).value; return x === "" ? null : parseInt(x, 10); };
+      const ns = fs.querySelector("[name=night_shutdown]").value;
+      const g = { idle_minutes: int("idle_minutes"), restart_cooldown_seconds: int("restart_cooldown_seconds"),
+        night_shutdown: ns === "" ? null : ns === "true" };
+      per_game[fs.dataset.game] = Object.values(g).every((x) => x === null) ? null : g;
+    });
+    const res = await callAPI("/api/settings", { method: "PUT", body: JSON.stringify({ per_game }) });
+    if (!res.ok) { errorEl.textContent = await errorText(res); errorEl.hidden = false; return; }
+    errorEl.hidden = true;
+    toast("Per-game settings saved.", "ok");
+  });
+}
 
 // ---------- Users ----------
 loaders.users = () => {

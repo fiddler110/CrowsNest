@@ -206,6 +206,7 @@ Any signed-in user can change these from **Settings** on the dashboard, and the 
 | Stop a server when nobody is on it / minutes | the idle auto-stop and its timeout (1 to 1440 minutes) |
 | Stop empty servers overnight / from / until | the overnight window, in `server.tz` hours |
 | Servers allowed at once | how many games may run together |
+| Per game: idle minutes / restart wait / overnight shutdown | override the idle timeout, the pause required between stopping and restarting, and whether the game is included in the overnight stop, for one game; an empty box uses the global value or the module's default |
 | Update on start | run `docker compose pull` for the game each time it starts, so a restart picks up new server versions (a failed pull is logged and the old image is used) |
 
 `config.yaml` holds the defaults. Whatever is saved from the dashboard is written to `server.settings_file`
