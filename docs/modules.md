@@ -179,7 +179,7 @@ host_ips: [10.0.0.2]                   # optional: limits the address ports are 
 exec: false                            # may managed scopes use docker exec (save-on-stop hooks need it)
 labels: []                             # extra labels they may require (the watchtower opt-out is always fine)
 pin_digests: true                      # managed creates must name the image by digest (see "Image pinning" below)
-max_scopes: 32
+max_scopes: 64
 ```
 
 - **Ports come from the games you allow.** On the Games page each bundled game has a switch. Turning it on asks

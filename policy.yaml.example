@@ -16,4 +16,4 @@ exec: false
 # true: the guard refuses a dashboard-game create that names a tag. Pulls by tag stay
 # allowed; your own GUARD_SCOPES are not affected.
 pin_digests: true
-max_scopes: 32
+max_scopes: 64

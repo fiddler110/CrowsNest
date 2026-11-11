@@ -55,7 +55,7 @@ type Policy struct {
 	Exec bool `yaml:"exec"`
 	// Labels the managed scopes may require, beyond the watchtower opt-out.
 	Labels []string `yaml:"labels"`
-	// MaxScopes bounds how many managed scopes load (default 32).
+	// MaxScopes bounds how many managed scopes load (default 64).
 	MaxScopes int `yaml:"max_scopes"`
 	// PinDigests makes every create from a managed scope name its image by
 	// digest (repo@sha256:...), so an upstream push to a tag cannot change what
@@ -316,7 +316,7 @@ func ParsePolicy(b []byte) (*Policy, error) {
 		return nil, errors.New("policy: max_scopes must be between 1 and 1000")
 	}
 	if p.MaxScopes == 0 {
-		p.MaxScopes = 32
+		p.MaxScopes = 64
 	}
 	return &p, nil
 }

@@ -304,7 +304,7 @@ The two are separate ticks, both off by default. Deleting needs the game's id ty
 widening the guard, and is recorded in the activity log. Delete the data without the backups and you can still bring
 the world back with Restore after enabling the game again. If emptying the folders fails, nothing else is changed and
 the game stays listed. Each game now uses up to three guard scopes (the game, its restore helper and its clean
-helper), which count towards `max_scopes` in `policy.yaml`.
+helper), which count towards `max_scopes` in `policy.yaml` (default 64, so about 20 games with all three).
 
 Only dashboard-enabled games can do this; a game set up by hand in `config.yaml` has to be cleaned up by hand.
 

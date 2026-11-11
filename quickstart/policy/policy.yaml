@@ -8,7 +8,7 @@ games_root: /srv/games                  # game data may only be bound from insid
 host_ips: []
 exec: false                             # true lets games run the backup command declared in their module
 pin_digests: true                       # run images by digest so an upstream push changes nothing until you update
-max_scopes: 16
+max_scopes: 64
 
 # Not listed, so these are the defaults:
 #   ports:    the published ports of each game you switch on under "Add a game" (a password is asked)
