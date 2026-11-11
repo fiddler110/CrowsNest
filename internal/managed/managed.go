@@ -57,11 +57,15 @@ type Manager struct {
 	// PolicyEditable lets SetPolicy rewrite PolicyFile (the operator mounted it writable and opted in).
 	PolicyEditable bool
 	Platform       modules.Platform
-	Modules        *modules.Set
-	Config         *config.Config
-	Docker         Docker
-	Wire           *dockerctl.Client // for module wiring (status, logs, exec)
-	Registry       *games.Registry
+	// Backups is the panel's view of the shared backups folder; each game's
+	// folder is created in it before the container is. Needed when
+	// Platform.BackupsRoot is set.
+	Backups  *backup.Root
+	Modules  *modules.Set
+	Config   *config.Config
+	Docker   Docker
+	Wire     *dockerctl.Client // for module wiring (status, logs, exec)
+	Registry *games.Registry
 	// Settle is how long a new game waits for the guard to pick up its scope.
 	Settle time.Duration
 	// Busy, when set, reports a game that is mid start/stop. A start still
@@ -438,7 +442,7 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	}
 	g = config.GameConfig{
 		ID: r.ID, ContainerName: r.ID, DisplayName: r.DisplayName, Module: r.Module,
-		ConnectAddress: r.ConnectAddress, Options: opts, Backup: mf.Backup,
+		ConnectAddress: r.ConnectAddress, Options: opts, Backup: m.backupFor(mf, r.ID),
 	}
 	if g.DisplayName == "" {
 		g.DisplayName = mf.Name
@@ -455,6 +459,20 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		}
 	}
 	return g, mf, nil
+}
+
+// backupFor is the module's backup block for game id. With a shared backups
+// folder and a module that names a backup dir, the panel reads that game's own
+// folder (<backups_root>/<id>) instead of listing through docker exec.
+func (m *Manager) backupFor(mf *modules.Manifest, id string) *config.BackupConfig {
+	if mf.Backup == nil {
+		return nil
+	}
+	b := *mf.Backup
+	if mf.Backup.Dir != "" && m.Platform.BackupsRoot != "" {
+		b.LocalDir = m.Platform.BackupLocalDir(id)
+	}
+	return &b
 }
 
 func plainValue(k, v string) error {
@@ -813,6 +831,17 @@ func (m *Manager) doInstall(e *entry, g config.GameConfig, mode installMode) err
 	ctx := m.ctx
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// The panel makes the game's backup folder itself: if Docker created the
+	// bind source it would be root-owned, and a missing external drive would
+	// look like a fresh empty folder.
+	if g.Backup != nil && g.Backup.LocalDir != "" {
+		if m.Backups == nil {
+			return errors.New("platform.backups_root is set but the panel has no backups folder mounted")
+		}
+		if err := m.Backups.EnsureGameDir(rd.ID); err != nil {
+			return err
+		}
 	}
 	exists, err := m.Docker.Exists(ctx, name)
 	if err != nil {
@@ -1333,6 +1362,13 @@ func (m *Manager) Restore(ctx context.Context) error {
 // tampered games.json cannot aim a backup command at an unrelated container.
 // The policy file is required; unreadable, no rules are issued.
 func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, error) {
+	return ExecRulesFor(dir, policyFile, mods, false)
+}
+
+// ExecRulesFor is ExecRules for a platform that may share a backups folder.
+// With sharedBackups, a module that names a backup dir gets no listing or
+// pruning command: the panel reads and prunes that folder itself.
+func ExecRulesFor(dir, policyFile string, mods *modules.Set, sharedBackups bool) ([]execguard.Rule, error) {
 	if policyFile == "" {
 		return nil, errors.New("exec rules for dashboard games need managed.policy_file")
 	}
@@ -1358,11 +1394,14 @@ func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, err
 			continue
 		}
 		rules = append(rules, execguard.Rule{Container: g.ID, Cmd: mf.Backup.Exec})
-		if mf.Backup.ListDir != "" {
-			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.ListArgs(mf.Backup.ListDir)})
+		if sharedBackups && mf.Backup.Dir != "" {
+			continue
+		}
+		if dir := mf.Backup.ExecListDir(); dir != "" {
+			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.ListArgs(dir)})
 		}
 		if mf.Backup.Keep > 0 {
-			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.PruneArgs(mf.Backup.ListDir, mf.Backup.Keep)})
+			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.PruneArgs(mf.Backup.ExecListDir(), mf.Backup.Keep)})
 		}
 	}
 	return rules, nil
@@ -1370,15 +1409,17 @@ func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, err
 
 // PolicyDoc is policy.yaml as the dashboard shows and edits it.
 type PolicyDoc struct {
-	GamesRoot string   `json:"games_root" yaml:"games_root"`
-	Names     []string `json:"names" yaml:"names"`
-	Images    []string `json:"images" yaml:"images"`
-	Networks  []string `json:"networks" yaml:"networks"`
-	Ports     []string `json:"ports" yaml:"ports"`
-	HostIPs   []string `json:"host_ips" yaml:"host_ips,omitempty"`
-	Exec      bool     `json:"exec" yaml:"exec"`
-	Labels    []string `json:"labels" yaml:"labels,omitempty"`
-	MaxScopes int      `json:"max_scopes" yaml:"max_scopes"`
+	GamesRoot string `json:"games_root" yaml:"games_root"`
+	// BackupsRoot is read-only here, like GamesRoot.
+	BackupsRoot string   `json:"backups_root,omitempty" yaml:"backups_root,omitempty"`
+	Names       []string `json:"names" yaml:"names"`
+	Images      []string `json:"images" yaml:"images"`
+	Networks    []string `json:"networks" yaml:"networks"`
+	Ports       []string `json:"ports" yaml:"ports"`
+	HostIPs     []string `json:"host_ips" yaml:"host_ips,omitempty"`
+	Exec        bool     `json:"exec" yaml:"exec"`
+	Labels      []string `json:"labels" yaml:"labels,omitempty"`
+	MaxScopes   int      `json:"max_scopes" yaml:"max_scopes"`
 	// PinDigests: managed creates must name their image by digest. Nil in a save keeps what the file has.
 	PinDigests *bool `json:"pin_digests,omitempty" yaml:"pin_digests"`
 	// Exceptions are shown, never edited here: SetPolicy keeps whatever the file has.
@@ -1398,7 +1439,7 @@ func (m *Manager) Policy() (PolicyState, error) {
 		return PolicyState{}, err
 	}
 	return PolicyState{Editable: m.PolicyEditable, Policy: PolicyDoc{
-		GamesRoot: p.GamesRoot, Names: p.Names, Images: p.Images, Networks: p.Networks, Ports: p.Ports,
+		GamesRoot: p.GamesRoot, BackupsRoot: p.BackupsRoot, Names: p.Names, Images: p.Images, Networks: p.Networks, Ports: p.Ports,
 		HostIPs: p.HostIPs, Exec: p.Exec, Labels: p.Labels, MaxScopes: p.MaxScopes, Exceptions: p.Exceptions,
 		PinDigests: &p.PinDigests,
 	}}, nil
@@ -1423,6 +1464,9 @@ func narrowOnly(cur *dockerguard.Policy, d PolicyDoc) error {
 	}
 	if d.GamesRoot != cur.GamesRoot {
 		return fmt.Errorf("games_root cannot be changed here (%s)", hint)
+	}
+	if d.BackupsRoot != cur.BackupsRoot {
+		return fmt.Errorf("backups_root cannot be changed here (%s)", hint)
 	}
 	for _, l := range []struct {
 		name     string

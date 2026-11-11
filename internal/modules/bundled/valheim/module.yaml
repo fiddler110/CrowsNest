@@ -29,7 +29,7 @@ runtime:
 
 backup:
   exec: ["/bin/sh", "-c", "mkdir -p /config/backups && tar czf /config/backups/manual-$(date +%Y%m%d-%H%M%S).tar.gz -C /config worlds_local"]
-  list_dir: /config/backups
+  dir: /config/backups
   before_stop: true
 
 options:

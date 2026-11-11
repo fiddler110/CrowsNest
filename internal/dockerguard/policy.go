@@ -24,6 +24,11 @@ import (
 type Policy struct {
 	// GamesRoot is the absolute host folder every managed bind must be inside.
 	GamesRoot string `yaml:"games_root"`
+	// BackupsRoot, when set, is a second absolute host folder managed binds may
+	// be inside: each game's backup folder, <backups_root>/<game id>. It must
+	// not contain, or be inside, games_root. Left out, only games_root is
+	// bindable.
+	BackupsRoot string `yaml:"backups_root"`
 	// Names are the container names the panel may manage. An entry ending in *
 	// is a prefix. Optional: when it is left out, any name is allowed but the
 	// guard only acts on containers labelled crowsnest.managed=true, so a scope
@@ -232,6 +237,15 @@ func ParsePolicy(b []byte) (*Policy, error) {
 	if !strings.HasPrefix(p.GamesRoot, "/") || path.Clean(p.GamesRoot) != p.GamesRoot || p.GamesRoot == "/" || strings.ContainsFunc(p.GamesRoot, badBindRune) {
 		return nil, fmt.Errorf("policy: games_root must be an absolute, normalised path other than /, not %q", p.GamesRoot)
 	}
+	if p.BackupsRoot != "" {
+		r := p.BackupsRoot
+		if !strings.HasPrefix(r, "/") || path.Clean(r) != r || r == "/" || strings.ContainsFunc(r, badBindRune) {
+			return nil, fmt.Errorf("policy: backups_root must be an absolute, normalised path other than /, not %q", r)
+		}
+		if r == p.GamesRoot || strings.HasPrefix(r, p.GamesRoot+"/") || strings.HasPrefix(p.GamesRoot, r+"/") {
+			return nil, fmt.Errorf("policy: backups_root %s and games_root %s must be separate folders, neither inside the other", r, p.GamesRoot)
+		}
+	}
 	for _, n := range p.Names {
 		if n == "*" || !identRe.MatchString(strings.TrimSuffix(n, "*")) {
 			return nil, fmt.Errorf("policy: bad container name entry %q", n)
@@ -420,7 +434,10 @@ func (p *Policy) Admit(s *Scope) error {
 		}
 	}
 	for i, b := range s.Binds {
-		if !strings.HasPrefix(b, p.GamesRoot+"/") {
+		if !strings.HasPrefix(b, p.GamesRoot+"/") && (p.BackupsRoot == "" || !strings.HasPrefix(b, p.BackupsRoot+"/")) {
+			if p.BackupsRoot != "" {
+				return fmt.Errorf("bind %s is not inside games_root %s or backups_root %s", b, p.GamesRoot, p.BackupsRoot)
+			}
 			return fmt.Errorf("bind %s is not inside games_root %s", b, p.GamesRoot)
 		}
 		for _, o := range s.Binds[:i] {

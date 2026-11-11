@@ -1,6 +1,8 @@
 # The limits the dashboard works inside. The guard enforces them; the panel cannot change them.
 # Widen them here, on the host, deliberately. See ../../docs/modules.md ("The policy envelope").
 games_root: /srv/games                  # game data may only be bound from inside this folder (a host path)
+# backups_root: /mnt/usb/crowsnest-backups   # optional: games may also bind <this>/<their id> for backups. Must be separate
+#                                       # from games_root (neither inside the other) and match platform.backups_root
 # ports: ["8200-8299/udp", "25560-25599/tcp", "2456-2499/udp"]   # optional: room for a second or third server of a game
 #                                       # (the next free port in these ranges is picked for you)
 host_ips: []

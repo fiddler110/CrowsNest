@@ -33,6 +33,9 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./data:/app/data                         # users, session secret, settings, activity log, dashboard games
       - ./policy:/etc/crowsnest/policy:ro        # the limits the dashboard cannot change
+      # Shared backups folder (optional, see "Backups" in README.md): one sub-folder per game, so three servers of
+      # one game keep three sets. Point BACKUPS_DIR at an external drive if you like. Read-write.
+      # - ${BACKUPS_DIR:?set BACKUPS_DIR in .env to an absolute path}:/game-backups
     networks: [crowsnest-docker, crowsnest-games-net]
 
   # The scoped Docker API filter: creates, starts and sees only what policy.yaml admits. With --exec it also

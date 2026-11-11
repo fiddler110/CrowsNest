@@ -25,6 +25,7 @@
         "backup"
       ],
       "ListDir": "/palworld/backups",
+      "LocalDir": "",
       "BeforeStop": true,
       "Keep": 0
     },
@@ -60,6 +61,7 @@
         "mkdir -p /config/backups \u0026\u0026 tar czf /config/backups/manual-$(date +%Y%m%d-%H%M%S).tar.gz -C /config worlds_local"
       ],
       "ListDir": "/config/backups",
+      "LocalDir": "",
       "BeforeStop": true,
       "Keep": 0
     },
@@ -95,6 +97,7 @@
         "mkdir -p /home/steam/server-files/backups \u0026\u0026 tar czf /home/steam/server-files/backups/world-$(date +%Y%m%d-%H%M%S).tar.gz -C /home/steam/server-files/R5/Saved SaveProfiles \u0026\u0026 chown -R 1000:1000 /home/steam/server-files/backups"
       ],
       "ListDir": "/home/steam/server-files/backups",
+      "LocalDir": "",
       "BeforeStop": true,
       "Keep": 0
     },

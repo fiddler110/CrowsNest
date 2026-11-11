@@ -279,6 +279,52 @@ With `keep: N` (and `list_dir`) CrowsNest deletes all but the newest N files in 
 backup, using one more exec command the guard allows. It counts files, and the container needs `sh`, GNU `find`,
 `sort`, `tail` and `cut`.
 
+#### A shared backups folder
+
+Set `platform.backups_root` (a host path, for example an external drive) and every dashboard-enabled game whose
+module declares `backup.dir` backs up into its own folder, `<backups_root>/<game id>`. The panel mounts the folder
+read-write at `platform.backups_mount` (default `/game-backups`), each game container gets only its own sub-folder,
+and the panel lists and prunes it directly, with no `docker exec` for either. Add `backups_root` to `policy.yaml`
+(the same path, separate from `games_root`) so the guard allows the bind. In the quickstart it is three commented
+lines: the volume in `compose.yaml`, `backups_root` in `config.yaml`, and `backups_root` in `policy/policy.yaml`.
+
+### Things to watch with a shared backups folder
+
+- **A missing external drive looks like an empty folder.** If the host path does not exist when Docker starts the
+  panel, Docker creates an empty directory there, and backups would quietly land on the system disk. CrowsNest
+  puts a marker file (`.crowsnest-backups`, a random token) in the folder and remembers the same token in
+  `backups-root` next to `settings.json`. A folder that no longer carries the remembered token is refused: no
+  game's backup folder is created in it, and backing up, listing and pruning stop, with a message saying why.
+  To accept a different drive on purpose, delete `backups-root` and restart. `crowsnest doctor` reports it. Bind
+  the drive's mount point rather than a folder on it, and start Docker after the drive is mounted
+  (`RequiresMountsFor=` in the Docker unit, or an fstab `x-systemd.before=docker.service` style ordering).
+- **Permissions.** The panel (uid 1000) creates each game's folder with `backups_dir_mode` (default `0775`). A
+  game whose own user is someone else gets "permission denied" from its backup command. Either chown the folder to
+  that user on the host, run the game as the panel's uid, or set `backups_dir_mode: "0777"`. `doctor` says which mode
+  is in use. Many images take `PUID`/`PGID`; matching the panel's uid is the cleanest fix.
+- **The panel can delete backups.** The folder is mounted read-write into the panel so it can list and prune. A
+  compromised panel could therefore delete every backup. The guard still limits what it can do to containers, but
+  not to this folder. For protection against that, copy the folder offsite or to a snapshotting filesystem
+  (immutable or append-only), which CrowsNest never has to touch. Pruning only deletes regular files directly inside
+  a game's folder and never follows a link, so a game cannot aim it elsewhere.
+- **Games can see only their own folder.** Each game binds `<backups_root>/<id>` and nothing else, so three Palworld
+  servers (`palworld`, `palworld-2`, `palworld-friends`) keep three separate sets, and one game cannot read or
+  overwrite another's. The folder is named after the game's **id**, which cannot be changed later: renaming means
+  moving the folder yourself.
+- **Disabling a game never deletes its backups.** The folder stays in `backups_root`. Delete it by hand when you
+  are sure.
+- **`backups_root` and `games_root` must be separate** folders, neither inside the other (the policy refuses
+  otherwise), and `backups_root` must be the same host path in `config.yaml`, `policy.yaml` and the compose volume.
+- **Retention counts files.** `keep: N` keeps the N newest files in a game's folder, so a backup that writes two
+  files per run keeps N/2 runs. Files the game wrote by hand count too.
+- **Only dashboard-enabled games get a folder.** Games in `config.yaml` with their own compose file keep backing up
+  where they do today (inside their own data, listed over `docker exec`); give them a bind to a folder under
+  `backups_root` yourself if you want them in the same place.
+- **A big backup volume needs space checks.** `doctor` warns under 5 GiB free. Backups of several worlds add up
+  quickly, so set `keep`.
+- **Restore is not built yet.** Today a restore is by hand: stop the game, then unpack the file from
+  `<backups_root>/<id>` into the game's data folder.
+
 ### Admin console
 
 Admins get a Console tab on games that support it (Palworld today). It has two parts.

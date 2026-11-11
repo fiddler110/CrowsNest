@@ -157,15 +157,16 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
 - [ ] **Whitelist, ban and kick actions**, declared per module and run via
   RCON or the adapter (Phase 2+).
 - [ ] **Backup retention, restore button and offsite copy** (restic/rclone).
-  (done 2026-11-11: retention, `backup.keep` prunes `list_dir` after each successful backup via one
-  more allowlisted exec, shown in the module approval summary. Not built: restore, which has to be
-  declared per module because the way to put a backup back differs by image and the world must not
-  be live while it happens; offsite copy, which needs something that can read the data folder,
-  outside the exec-only model.)
-- [ ] **"Update available" and one-click rollback** to the last-known-good
-  image. (done: Roll back on the Games page recreates a dashboard game on its
-  previous digest, and Update image says whether anything changed. Not built:
-  an "update available" check that asks the registry without pulling.)
+  Done 2026-11-11: retention (`backup.keep`), and a **shared backups folder**: `platform.backups_root` binds
+  `<root>/<game id>` into each dashboard game at its module's `backup.dir` and into the panel read-write; the panel
+  lists and prunes it directly (no exec), the policy has a matching `backups_root`, and a marker file plus a remembered
+  token refuse a folder that is not the one used before (unmounted external drive). The watch-outs (permissions, the
+  panel being able to delete, ids as folder names, nothing deleted on disable, retention counts files) are in the
+  README under "A shared backups folder". Not built:
+  - **Restore.** Declared per module (stop the game, unpack a chosen file); needs the folder above, now in place.
+  - **Offsite copy.** A restic/rclone sidecar reading the same folder; CrowsNest itself should not hold the credentials.
+  - **Config-file games** (hand-written compose) still back up inside their own data; they would need the bind added by hand.
+  - **Backups-folder status in the UI** (free space, last backup per game); `crowsnest doctor` covers it for now.
 - [x] **Crash-loop detection and Prometheus `/metrics` (done 2026-11-11).** `internal/crashwatch` reads each
   container's last exit; non-zero exits other than a stop (0, 143, and 137 unless OOM-killed) are crashes,
   and `crash_loop.crashes` within `window_minutes` raises one alert (activity log + Discord). `GET /metrics`

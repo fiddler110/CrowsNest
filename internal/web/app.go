@@ -568,7 +568,7 @@ func (a *App) handleBackup(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	case errors.Is(err, backup.ErrNotConfigured):
 		http.Error(w, "this game has no backup configured", http.StatusNotFound)
-	case errors.Is(err, backup.ErrNotRunning), errors.Is(err, backup.ErrBusy):
+	case errors.Is(err, backup.ErrNotRunning), errors.Is(err, backup.ErrBusy), errors.Is(err, backup.ErrRootUnavailable):
 		http.Error(w, strings.TrimPrefix(err.Error(), "backup: "), http.StatusConflict)
 	default:
 		log.Printf("audit: %s backup %s failed: %v", actor(r), d.ID, err)

@@ -47,7 +47,9 @@ type File struct {
 
 // Manager runs backups. The zero value works; set Docker.
 type Manager struct {
-	Docker   *dockerctl.Client
+	Docker *dockerctl.Client
+	// Root is the shared backups folder; needed for games with a LocalDir.
+	Root     *Root
 	History  history.Recorder
 	Notifier Notifier
 
@@ -95,6 +97,9 @@ func (m *Manager) RunBackup(ctx context.Context, d games.GameDef, actor string) 
 	if d.Backup == nil || len(d.Backup.Exec) == 0 {
 		return ErrNotConfigured
 	}
+	if err := m.checkRoot(d); err != nil {
+		return err
+	}
 	if !m.claim(d.ID) {
 		return ErrBusy
 	}
@@ -122,7 +127,13 @@ func (m *Manager) run(ctx context.Context, d games.GameDef, actor string) error 
 	detail := "done in " + took.String()
 	if d.Backup.Keep > 0 {
 		// The backup itself succeeded; a failed prune only leaves old files.
-		if _, err := m.Docker.ExecTimeout(ctx, d.ContainerName, listTimeout, PruneArgs(d.Backup.ListDir, d.Backup.Keep)...); err != nil {
+		var err error
+		if d.Backup.LocalDir != "" {
+			_, err = pruneLocal(d.Backup.LocalDir, d.Backup.Keep)
+		} else {
+			_, err = m.Docker.ExecTimeout(ctx, d.ContainerName, listTimeout, PruneArgs(d.Backup.ListDir, d.Backup.Keep)...)
+		}
+		if err != nil {
 			log.Printf("backup: %s prune failed: %v", d.ID, err)
 			detail += "; pruning old backups failed: " + tail(err.Error())
 		}
@@ -137,6 +148,9 @@ func (m *Manager) run(ctx context.Context, d games.GameDef, actor string) error 
 func (m *Manager) Request(ctx context.Context, d games.GameDef, actor string) error {
 	if d.Backup == nil || len(d.Backup.Exec) == 0 {
 		return ErrNotConfigured
+	}
+	if err := m.checkRoot(d); err != nil {
+		return err
 	}
 	up, err := m.Docker.Running(ctx, d.ContainerName)
 	if err != nil {
@@ -180,9 +194,34 @@ func (m *Manager) notify(msg string) {
 	m.Notifier.Notify(ctx, msg)
 }
 
+// checkRoot refuses to touch a game's backups while the shared folder is not
+// the one CrowsNest knows (see Root). Games without a LocalDir are unaffected.
+func (m *Manager) checkRoot(d games.GameDef) error {
+	if d.Backup == nil || d.Backup.LocalDir == "" {
+		return nil
+	}
+	if m.Root == nil {
+		return fmt.Errorf("%w: no shared backups folder is configured", ErrRootUnavailable)
+	}
+	return m.Root.Verify()
+}
+
 // List returns d's backup files newest first (at most maxListed). It needs
 // list_dir configured and the container running.
 func (m *Manager) List(ctx context.Context, d games.GameDef) ([]File, error) {
+	if d.Backup != nil && d.Backup.LocalDir != "" {
+		if err := m.checkRoot(d); err != nil {
+			return nil, err
+		}
+		files, err := localFiles(d.Backup.LocalDir)
+		if err != nil {
+			return nil, err
+		}
+		if len(files) > maxListed {
+			files = files[:maxListed]
+		}
+		return files, nil
+	}
 	if d.Backup == nil || d.Backup.ListDir == "" {
 		return nil, ErrNotConfigured
 	}

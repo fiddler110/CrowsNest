@@ -252,9 +252,20 @@ func serve() error {
 	}
 	go activity.RunPruner(ctx)
 
+	var backupRoot *backup.Root
+	if cfg.Platform.BackupsRoot != "" {
+		mode, _ := cfg.Platform.DirMode() // validated when the config loads
+		backupRoot = &backup.Root{
+			Mount: cfg.Platform.BackupsMount, Mode: mode,
+			StateFile: filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "backups-root"),
+		}
+		if err := backupRoot.Verify(); err != nil {
+			log.Printf("warning: %v (backups to the shared folder are refused until this is fixed)", err)
+		}
+	}
 	exclusivityMgr := exclusivity.NewManager(registry, docker)
 	exclusivityMgr.History = activity
-	backups := &backup.Manager{Docker: docker, History: activity, BaseContext: ctx}
+	backups := &backup.Manager{Docker: docker, Root: backupRoot, History: activity, BaseContext: ctx}
 	exclusivityMgr.Backups = backups
 	exclusivityMgr.MaxActiveFunc = func() int { return settingsStore.Get().MaxActiveGames }
 	exclusivityMgr.CooldownFunc = func(id string) (time.Duration, bool) {
@@ -307,7 +318,8 @@ func serve() error {
 			log.Printf("warning: managed.policy_editable is on: the panel can rewrite %s (it may only tighten it, but it can still remove limits it was given)", cfg.Managed.PolicyFile)
 		}
 		mgr := &managed.Manager{
-			Dir: cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, PolicyEditable: cfg.Managed.PolicyEditable, Platform: modules.PlatformFrom(cfg.Platform),
+			Backups: backupRoot,
+			Dir:     cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, PolicyEditable: cfg.Managed.PolicyEditable, Platform: modules.PlatformFrom(cfg.Platform),
 			Modules: mods, Config: cfg, Docker: docker, Wire: docker, Registry: registry,
 			Busy: func(id string) bool { return exclusivityMgr.Starting(id) || exclusivityMgr.Stopping(id) },
 		}

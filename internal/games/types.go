@@ -181,8 +181,11 @@ type GameDef struct {
 
 // BackupSpec mirrors config.BackupConfig.
 type BackupSpec struct {
-	Exec       []string
-	ListDir    string
+	Exec    []string
+	ListDir string
+	// LocalDir is the game's backup folder as the panel sees it. When set, the
+	// panel lists and prunes it directly and ListDir is unused.
+	LocalDir   string
 	BeforeStop bool
 	Keep       int
 }

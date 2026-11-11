@@ -3,6 +3,7 @@ package modules
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -97,13 +98,43 @@ type Platform struct {
 	// HostGamesRoot is GamesRoot as a literal path, for the guard's scopes;
 	// "" means GamesRoot is already literal.
 	HostGamesRoot string
-	HostIP        string // published-port address; "" = 0.0.0.0
-	Network       string // existing docker network; "" = crowsnest-games-net
+	// BackupsRoot is the host folder holding every game's backups, one folder
+	// per game id ("" = no shared backups folder). HostBackupsRoot is its
+	// literal form for the guard, like HostGamesRoot. BackupsMount and
+	// BackupsDirMode are the panel's view of it and the mode of each game's
+	// folder; they matter to the panel, not to the rendered service.
+	BackupsRoot, HostBackupsRoot, BackupsMount string
+	BackupsDirMode                             os.FileMode
+	HostIP                                     string // published-port address; "" = 0.0.0.0
+	Network                                    string // existing docker network; "" = crowsnest-games-net
 }
 
 // PlatformFrom reads the platform section of config.yaml.
 func PlatformFrom(c config.PlatformConfig) Platform {
-	return Platform{GamesRoot: c.GamesRoot, HostGamesRoot: c.HostGamesRoot, HostIP: c.HostIP, Network: c.GamesNetwork}
+	p := Platform{GamesRoot: c.GamesRoot, HostGamesRoot: c.HostGamesRoot, HostIP: c.HostIP, Network: c.GamesNetwork,
+		BackupsRoot: c.BackupsRoot, HostBackupsRoot: c.HostBackupsRoot, BackupsMount: c.BackupsMount}
+	if c.BackupsRoot != "" {
+		p.BackupsDirMode, _ = c.DirMode() // validated when the config loads
+	}
+	return p
+}
+
+// BackupHostDir is where game id's backups live on the host: <backups_root>/<id>.
+func (p Platform) BackupHostDir(id string) string {
+	return strings.TrimRight(p.BackupsRoot, "/") + "/" + id
+}
+
+// BackupLocalDir is the same folder as the panel sees it, "" without a shared
+// backups folder.
+func (p Platform) BackupLocalDir(id string) string {
+	if p.BackupsRoot == "" {
+		return ""
+	}
+	mount := p.BackupsMount
+	if mount == "" {
+		mount = "/game-backups"
+	}
+	return strings.TrimRight(mount, "/") + "/" + id
 }
 
 // Service is one rendered compose service (field order is output order).
@@ -303,6 +334,19 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		}
 		scope.Binds = append(scope.Binds, scopeHost)
 		r.binds = append(r.binds, scopeHost+":"+d.Path)
+	}
+
+	// Each game's backups go to their own folder, named after its id, so
+	// several servers of one game never share (or overwrite) a set.
+	if m.Backup != nil && m.Backup.Dir != "" && p.BackupsRoot != "" {
+		host := p.BackupHostDir(g.ID)
+		svc.Volumes = append(svc.Volumes, host+":"+m.Backup.Dir)
+		scopeHost := host
+		if p.HostBackupsRoot != "" {
+			scopeHost = strings.TrimRight(p.HostBackupsRoot, "/") + "/" + g.ID
+		}
+		scope.Binds = append(scope.Binds, scopeHost)
+		r.binds = append(r.binds, scopeHost+":"+m.Backup.Dir)
 	}
 
 	seen := map[string]bool{}

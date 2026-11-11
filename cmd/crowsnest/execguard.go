@@ -28,11 +28,11 @@ func execRules(cfg *config.Config) []execguard.Rule {
 			continue
 		}
 		rules = append(rules, execguard.Rule{Container: g.ContainerName, Cmd: g.Backup.Exec})
-		if g.Backup.ListDir != "" {
-			rules = append(rules, execguard.Rule{Container: g.ContainerName, Cmd: backup.ListArgs(g.Backup.ListDir)})
+		if dir := g.Backup.ExecListDir(); dir != "" {
+			rules = append(rules, execguard.Rule{Container: g.ContainerName, Cmd: backup.ListArgs(dir)})
 		}
 		if g.Backup.Keep > 0 {
-			rules = append(rules, execguard.Rule{Container: g.ContainerName, Cmd: backup.PruneArgs(g.Backup.ListDir, g.Backup.Keep)})
+			rules = append(rules, execguard.Rule{Container: g.ContainerName, Cmd: backup.PruneArgs(g.Backup.ExecListDir(), g.Backup.Keep)})
 		}
 	}
 	return rules
@@ -72,7 +72,7 @@ func newExecProxy(ctx context.Context, listen, upstream string) (*http.Server, e
 		if mods, err = modules.ForConfig(cfg, log.Printf); err != nil {
 			return nil, fmt.Errorf("load modules: %w", err)
 		}
-		more, err := managed.ExecRules(cfg.Managed.Dir, cfg.Managed.PolicyFile, mods)
+		more, err := managed.ExecRulesFor(cfg.Managed.Dir, cfg.Managed.PolicyFile, mods, cfg.Platform.BackupsRoot != "")
 		if err != nil {
 			return nil, err
 		}
@@ -85,7 +85,7 @@ func newExecProxy(ctx context.Context, listen, upstream string) (*http.Server, e
 	g.Logf = log.Printf
 	log.Printf("execguard: %d allowlisted command(s), listening on %q, upstream %q", len(rules), listen, upstream) // #nosec G706 -- operator-supplied command-line flags, not request data
 	if mods != nil {
-		go watchManagedRules(ctx, g, execRules(cfg), cfg.Managed.Dir, cfg.Managed.PolicyFile, mods)
+		go watchManagedRules(ctx, g, execRules(cfg), cfg.Managed.Dir, cfg.Managed.PolicyFile, mods, cfg.Platform.BackupsRoot != "")
 	}
 	return &http.Server{Addr: listen, Handler: g, ReadHeaderTimeout: 10 * time.Second}, nil
 }
@@ -106,7 +106,7 @@ func serveUntilDone(ctx context.Context, srv *http.Server) error {
 
 // watchManagedRules re-reads the managed games every few seconds and swaps the
 // allowlist when it changes. A read that fails keeps the rules in force.
-func watchManagedRules(ctx context.Context, g *execguard.Guard, static []execguard.Rule, dir, policyFile string, mods *modules.Set) {
+func watchManagedRules(ctx context.Context, g *execguard.Guard, static []execguard.Rule, dir, policyFile string, mods *modules.Set, sharedBackups bool) {
 	t := time.NewTicker(2 * time.Second)
 	defer t.Stop()
 	last := len(static)
@@ -117,7 +117,7 @@ func watchManagedRules(ctx context.Context, g *execguard.Guard, static []execgua
 			return
 		case <-t.C:
 		}
-		more, err := managed.ExecRules(dir, policyFile, mods)
+		more, err := managed.ExecRulesFor(dir, policyFile, mods, sharedBackups)
 		if err != nil {
 			log.Printf("execguard: keeping the current allowlist: %v", err)
 			continue

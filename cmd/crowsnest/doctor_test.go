@@ -104,3 +104,35 @@ func TestDoctor_WarnsAboutUnusedPasswordHashes(t *testing.T) {
 		t.Errorf("warned while password login is on:\n%s", out.String())
 	}
 }
+
+func TestDoctor_BackupsFolder(t *testing.T) {
+	cfg := doctorConfig(t)
+	mount := t.TempDir()
+	cfg.Platform.BackupsRoot, cfg.Platform.BackupsMount, cfg.Platform.BackupsDirMode = "/mnt/usb/backups", mount, "0775"
+	run := func() (int, string) {
+		var out strings.Builder
+		code := runDoctor(cfg, fakePing{}, &out)
+		return code, out.String()
+	}
+	if code, out := run(); code != 0 || !strings.Contains(out, "has not been used yet") || !strings.Contains(out, "0775") {
+		t.Fatalf("fresh folder: exit %d\n%s", code, out)
+	}
+	// Used before, then the drive goes away: empty folder, no marker.
+	state := filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "backups-root")
+	if err := os.WriteFile(state, []byte("tok\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := run(); code != 1 || !strings.Contains(out, "unmounted external drive") {
+		t.Fatalf("lost drive: exit %d\n%s", code, out)
+	}
+	if err := os.WriteFile(filepath.Join(mount, ".crowsnest-backups"), []byte("tok\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if code, out := run(); code != 0 || !strings.Contains(out, "is the one used before") {
+		t.Fatalf("restored drive: exit %d\n%s", code, out)
+	}
+	cfg.Platform.BackupsMount = filepath.Join(mount, "missing")
+	if code, out := run(); code != 1 || !strings.Contains(out, "is not a folder in the panel") {
+		t.Fatalf("not mounted: exit %d\n%s", code, out)
+	}
+}

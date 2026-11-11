@@ -3,6 +3,8 @@
 # Mount the DIRECTORY holding this file, not the file: an editor that replaces it leaves a file mount stale.
 # See docs/modules.md. Every list is required: no limit is ever implied.
 games_root: /srv/games
+# backups_root: /mnt/usb/crowsnest-backups   # optional second bindable folder, for each game's own <root>/<id> backups;
+#                                            # separate from games_root, and the same path as platform.backups_root
 names: [valheim, palworld, minecraft, "gs-*"]
 images: [lloesche/valheim-server, thijsvanloef/palworld-server-docker, "docker.io/itzg/*"]
 networks: [crowsnest-games-net]

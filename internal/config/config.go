@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -83,11 +84,36 @@ type PlatformConfig struct {
 	// guard's scopes (the guard matches exact paths and cannot expand compose
 	// variables). Needed only when GamesRoot is a variable.
 	HostGamesRoot string `yaml:"host_games_root"`
+	// BackupsRoot is the host directory that holds every game's backups, one
+	// folder per game (<BackupsRoot>/<game id>, so three Palworld servers keep
+	// three separate sets). It may be a compose variable. It is bound
+	// read-write into the panel (at BackupsMount) and, per game, into each game
+	// container at the path its module's backup.dir names. Empty means backups
+	// stay wherever the game's own backup command puts them.
+	BackupsRoot string `yaml:"backups_root"`
+	// HostBackupsRoot is the literal host path of BackupsRoot for the guard's
+	// scopes, needed only when BackupsRoot is a variable (like HostGamesRoot).
+	HostBackupsRoot string `yaml:"host_backups_root"`
+	// BackupsMount is where the panel sees BackupsRoot (default /game-backups).
+	BackupsMount string `yaml:"backups_mount"`
+	// BackupsDirMode is the permission bits (octal, default 0775) of each
+	// game's backup folder, which the panel creates. A game whose user is not
+	// the panel's needs 0777, or the folder chowned to it on the host.
+	BackupsDirMode string `yaml:"backups_dir_mode"`
 	// HostIP is the host address game ports are published on (default 0.0.0.0).
 	HostIP string `yaml:"host_ip"`
 	// GamesNetwork is the existing docker network games join (default
 	// crowsnest-games-net).
 	GamesNetwork string `yaml:"games_network"`
+}
+
+// DirMode parses backups_dir_mode.
+func (p PlatformConfig) DirMode() (os.FileMode, error) {
+	n, err := strconv.ParseUint(strings.TrimSpace(p.BackupsDirMode), 8, 32)
+	if err != nil || n == 0 || n > 0o777 {
+		return 0, fmt.Errorf("platform.backups_dir_mode (%q): must be octal permission bits such as 0775", p.BackupsDirMode)
+	}
+	return os.FileMode(n), nil
 }
 
 // ServerConfig holds top-level HTTP server settings.
@@ -359,6 +385,15 @@ type BackupConfig struct {
 	// listed newest first on the dashboard. Optional; the container needs GNU
 	// find.
 	ListDir string `yaml:"list_dir"`
+	// Dir is the directory inside the container the backup command writes to.
+	// With platform.backups_root set, a dashboard-enabled game gets
+	// <backups_root>/<game id> bound there, and the panel lists and prunes that
+	// folder itself (no exec). Without backups_root it behaves like ListDir.
+	// Use Dir or ListDir, not both.
+	Dir string `yaml:"dir"`
+	// LocalDir is where the panel itself sees this game's backup folder
+	// (<backups_mount>/<id>). It is set by the wiring, never read from YAML.
+	LocalDir string `yaml:"-"`
 	// BeforeStop also takes a backup each time the game is stopped on purpose
 	// (manual, switch, idle or night), after the world is saved, so a fresh
 	// backup always exists before an update-on-start pull.
@@ -370,13 +405,28 @@ type BackupConfig struct {
 	Keep int `yaml:"keep"`
 }
 
-// CheckKeep rejects a retention count that can't work.
+// ExecListDir is the directory listed and pruned with docker exec: list_dir,
+// or dir when no list_dir is given.
+func (b *BackupConfig) ExecListDir() string {
+	if b.ListDir != "" {
+		return b.ListDir
+	}
+	return b.Dir
+}
+
+// CheckKeep rejects a retention count or folder setting that can't work.
 func (b *BackupConfig) CheckKeep() error {
+	if b.Dir != "" && b.ListDir != "" {
+		return fmt.Errorf("use dir or list_dir, not both")
+	}
+	if b.Dir != "" && !strings.HasPrefix(b.Dir, "/") {
+		return fmt.Errorf("dir (%s): must be an absolute path inside the container", b.Dir)
+	}
 	if b.Keep < 0 {
 		return fmt.Errorf("keep (%d): must not be negative", b.Keep)
 	}
-	if b.Keep > 0 && b.ListDir == "" {
-		return fmt.Errorf("keep needs list_dir (the directory to prune)")
+	if b.Keep > 0 && b.ExecListDir() == "" {
+		return fmt.Errorf("keep needs dir or list_dir (the directory to prune)")
 	}
 	return nil
 }
@@ -503,6 +553,14 @@ func (c *Config) applyDefaults() {
 	if c.Notifications == nil {
 		c.Notifications = &NotificationsConfig{}
 	}
+	if c.Platform.BackupsRoot != "" {
+		if c.Platform.BackupsMount == "" {
+			c.Platform.BackupsMount = "/game-backups"
+		}
+		if c.Platform.BackupsDirMode == "" {
+			c.Platform.BackupsDirMode = "0775"
+		}
+	}
 	if c.CrashLoop == nil {
 		c.CrashLoop = &CrashLoopConfig{}
 	}
@@ -591,6 +649,17 @@ func (c *Config) validate() error {
 	}
 	if c.Server.MaxActiveGames < 1 {
 		return fmt.Errorf("max active games (%d): must be >= 1", c.Server.MaxActiveGames)
+	}
+	if pl := c.Platform; pl.BackupsRoot != "" {
+		if !strings.HasPrefix(pl.BackupsMount, "/") || path.Clean(pl.BackupsMount) != pl.BackupsMount || pl.BackupsMount == "/" {
+			return fmt.Errorf("platform.backups_mount (%s): must be an absolute, normalised path other than /", pl.BackupsMount)
+		}
+		if _, err := pl.DirMode(); err != nil {
+			return err
+		}
+		if strings.Contains(pl.BackupsRoot, "$") && pl.HostBackupsRoot == "" {
+			return fmt.Errorf("platform.backups_root is a variable, so platform.host_backups_root (the literal path) is required")
+		}
 	}
 	if c.CrashLoop.Crashes < 1 || c.CrashLoop.WindowMinutes < 1 {
 		return fmt.Errorf("crash_loop: crashes (%d) and window_minutes (%d) must be at least 1", c.CrashLoop.Crashes, c.CrashLoop.WindowMinutes)

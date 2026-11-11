@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/auth"
@@ -154,6 +155,11 @@ func runDoctor(cfg *config.Config, docker dockerPinger, w io.Writer) int {
 		doctorManaged(r, cfg)
 	}
 
+	if cfg.Platform.BackupsRoot != "" {
+		fmt.Fprintln(w, "\nBackups")
+		doctorBackups(r, cfg)
+	}
+
 	fmt.Fprintln(w, "\nHost")
 	snap := hoststats.Read(cfg.Server.HostDiskPaths)
 	if snap.MemTotal == 0 {
@@ -177,6 +183,56 @@ func runDoctor(cfg *config.Config, docker dockerPinger, w io.Writer) int {
 	return 0
 }
 
+// doctorBackups checks the shared backups folder as the panel sees it. It
+// reads the marker but never writes one.
+func doctorBackups(r *doctorReport, cfg *config.Config) {
+	mount := cfg.Platform.BackupsMount
+	fi, err := os.Stat(mount)
+	if err != nil || !fi.IsDir() {
+		r.add(docFail, fmt.Sprintf("the backups folder %s is not a folder in the panel", mount),
+			"bind the host folder there, e.g. ${BACKUPS_DIR}:"+mount+" (read-write) on the crowsnest service")
+		return
+	}
+	if err := writable(mount); err != nil {
+		r.add(docFail, fmt.Sprintf("the backups folder %s is not writable by CrowsNest (%v)", mount, err),
+			"mount it read-write and make it writable by the panel's user (uid 1000 in the standard image)")
+		return
+	}
+	r.add(docOK, fmt.Sprintf("backups folder %s is writable", mount), "")
+	state := filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "backups-root")
+	known, onDisk := readFirstLine(state), readFirstLine(filepath.Join(mount, ".crowsnest-backups"))
+	switch {
+	case known != "" && known != onDisk:
+		r.add(docFail, "the backups folder is not the one CrowsNest used before (its marker is missing or different): an unmounted external drive looks exactly like this",
+			"mount the drive; if you moved the backups on purpose, delete "+state+" and restart")
+	case known == "":
+		r.add(docInfo, "the backups folder has not been used yet; CrowsNest marks it on first use", "")
+	default:
+		r.add(docOK, "the backups folder is the one used before", "")
+	}
+	var a, b syscall.Stat_t
+	if syscall.Stat(mount, &a) == nil && syscall.Stat(filepath.Dir(cfg.Server.SettingsFile), &b) == nil && a.Dev == b.Dev {
+		r.add(docInfo, "the backups folder is on the same disk as CrowsNest's own data",
+			"fine for a start; point backups_root at another drive to survive that disk failing")
+	}
+	var st syscall.Statfs_t
+	if syscall.Statfs(mount, &st) == nil && st.Bavail*uint64(st.Bsize) < 5<<30 { // #nosec G115 -- Bsize is positive
+		r.add(docWarn, fmt.Sprintf("the backups folder has only %d GiB free", st.Bavail*uint64(st.Bsize)>>30), "") // #nosec G115
+	}
+	if mode, err := cfg.Platform.DirMode(); err == nil && mode&0o002 == 0 {
+		r.add(docInfo, fmt.Sprintf("each game's backup folder is created with mode %04o", mode),
+			"if a game's own user is not the panel's, its backups fail with 'permission denied': chown the folder to that user, or set platform.backups_dir_mode: \"0777\"")
+	}
+}
+
+func readFirstLine(path string) string {
+	b, err := os.ReadFile(path) // #nosec G304 -- fixed names under operator-set folders
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(b))
+}
+
 func doctorManaged(r *doctorReport, cfg *config.Config) {
 	if err := writable(cfg.Managed.Dir); err != nil {
 		r.add(docFail, fmt.Sprintf("managed.dir %s is not writable (%v)", cfg.Managed.Dir, err), "mount it read-write into the panel")
@@ -192,6 +248,21 @@ func doctorManaged(r *doctorReport, cfg *config.Config) {
 	if fi, err := os.Stat(pol.GamesRoot); err != nil || !fi.IsDir() {
 		r.add(docWarn, fmt.Sprintf("the policy's games_root %s is not a folder this process can see", pol.GamesRoot),
 			"that path is the host's; it need not exist inside the panel, but check it exists on the host")
+	}
+	if cfg.Platform.BackupsRoot != "" {
+		want := cfg.Platform.HostBackupsRoot
+		if want == "" {
+			want = cfg.Platform.BackupsRoot
+		}
+		switch {
+		case pol.BackupsRoot == "":
+			r.add(docFail, "platform.backups_root is set but the policy has no backups_root, so any game with a backup folder is refused",
+				"add `backups_root: "+want+"` to policy.yaml")
+		case pol.BackupsRoot != want:
+			r.add(docWarn, fmt.Sprintf("the policy's backups_root %s differs from platform's %s", pol.BackupsRoot, want), "they must be the same host path")
+		default:
+			r.add(docOK, "the policy allows the backups folder", "")
+		}
 	}
 	if cfg.Managed.PolicyEditable {
 		r.add(docWarn, "managed.policy_editable is on: the panel can tighten (and remove entries from) the policy", "turn it off unless you use the Settings editor")

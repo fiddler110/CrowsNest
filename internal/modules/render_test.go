@@ -216,7 +216,7 @@ func TestBundledBackupsMatchProduction(t *testing.T) {
 			t.Errorf("%s backup = %+v, want %v", id, m.Backup, cmd)
 		}
 	}
-	if m, _ := Bundled().Manifest("minecraft"); m.Backup == nil || m.Backup.ListDir != "/data/backups" {
+	if m, _ := Bundled().Manifest("minecraft"); m.Backup == nil || m.Backup.ExecListDir() != "/data/backups" {
 		t.Errorf("minecraft backup = %+v", m.Backup)
 	}
 }
@@ -261,4 +261,46 @@ exec: false
 	if err := admit(&noBackup); err != nil {
 		t.Errorf("a module with no backup was refused while exec is off: %v", err)
 	}
+}
+
+// Three servers of one game each get their own backup folder, named after the
+// game id, bound at the module's backup dir and nowhere else.
+func TestRenderBackupFolderPerGame(t *testing.T) {
+	p := Platform{GamesRoot: "/srv/games", BackupsRoot: "${BACKUPS_DIR}", HostBackupsRoot: "/mnt/usb/backups", HostIP: "10.0.0.2"}
+	m, _ := Bundled().Manifest("palworld")
+	seen := map[string]bool{}
+	for _, id := range []string{"palworld", "palworld-2", "palworld-friends"} {
+		r, err := m.Render(config.GameConfig{ID: id, ContainerName: id, Options: map[string]string{"data_dir": id}}, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantVol := "${BACKUPS_DIR}/" + id + ":/palworld/backups"
+		if !reflect.DeepEqual(r.Service.Volumes[len(r.Service.Volumes)-1:], []string{wantVol}) {
+			t.Errorf("%s volumes = %v, want a final %s", id, r.Service.Volumes, wantVol)
+		}
+		wantBind := "/mnt/usb/backups/" + id
+		if !containsStr(r.Scope.Binds, wantBind) || seen[wantBind] {
+			t.Errorf("%s scope binds = %v, want %s once across games", id, r.Scope.Binds, wantBind)
+		}
+		seen[wantBind] = true
+	}
+	// No backups_root: nothing is bound, as before.
+	r, _ := m.Render(config.GameConfig{ID: "palworld", ContainerName: "palworld"}, Platform{GamesRoot: "/srv/games"})
+	for _, v := range r.Service.Volumes {
+		if strings.Contains(v, "backups") {
+			t.Errorf("a backups bind appeared without backups_root: %v", r.Service.Volumes)
+		}
+	}
+	if got := p.BackupLocalDir("palworld-2"); got != "/game-backups/palworld-2" {
+		t.Errorf("BackupLocalDir = %q", got)
+	}
+}
+
+func containsStr(l []string, s string) bool {
+	for _, x := range l {
+		if x == s {
+			return true
+		}
+	}
+	return false
 }

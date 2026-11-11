@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/backup"
 	"net"
 	"net/http"
 	"os"
@@ -1069,5 +1070,56 @@ func TestInstalledModuleNeedsItsSwitchAndThePolicy(t *testing.T) {
 	}
 	if plan.Fits {
 		t.Errorf("the guard would accept an image and port the policy never listed: %+v", plan)
+	}
+}
+
+// With a shared backups folder, an enabled game gets its own folder in it
+// (made by the panel, not Docker), the panel lists it itself, and the exec
+// guard is not asked to allow a listing or prune command for it.
+func TestSharedBackupsFolderPerGame(t *testing.T) {
+	m, fd := newManager(t)
+	root := t.TempDir()
+	pol, _ := os.ReadFile(m.PolicyFile)
+	pol = []byte(strings.Replace(string(pol), "names: [", "names: [minecraft-2, minecraft-3, ", 1))
+	if err := os.WriteFile(m.PolicyFile, append(pol, []byte("\nbackups_root: /mnt/usb/backups\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Platform.BackupsRoot, m.Platform.BackupsMount = "/mnt/usb/backups", root
+	m.Backups = &backup.Root{Mount: root, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state")}
+
+	for _, id := range []string{"minecraft", "minecraft-2"} {
+		req := Request{ID: id, Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+		if id == "minecraft-2" {
+			req.Options["ports"] = "25566:25565/tcp"
+		}
+		if err := m.Enable(req); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		waitState(t, m, id, StateReady)
+		if fi, err := os.Stat(filepath.Join(root, id)); err != nil || !fi.IsDir() {
+			t.Errorf("%s: the panel did not create its backup folder: %v", id, err)
+		}
+		g, ok := m.Registry.Get(id)
+		if !ok || g.Backup == nil || g.Backup.LocalDir != filepath.Join(root, id) {
+			t.Errorf("%s: backup spec = %+v", id, g.Backup)
+		}
+	}
+	_ = fd
+	rules, err := ExecRulesFor(m.Dir, m.PolicyFile, m.Modules, true)
+	if err != nil || len(rules) != 2 { // each game's backup command only
+		t.Fatalf("rules = %+v, %v", rules, err)
+	}
+	for _, r := range rules {
+		if strings.Contains(strings.Join(r.Cmd, " "), "find ") {
+			t.Errorf("a listing command is allowlisted although the panel reads the folder itself: %v", r.Cmd)
+		}
+	}
+
+	// A drive that went missing stops the next game being created on it.
+	_ = os.Remove(filepath.Join(root, ".crowsnest-backups"))
+	err = m.Enable(Request{ID: "minecraft-3", Module: "minecraft", Options: map[string]string{"eula": "TRUE", "ports": "25567:25565/tcp"},
+		Secrets: map[string]string{"rcon_password": "x"}})
+	if err == nil {
+		waitState(t, m, "minecraft-3", StateFailed)
 	}
 }

@@ -80,6 +80,11 @@ backup, with one more fixed `docker exec` (`sh`, GNU `find`, `sort`, `tail`, `cu
 children only). It counts files, so a backup that writes two files per run keeps N/2 runs. A failed prune is logged
 and shown in the activity log and never fails the backup.
 It applies to games enabled from the dashboard only; games in `config.yaml` keep their own.
+`dir: /path` (instead of `list_dir`) names where the backup command writes inside the container. With
+`platform.backups_root` set, each dashboard game gets `<backups_root>/<game id>` bound there (so two servers of one
+module never share a folder), and the panel lists and prunes it itself: no listing or prune `docker exec`, so the
+exec guard allows only the backup command. Without `backups_root`, `dir` behaves exactly like `list_dir`. Give
+`dir` or `list_dir`, not both. See the README's "A shared backups folder" for what to watch.
 
 An optional `accent: "#rrggbb"` sets the colour of the game's dashboard card. Without one the card uses the
 default theme colour.
@@ -111,6 +116,7 @@ platform:
   games_root: ${USERDIR}        # where each game's data folder lives; written as-is
   host_ip: 10.0.0.2             # address game ports are published on (default 0.0.0.0)
   host_games_root: /srv/games   # games_root as a literal path, for the guard (only if games_root is a variable)
+  backups_root: /mnt/usb/backups  # optional: each game's backups go to <backups_root>/<game id> (see the README)
   games_network: crowsnest-games-net
 games:
   - id: minecraft

@@ -110,9 +110,12 @@ else: a pattern that does not match real output is the usual bug.
 
 ## Step 5: optional extras
 
-- **Backup:** `backup: {exec: [...], list_dir: /data/backups, before_stop: true}`. The command runs with `docker
-  exec` in the container and is the only exec the guard allows for this game. The operator must have set
-  `exec: true` in the policy.
+- **Backup:** `backup: {exec: [...], dir: /data/backups, before_stop: true, keep: 14}`. The command runs with
+  `docker exec` in the container and must write into `dir`. With the operator's `platform.backups_root` set, `dir` is
+  bound to the game's own `<backups_root>/<game id>` folder and the panel lists and prunes it, so the command is the
+  only exec the guard allows for this game; without it, `dir` is listed with `find` over exec (`list_dir` is the same
+  thing under its older name). The operator must have set `exec: true` in the policy. Write backup files directly in
+  `dir` (not in sub-folders), and create `dir` in the command if the image may not have it.
 - **Join details on the card:** `connect: [{label: Password, option: server_password}]` shows option values players
   need.
 - **Host steps:** `host_setup:` lists things only the operator can do (a firewall rule, a network), shown beside

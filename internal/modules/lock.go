@@ -216,8 +216,11 @@ func (m *Manifest) Review() []string {
 	}
 	if m.Backup != nil && len(m.Backup.Exec) > 0 {
 		add("runs inside the game's container for backups  %s", strings.Join(m.Backup.Exec, " "))
+		if m.Backup.Dir != "" {
+			add("gets its own folder under the shared backups folder, mounted at %s", m.Backup.Dir)
+		}
 		if m.Backup.Keep > 0 {
-			add("deletes all but the newest %d files in %s after each backup", m.Backup.Keep, m.Backup.ListDir)
+			add("deletes all but the newest %d files in %s after each backup", m.Backup.Keep, m.Backup.ExecListDir())
 		}
 	}
 	for _, a := range m.Actions {
