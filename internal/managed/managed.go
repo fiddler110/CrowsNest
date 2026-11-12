@@ -125,6 +125,9 @@ type Request struct {
 	// Secrets holds the values of the module's secret options. They are kept
 	// in secrets.json and never appear in a plan, a rendered file or a list.
 	Secrets map[string]string `json:"secrets,omitempty"`
+	// CopyFrom names an enabled game of the same module whose secrets fill any this request leaves out, so a
+	// profile made from it needs no retyping of join passwords. Only the dashboard sends it; it is never stored.
+	CopyFrom string `json:"copy_from,omitempty"`
 
 	probe bool // set by the catalogue's fit check: judge the policy only
 }
@@ -658,6 +661,33 @@ func (m *Manager) renderAndFit(g config.GameConfig, mf *modules.Manifest) (*modu
 	return r, pol.Admit(sc[0])
 }
 
+// withCopy resolves CopyFrom: secrets the request does not carry come from the named game, which must run the
+// same module (a secret means something only to the module that declared it). The result has no CopyFrom, so
+// it is never saved. Call with m.mu held.
+func (m *Manager) withCopy(r Request) (Request, error) {
+	if r.CopyFrom == "" {
+		return r, nil
+	}
+	src := m.find(r.CopyFrom)
+	if src == nil {
+		return r, fmt.Errorf("there is no game %q to copy settings from", r.CopyFrom)
+	}
+	if src.Module != r.Module {
+		return r, fmt.Errorf("%q runs module %s, not %s: settings can only be copied between games of one module", src.ID, src.Module, r.Module)
+	}
+	secrets := make(map[string]string, len(src.Secrets)+len(r.Secrets))
+	for k, v := range src.Secrets {
+		secrets[k] = v
+	}
+	for k, v := range r.Secrets {
+		if v != "" {
+			secrets[k] = v
+		}
+	}
+	r.Secrets, r.CopyFrom = secrets, ""
+	return r, nil
+}
+
 // withDefaults gives a new game its own data folder, named after its id, directly under games_root (which
 // the operator points at a folder that holds only game data). Two games from one module must never share a
 // folder (they would write the same world). A folder typed in the form is kept.
@@ -736,6 +766,10 @@ func (m *Manager) freePorts(r Request) string {
 func (m *Manager) Preview(r Request) (*Plan, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	r, err := m.withCopy(r)
+	if err != nil {
+		return nil, err
+	}
 	r = m.withDefaults(r)
 	g, mf, err := m.validate(r, false)
 	if err != nil {
@@ -839,6 +873,10 @@ func (m *Manager) setupSteps(r Request, mf *modules.Manifest, rd *modules.Render
 func (m *Manager) Enable(r Request) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	r, err := m.withCopy(r)
+	if err != nil {
+		return err
+	}
 	r = m.withDefaults(r)
 	g, mf, err := m.validate(r, false)
 	if err != nil {

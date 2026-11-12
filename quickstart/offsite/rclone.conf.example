@@ -1,0 +1,31 @@
+# Copy to rclone.conf (chmod 600) and fill in. `docker run --rm -it -v "$PWD":/config rclone/rclone config`
+# walks you through any provider and writes the same file. Passwords here must be rclone-obscured:
+#   docker run --rm rclone/rclone obscure 'the-password'
+
+# An SFTP box (a NAS, a VPS):
+[offsite]
+type = sftp
+host = nas.example.com
+user = backup
+key_file = /config/id_ed25519
+# pass = <output of rclone obscure>
+# The config is mounted read-only. rclone wants to save what it detects about the server into it, and retries for
+# about six seconds per setting on every run when it cannot (tested), so state them here. Checksums are skipped:
+# rclone compares size and time, and --immutable refuses a file that changed.
+shell_type = unix
+md5sum_command = none
+sha1sum_command = none
+# Pin the server's key so nobody can stand in for it (ssh-keyscan -t ed25519 nas.example.com > known_hosts):
+known_hosts_file = /config/known_hosts
+
+# Backblaze B2 / S3 / Google Drive / Dropbox etc.: see https://rclone.org/overview/
+# [offsite]
+# type = b2
+# account = ...
+# key = ...
+#
+# Wrap any remote in rclone's crypt remote if you want the backups encrypted before they leave:
+# [offsite-crypt]
+# type = crypt
+# remote = offsite:crowsnest
+# password = <obscured>

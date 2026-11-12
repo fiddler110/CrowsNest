@@ -516,6 +516,23 @@ function applyHealth(health) {
   document.getElementById("docker-banner").hidden = health.docker !== false;
   const bb = document.getElementById("backups-banner");
   if (bb) bb.hidden = health.backups !== false;
+  const ob = document.getElementById("offsite-banner");
+  if (ob) {
+    const show = health.offsite === false && document.body.hasAttribute("data-admin");
+    if (show && ob.hidden) showOffsiteDetail();
+    ob.hidden = !show;
+  }
+}
+
+async function showOffsiteDetail() {
+  try {
+    const res = await fetch("/api/backups/health");
+    if (!res.ok) return;
+    const o = (await res.json()).offsite || {};
+    document.getElementById("offsite-detail").textContent = o.message || "";
+  } catch (err) {
+    // the banner still says something is wrong
+  }
 }
 
 async function refreshHealth() {

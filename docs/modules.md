@@ -449,5 +449,35 @@ newly loosened security option) before you approve; if the source is byte-identi
 restores that copy. Update refuses if the source now serves a different module id.
 
 Limits: a module cannot replace a bundled one or a hand-placed one, and the policy envelope still applies
-(a module only runs what `policy.yaml` allows). This pins what you approved; it does not prove who wrote it.
-A signed catalog would, and is deferred until someone needs it.
+(a module only runs what `policy.yaml` allows). A hash pins what you approved; it does not prove who wrote it.
+Signatures do (next section).
+
+### Signed modules
+
+A publisher makes a key once and signs each module:
+
+```
+crowsnest module keygen me                      # writes me.key (keep it secret) and prints the config line
+crowsnest module sign module.yaml --key me.key  # writes module.yaml.sig: publish it at <module url>.sig
+```
+
+An operator who trusts that publisher adds the printed line to `config.yaml`:
+
+```yaml
+managed:
+  trusted_keys:
+    - {name: me, public_key: "<base64 from keygen>"}
+```
+
+The list lives in `config.yaml`, which the dashboard cannot edit. With it set:
+
+- `crowsnest module install` and `update` fetch `<url>.sig`, say whether a trusted key signed those bytes, and record
+  the key's name in the lock file (`crowsnest module list` shows it). An unsigned module still installs by hash as
+  before. **An update is refused if the module was installed under a signature and the new version is not signed by a
+  trusted key** (pass `--sha256` if you checked it by hand), so a compromised source cannot quietly drop the signature.
+- The dashboard's **Game modules from a source** can install a module and update one, but only from a signed source (see the README).
+
+The signature is ed25519 over `crowsnest-module-v1\n` plus the file's exact bytes, base64, one line. What a signature
+means: the key's holder published this file. It does not review the file, so the install summary is still the thing
+to read, and a signed module is no more trusted by the policy than an unsigned one. It also does not stop a replay of an
+older signed version: pin what you approved with the lock file, and rotate a key (remove it from `trusted_keys`) if it leaks.

@@ -12,7 +12,27 @@
   <section class="page-head">
     <p class="eyebrow"><i class="beacon"></i>// account</p>
     <h1>{{.Username}}</h1>
-    <p class="hero-sub">Sign-in security for your account.</p>
+    <p class="hero-sub">Your name, your signed-in devices and your sign-in security.</p>
+  </section>
+
+  <section id="profile" class="pane-form">
+    <h2 class="section-title">// display name</h2>
+    <form id="profile-form" autocomplete="off">
+      <label class="field">Shown at the top of the page <small>Only for display: you still sign in as <b>{{.Username}}</b>, and the activity log uses that name.</small>
+        <input type="text" name="display_name" maxlength="40" value="{{.DisplayName}}" placeholder="{{.Username}}"></label>
+      <div class="pane-actions"><button class="btn btn-primary" type="submit">Save name</button></div>
+    </form>
+  </section>
+
+  <section id="sessions" class="pane-form">
+    <h2 class="section-title">// signed-in devices</h2>
+    <p id="sessions-note" class="hero-sub"></p>
+    <ul id="sessions-list" class="session-list"></ul>
+    <div class="pane-actions">
+      <button id="sessions-others" class="btn btn-ghost" type="button" hidden>Sign out other devices</button>
+      <button id="sessions-all" class="btn btn-ghost btn-danger" type="button" hidden>Sign out everywhere</button>
+    </div>
+    <p id="sessions-error" class="settings-error" role="alert" hidden></p>
   </section>
 
   <section id="totp" class="pane-form" hidden>

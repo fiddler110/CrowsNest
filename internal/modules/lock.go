@@ -29,6 +29,8 @@ const MaxModuleBytes = 256 << 10
 
 // LockEntry is one installed remote module.
 type LockEntry struct {
+	// SignedBy names the trusted key whose signature the module was installed under, "" for a hash pin only.
+	SignedBy    string    `json:"signed_by,omitempty"`
 	ID          string    `json:"id"`
 	Source      string    `json:"source"`
 	SHA256      string    `json:"sha256"`
@@ -146,6 +148,32 @@ func verifyLocked(dir string) (map[string]string, error) {
 // Fetch downloads a manifest. Only https is accepted, redirects included, the
 // body is capped, and nothing is parsed or run here.
 func Fetch(ctx context.Context, rawURL string, client *http.Client) ([]byte, error) {
+	return fetchCapped(ctx, rawURL, client, MaxModuleBytes)
+}
+
+// maxSigBytes caps a signature file: a base64 ed25519 signature is 88 characters.
+const maxSigBytes = 1 << 10
+
+// FetchSigned downloads a manifest and its signature (<url>.sig) and says which trusted key signed it. A module
+// with no signature file, or none a trusted key made, is an error wrapping ErrNotSigned (the body is still
+// returned so a caller can offer a hash-pinned install instead).
+func FetchSigned(ctx context.Context, rawURL string, client *http.Client, keys []TrustedKey) (body []byte, signedBy string, err error) {
+	body, err = Fetch(ctx, rawURL, client)
+	if err != nil {
+		return nil, "", err
+	}
+	sig, err := fetchCapped(ctx, rawURL+SigSuffix, client, maxSigBytes)
+	if err != nil {
+		return body, "", fmt.Errorf("%w: no signature at %s (%v)", ErrNotSigned, rawURL+SigSuffix, err)
+	}
+	by, err := VerifySignature(keys, body, sig)
+	if err != nil {
+		return body, "", err
+	}
+	return body, by, nil
+}
+
+func fetchCapped(ctx context.Context, rawURL string, client *http.Client, limit int) ([]byte, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
 		return nil, fmt.Errorf("not a valid URL: %q", rawURL)
@@ -178,12 +206,12 @@ func Fetch(ctx context.Context, rawURL string, client *http.Client) ([]byte, err
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("download failed: %s", resp.Status)
 	}
-	b, err := io.ReadAll(io.LimitReader(resp.Body, MaxModuleBytes+1))
+	b, err := io.ReadAll(io.LimitReader(resp.Body, int64(limit)+1))
 	if err != nil {
 		return nil, err
 	}
-	if len(b) > MaxModuleBytes {
-		return nil, fmt.Errorf("module is larger than %d KiB", MaxModuleBytes>>10)
+	if len(b) > limit {
+		return nil, fmt.Errorf("download is larger than %d KiB", limit>>10)
 	}
 	return b, nil
 }
@@ -252,8 +280,9 @@ func (m *Manifest) Review() []string {
 // Install writes an approved manifest into dir and records it in the lock. The
 // caller has already shown Review and obtained approval; if wantHash is set it
 // must equal the body's hash. A bundled id may not be replaced. replace says
-// the id may already be installed (an update).
-func Install(dir, source string, body []byte, wantHash string, replace bool) (*Manifest, error) {
+// the id may already be installed (an update). signedBy is the trusted key the
+// caller verified, recorded in the lock; "" when the install rests on a hash alone.
+func Install(dir, source string, body []byte, wantHash string, replace bool, signedBy string) (*Manifest, error) {
 	got := Hash(body)
 	if wantHash != "" && !strings.EqualFold(wantHash, got) {
 		return nil, fmt.Errorf("hash mismatch: expected %s, the download is %s", wantHash, got)
@@ -282,7 +311,7 @@ func Install(dir, source string, body []byte, wantHash string, replace bool) (*M
 	if err := writeAtomic(filepath.Join(dir, m.ID, "module.yaml"), body); err != nil {
 		return nil, err
 	}
-	l.set(LockEntry{ID: m.ID, Source: source, SHA256: got, InstalledAt: time.Now().UTC().Truncate(time.Second)})
+	l.set(LockEntry{ID: m.ID, Source: source, SHA256: got, SignedBy: signedBy, InstalledAt: time.Now().UTC().Truncate(time.Second)})
 	if err := l.write(dir); err != nil {
 		return nil, err
 	}
@@ -306,4 +335,28 @@ func Uninstall(dir, id string) error {
 	}
 	l.remove(id)
 	return l.write(dir)
+}
+
+// DiffLines returns the Review lines only in next (added) and only in prev (removed): what an update changes in
+// what the module may do.
+func DiffLines(prev, next []string) (added, removed []string) {
+	has := func(s []string, x string) bool {
+		for _, v := range s {
+			if v == x {
+				return true
+			}
+		}
+		return false
+	}
+	for _, l := range next {
+		if !has(prev, l) {
+			added = append(added, l)
+		}
+	}
+	for _, l := range prev {
+		if !has(next, l) {
+			removed = append(removed, l)
+		}
+	}
+	return
 }

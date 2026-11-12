@@ -73,12 +73,24 @@ func main() {
 			fmt.Fprintln(os.Stderr, moduleUsage)
 			os.Exit(2)
 		}
+		if os.Args[2] == "keygen" || os.Args[2] == "sign" { // publisher commands: no config needed
+			os.Exit((&moduleTool{in: os.Stdin, out: os.Stdout}).run(os.Args[2:]))
+		}
 		cfg, err := config.Load(configPath())
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "FAIL  config does not load:", err)
 			os.Exit(1)
 		}
-		t := &moduleTool{dir: cfg.ModulesDir, in: os.Stdin, out: os.Stdout}
+		var tk []modules.TrustedKey
+		for _, k := range cfg.Managed.TrustedKeys {
+			tk = append(tk, modules.TrustedKey{Name: k.Name, Key: k.PublicKey})
+		}
+		keys, err := modules.ParseTrustedKeys(tk)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "FAIL  managed.trusted_keys:", err)
+			os.Exit(1)
+		}
+		t := &moduleTool{dir: cfg.ModulesDir, keys: keys, in: os.Stdin, out: os.Stdout}
 		os.Exit(t.run(os.Args[2:]))
 	case "doctor":
 		cfg, err := config.Load(configPath())
@@ -259,6 +271,16 @@ func serve() error {
 		return err
 	}
 	authSvc.MFA = mfaStore
+	stateDir := filepath.Dir(cfg.Server.SettingsFile)
+	sessionStore, err := auth.NewSessionStore(filepath.Join(stateDir, "sessions.json"))
+	if err != nil {
+		return err
+	}
+	sessions.Registry = sessionStore // per-device sign-out; sessions made before this existed are ended once
+	profiles, err := auth.NewProfileStore(filepath.Join(stateDir, "profiles.json"))
+	if err != nil {
+		return err
+	}
 	oidcStore, err := auth.NewOIDCStore(filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "oidc.json"), vlt)
 	if err != nil {
 		log.Printf("warning: %v", err)
@@ -315,7 +337,7 @@ func serve() error {
 	}
 	exclusivityMgr := exclusivity.NewManager(registry, docker)
 	exclusivityMgr.History = activity
-	backups := &backup.Manager{Docker: docker, Root: backupRoot, History: activity, BaseContext: ctx}
+	backups := &backup.Manager{Docker: docker, Root: backupRoot, History: activity, BaseContext: ctx, OffsiteFile: cfg.Platform.OffsiteStatusFile}
 	exclusivityMgr.Backups = backups
 	exclusivityMgr.MaxActiveFunc = func() int { return settingsStore.Get().MaxActiveGames }
 	exclusivityMgr.CooldownFunc = func(id string) (time.Duration, bool) {
@@ -358,6 +380,7 @@ func serve() error {
 		GoogleConf:   googleConf,
 		AuthPrefs:    authPrefs,
 		MFA:          mfaStore,
+		Profiles:     profiles,
 		OIDC:         oidcLogin,
 		Settings:     settingsStore,
 		TimeZone:     cfg.Server.TZ,
@@ -387,6 +410,14 @@ func serve() error {
 		}
 		app.Managed = mgr
 		managedMgr = mgr
+		var tk []modules.TrustedKey
+		for _, k := range cfg.Managed.TrustedKeys {
+			tk = append(tk, modules.TrustedKey{Name: k.Name, Key: k.PublicKey})
+		}
+		if app.TrustedKeys, err = modules.ParseTrustedKeys(tk); err != nil {
+			return fmt.Errorf("managed.trusted_keys: %w", err)
+		}
+		app.Modules, app.ModulesDir = mods, cfg.ModulesDir
 		log.Printf("managed games: enabled from the dashboard, state in %s, policy %s", cfg.Managed.Dir, cfg.Managed.PolicyFile)
 	}
 
@@ -696,9 +727,8 @@ func healthcheck() int {
 
 // sessionAllowed reports whether a session's user may still be signed in: a
 // password user while password sign-in is on, or a name on the Google
-// allowlist. Sessions are stateless, so this is what ends a removed user's
-// session (within seconds, as the users file is watched) instead of letting
-// it run out its TTL.
+// allowlist. This is what ends a removed user's session (within seconds, as
+// the users file is watched) instead of letting it run out its TTL.
 // hasAdmin reports whether any user in the file resolves to the admin role.
 func hasAdmin(users auth.Users) bool {
 	for _, u := range users {

@@ -288,6 +288,67 @@ and the panel lists and prunes it directly, with no `docker exec` for either. Ad
 (the same path, separate from `games_root`) so the guard allows the bind. In the quickstart it is three commented
 lines: the volume in `compose.yaml`, `backups_root` in `config.yaml`, and `backups_root` in `policy/policy.yaml`.
 
+#### Offsite copy
+
+The panel can delete everything in `backups_root`, so a copy that lives somewhere else is the real safety net.
+`quickstart/offsite/` is a sidecar for that: the `rclone/rclone` image running `offsite.sh`, which copies
+`backups_root` to any rclone remote (SFTP, S3, B2, Google Drive, another disk) every few hours.
+CrowsNest does not run it, talk to it or hold its credentials; the remote's secrets live only in the sidecar's
+own `rclone.conf`.
+
+```sh
+cd quickstart/offsite
+cp rclone.conf.example rclone.conf && chmod 600 rclone.conf      # fill it in; see the comments in it
+BACKUPS_ROOT=/mnt/usb/backups docker compose up -d                # the same path as platform.backups_root
+docker compose exec crowsnest-offsite sh /offsite.sh check           # dry run: what would be copied
+docker compose exec crowsnest-offsite sh /offsite.sh once            # one real copy; non-zero exit if it failed
+```
+
+What it does, and why:
+
+- **Copy, never sync.** A backup the panel prunes (or you delete with a game) stays offsite. Set
+  `OFFSITE_KEEP_DAYS` to age offsite files out on their own schedule; the default keeps everything.
+- **`--immutable`.** A backup that changes after it was copied is an error, not an overwrite, so a damaged or
+  tampered local file cannot replace a good offsite one. That run reports FAILED and the sidecar tries again next time.
+- **It skips files younger than `OFFSITE_MIN_AGE`** (default 2 minutes), so a backup still being written is not copied half-done.
+- **It refuses a folder without the `.crowsnest-backups` marker,** which is what an unmounted drive looks like,
+  so it never reports success after copying nothing.
+- **It runs read-only, with no capabilities, as uid 1000,** and mounts the backups folder `:ro`. The user must be
+  able to read the backups (see Permissions above); change `user:` in `compose.yaml` if your games write them as someone else.
+- **The dashboard shows the result.** The sidecar writes `status/offsite.json` after every run. Mount that folder
+  read-only into the panel and set `platform.offsite_status_file` to the file's path there: admins then see a banner
+  when the last copy failed or none has succeeded in over twice the interval, the health endpoint reports it, and
+  Discord is told once when it breaks and once when it works again.
+- For encrypted backups, wrap the remote in rclone's `crypt` remote (see the comments in `rclone.conf.example`).
+
+Tested against a local folder and an SFTP server: new files copied on the next pass, a changed file refused, local
+deletions leaving the offsite copy alone, `OFFSITE_KEEP_DAYS` removing only old files and empty folders, and the
+unmounted-drive refusal. **Restoring from offsite** is a copy back: `rclone copy offsite:crowsnest/<game id>
+<backups_root>/<game id>`, then use the Restore button as usual.
+
+### Making a copy of a game (profiles)
+
+**Games, Make a copy** on a game's card opens the add form filled in from that game's settings: a second Valheim
+world, a friends' Palworld with another password. The copy is a game of its own (its own id, data folder, backups
+folder, ports and start/stop), so it is edited, backed up, restored and disabled like any other. Its data folder is
+left empty so it follows the new id, and its ports move to the next free ones the policy allows. **Secrets are
+copied by the server and never shown**: leave a password field empty to keep the original's, or type a new one.
+Games still start one at a time unless you raised "Servers allowed at once" and the memory budget allows it.
+
+### Installing a module from a source
+
+If `managed.trusted_keys` lists at least one publisher key in `config.yaml` (and `modules_dir` is set and writable by
+the panel), the Games page has **Game modules from a source**: give it the https address of a `module.yaml`. The
+panel fetches the module and the signature beside it (`<address>.sig`), checks that a key you trust signed those exact
+bytes, and shows what the module would let it do. You confirm with your password and the install is of exactly the
+file you were shown (a changed file is refused). Only signed modules can be installed this way. **Check for update**
+beside an installed module fetches its recorded source again (never an address from the browser), shows what the new
+file adds and removes, and replaces it after your password. The new file must be signed by a trusted key and declare
+the same id. Games already using the module keep their current wiring until you save their settings or restart them.
+Installing grants nothing: a game from the
+module still has to fit `policy.yaml`. The panel only fetches https from public addresses (a private, loopback,
+link-local or Tailscale address is refused, even through a redirect). See docs/modules.md, "Signed modules".
+
 ### Disabling a game and deleting its data
 
 **Games, Disable** removes the container and takes the game off the dashboard; its data folders and backups stay,
@@ -332,8 +393,7 @@ This stays outside the panel on purpose: giving it write access to `games_root` 
 
 ### Restoring a backup
 
-On a dashboard-enabled game whose module has a `restore:` command (Minecraft, Valheim and Windrose today; not
-Palworld, whose image's archive layout is not verified), each file in the **Backups** tab has a **Restore** button.
+On a dashboard-enabled game whose module has a `restore:` command (Minecraft, Valheim, Windrose and Palworld), each file in the **Backups** tab has a **Restore** button.
 It asks first, then:
 
 1. stops the game (when it keeps a backup before stopping, that backup is taken first, so the world as it was a
@@ -437,9 +497,13 @@ it's off, goes to the audit log and the activity feed.
 
 ### Sessions
 
-Sessions are stateless signed cookies, valid for 3 hours after login. There's no "remember me", you log in again
-once it expires. Because there's no server-side session store, you can't revoke one device. You can revoke all of a
-user's sessions with `docker compose exec crowsnest crowsnest revoke-sessions <username>`. It edits the users file,
+A session is a signed cookie, valid for 3 hours after login, and the server also keeps a list of live sessions
+(`sessions.json` next to `settings.json`: an id, device, address and times; nothing in it can sign anyone in). There's
+no "remember me": you log in again once it expires. Every signed-in person can see their own devices on the
+**Account** page, sign out one device, every other device, or everywhere, and set a display name (shown in the top
+bar; the sign-in name stays what the audit log and permissions use). A restart keeps people signed in. Sessions
+made before this list existed (a cookie with no session id) are ended once on upgrade. An admin can still revoke all
+of a user's sessions from the command line with `docker compose exec crowsnest crowsnest revoke-sessions <username>`. It edits the users file,
 which a running CrowsNest watches, so it applies within a few seconds (as does `set-password`). It works for Google
 users too, even though they have no password entry.
 

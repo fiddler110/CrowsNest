@@ -87,4 +87,71 @@ $("totp-off").addEventListener("click", async () => {
   }
 });
 
+// ---- display name and signed-in devices ----
+$("profile-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const res = await callAPI("/api/account/profile", { method: "POST", body: JSON.stringify({ display_name: e.target.elements.display_name.value }) });
+  if (!res.ok) { toast(await errorText(res, "Saving your name"), "error"); return; }
+  const v = await res.json();
+  const chip = document.querySelector(".user-chip b");
+  if (chip) chip.textContent = v.display_name || chip.dataset.username || chip.textContent;
+  toast(v.display_name ? "Name saved." : "Name cleared: reload to see your sign-in name.", "ok");
+});
+
+const sessionsErr = $("sessions-error");
+const showSessionsError = (msg) => { sessionsErr.textContent = msg; sessionsErr.hidden = !msg; };
+const when = (iso) => new Date(iso).toLocaleString([], { dateStyle: "medium", timeStyle: "short" });
+
+async function revoke(body, done) {
+  const res = await callAPI("/api/account/sessions/revoke", { method: "POST", body: JSON.stringify(body) });
+  if (!res.ok) { showSessionsError(await errorText(res)); return; }
+  showSessionsError("");
+  const v = await res.json();
+  if (v.signed_out) { window.location.href = "/login"; return; }
+  toast(done, "ok");
+  loadSessions();
+}
+
+async function loadSessions() {
+  const res = await callAPI("/api/account/profile");
+  if (!res.ok) { showSessionsError(await errorText(res, "Loading your devices")); return; }
+  const v = await res.json();
+  const list = $("sessions-list");
+  list.replaceChildren();
+  if (!v.per_device) {
+    $("sessions-note").textContent = "This server does not keep a list of devices.";
+    return;
+  }
+  $("sessions-note").textContent = "Sessions end by themselves after a few hours. Sign out any you don't recognise.";
+  for (const s of v.sessions) {
+    const li = document.createElement("li");
+    li.className = "session-row";
+    const info = document.createElement("div");
+    const title = document.createElement("b");
+    title.textContent = s.device + (s.current ? " (this device)" : "");
+    if (s.user_agent) title.title = s.user_agent;
+    const meta = document.createElement("small");
+    meta.textContent = `${s.ip ? s.ip + " · " : ""}signed in ${when(s.created)} · last seen ${when(s.last_seen)}`;
+    info.append(title, document.createElement("br"), meta);
+    li.append(info);
+    if (!s.current) {
+      const b = document.createElement("button");
+      b.type = "button"; b.className = "btn btn-ghost"; b.textContent = "Sign out";
+      b.addEventListener("click", () => revoke({ id: s.id }, "Device signed out."));
+      li.append(b);
+    }
+    list.append(li);
+  }
+  $("sessions-others").hidden = v.sessions.length < 2;
+  $("sessions-all").hidden = v.sessions.length < 1;
+}
+
+$("sessions-others").addEventListener("click", () => revoke({ others: true }, "Other devices signed out."));
+$("sessions-all").addEventListener("click", async () => {
+  const ok = await confirmAction({ eyebrow: "// account", title: "Sign out everywhere?",
+    message: "Every device, including this one, is signed out and must sign in again.", confirmLabel: "Sign out everywhere", danger: true });
+  if (ok) revoke({ all: true }, "");
+});
+
 load();
+loadSessions();

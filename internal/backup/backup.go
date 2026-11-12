@@ -54,6 +54,8 @@ type Manager struct {
 	MinFree  int64
 	History  history.Recorder
 	Notifier Notifier
+	// OffsiteFile is the offsite sidecar's status file (platform.offsite_status_file); "" turns the display off.
+	OffsiteFile string
 
 	// BaseContext is the parent of background backups (cancelled on shutdown).
 	BaseContext context.Context

@@ -13,6 +13,7 @@ import (
 	"log"
 	"os"
 	"sort"
+	"sync"
 
 	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
@@ -50,18 +51,23 @@ type WireFunc func(def *games.GameDef, env Env) []Runner
 
 // Set is a collection of modules keyed by game ID.
 type Set struct {
+	mu        sync.RWMutex // a module can be added while the dashboard runs (AddRemote)
 	wire      map[string]WireFunc
 	manifests map[string]*Manifest
 }
 
 // Manifest returns the parsed module.yaml for id, if the module came from one.
 func (s *Set) Manifest(id string) (*Manifest, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	m, ok := s.manifests[id]
 	return m, ok
 }
 
 // Manifests returns every module that has a manifest, ordered by id.
 func (s *Set) Manifests() []*Manifest {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	ids := make([]string, 0, len(s.manifests))
 	for id := range s.manifests {
 		ids = append(ids, id)
@@ -83,6 +89,8 @@ func (s *Set) Register(id string, fn WireFunc) {
 	if id == "" || fn == nil {
 		panic("modules: Register needs an id and a WireFunc")
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if _, dup := s.wire[id]; dup {
 		panic(fmt.Sprintf("modules: duplicate module %q", id))
 	}
@@ -91,6 +99,8 @@ func (s *Set) Register(id string, fn WireFunc) {
 
 // IDs lists the registered module IDs, sorted.
 func (s *Set) IDs() []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	out := make([]string, 0, len(s.wire))
 	for id := range s.wire {
 		out = append(out, id)
@@ -123,7 +133,9 @@ func (s *Set) BuildOne(cfg *config.Config, g config.GameConfig, docker *dockerct
 	if g.Module != "" {
 		id = g.Module
 	}
+	s.mu.RLock()
 	fn, ok := s.wire[id]
+	s.mu.RUnlock()
 	if !ok {
 		if g.Module != "" {
 			log.Printf("modules: game %q asks for module %q, which is not installed; keeping the baseline", def.ID, id)
@@ -162,4 +174,50 @@ func ForConfig(cfg *config.Config, warn func(format string, args ...any)) (*Set,
 		}
 	}
 	return s, nil
+}
+
+// AddRemote makes a module that was installed while the dashboard runs available at once. A bundled id, or one
+// already in the set, is refused: replacing a module games are using takes a restart.
+func (s *Set) AddRemote(m *Manifest) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, dup := s.wire[m.ID]; dup {
+		return fmt.Errorf("module %q is already loaded; restart CrowsNest to apply an update", m.ID)
+	}
+	s.wire[m.ID] = m.Wire()
+	s.manifests[m.ID] = m
+	return nil
+}
+
+// RemoveRemote takes a module out of the set (after Uninstall). Bundled modules cannot be removed.
+func (s *Set) RemoveRemote(id string) error {
+	for _, b := range Bundled().IDs() {
+		if b == id {
+			return fmt.Errorf("%q is a bundled module", id)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.wire, id)
+	delete(s.manifests, id)
+	return nil
+}
+
+// ReplaceRemote swaps in an updated version of a module installed while running. Games already set up from it keep
+// the wiring they were built with until their settings are saved or the panel restarts; anything created or edited
+// from now on uses the new manifest. A bundled module cannot be replaced.
+func (s *Set) ReplaceRemote(m *Manifest) error {
+	for _, b := range Bundled().IDs() {
+		if b == m.ID {
+			return fmt.Errorf("%q is a bundled module", m.ID)
+		}
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.wire[m.ID]; !ok {
+		return fmt.Errorf("module %q is not loaded", m.ID)
+	}
+	s.wire[m.ID] = m.Wire()
+	s.manifests[m.ID] = m
+	return nil
 }

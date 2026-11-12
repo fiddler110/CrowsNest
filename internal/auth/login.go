@@ -173,7 +173,7 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	session, err := s.newSession(w, username)
+	session, err := s.newSession(w, r, username)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -228,7 +228,7 @@ func (s *Service) ServeLoginMFA(w http.ResponseWriter, r *http.Request) {
 	// #nosec G124 -- clears the pending cookie; same attributes as when it was set
 	http.SetCookie(w, &http.Cookie{Name: mfaCookieName, Value: "", Path: "/login/mfa", MaxAge: -1, Expires: time.Unix(0, 0),
 		HttpOnly: true, Secure: s.SecureCookies, SameSite: http.SameSiteLaxMode})
-	session, err := s.newSession(w, p.User)
+	session, err := s.newSession(w, r, p.User)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -242,15 +242,25 @@ func (s *Service) ServeLoginMFA(w http.ResponseWriter, r *http.Request) {
 
 // startSession signs a new session for username and sets its cookie; used by
 // sign-in methods that redirect rather than answer JSON (Google).
-func (s *Service) startSession(w http.ResponseWriter, username string) error {
-	_, err := s.newSession(w, username)
+func (s *Service) startSession(w http.ResponseWriter, r *http.Request, username string) error {
+	_, err := s.newSession(w, r, username)
 	return err
 }
 
-func (s *Service) newSession(w http.ResponseWriter, username string) (Session, error) {
+func (s *Service) newSession(w http.ResponseWriter, r *http.Request, username string) (Session, error) {
 	session, err := s.Sessions.New(username)
 	if err != nil {
 		return Session{}, err
+	}
+	if reg := s.Sessions.Registry; reg != nil {
+		ua := r.UserAgent()
+		if len(ua) > 200 {
+			ua = ua[:200]
+		}
+		if err := reg.Add(SessionRecord{ID: session.ID, User: username, Created: session.IssuedAt, LastSeen: session.IssuedAt,
+			Expires: session.ExpiresAt, UserAgent: ua, IP: ClientIP(r, s.TrustedProxies)}); err != nil {
+			return Session{}, err
+		}
 	}
 	token, err := s.Sessions.Encode(session)
 	if err != nil {
@@ -271,9 +281,14 @@ func (s *Service) newSession(w http.ResponseWriter, username string) (Session, e
 	return session, nil
 }
 
-// ServeLogout clears the session cookie. Idempotent; doesn't require a
-// valid session (there's no server-side state to invalidate).
+// ServeLogout clears the session cookie and drops the session from the
+// registry. Idempotent; doesn't require a valid session.
 func (s *Service) ServeLogout(w http.ResponseWriter, r *http.Request) {
+	if reg := s.Sessions.Registry; reg != nil {
+		if sess, err := DecodeSessionCookie(s.Sessions, r); err == nil {
+			_, _ = reg.Revoke(sess.Username, sess.ID)
+		}
+	}
 	// #nosec G124 -- clears the cookie; same attributes as the one set at login
 	http.SetCookie(w, &http.Cookie{
 		Name:     SessionCookieName,

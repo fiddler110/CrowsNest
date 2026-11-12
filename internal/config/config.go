@@ -72,6 +72,16 @@ type ManagedConfig struct {
 	// into the panel: leaving it read-only keeps the envelope out of the panel's
 	// reach, which is the point of having one.
 	PolicyEditable bool `yaml:"policy_editable"`
+	// TrustedKeys are the publisher keys (ed25519, base64) whose signed modules the dashboard may install from a
+	// URL. Left empty, the dashboard installs nothing remote; the command line's hash-pinned install still works.
+	// The list lives here, not in anything the dashboard can edit.
+	TrustedKeys []TrustedKey `yaml:"trusted_keys"`
+}
+
+// TrustedKey is one publisher key a module signature may be made with.
+type TrustedKey struct {
+	Name      string `yaml:"name"`
+	PublicKey string `yaml:"public_key"`
 }
 
 // PlatformConfig holds the host-level values a module's runtime section is
@@ -106,6 +116,9 @@ type PlatformConfig struct {
 	// once you have checked the drive is mounted; it is needed again only if
 	// you reset the remembered folder.
 	BackupsConfirmNew bool `yaml:"backups_confirm_new"`
+	// OffsiteStatusFile is where the offsite sidecar (quickstart/offsite) writes its status, as the panel sees it
+	// (mount the sidecar's status folder read-only). Set, the dashboard warns when an offsite copy fails or stops.
+	OffsiteStatusFile string `yaml:"offsite_status_file"`
 	// HostIP is the host address game ports are published on (default 0.0.0.0).
 	HostIP string `yaml:"host_ip"`
 	// GamesNetwork is the existing docker network games join (default

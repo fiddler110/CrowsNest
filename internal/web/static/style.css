@@ -665,3 +665,7 @@ fieldset.field legend { padding: 0; margin-bottom: 0.3rem; }
 .totp-qr { display: block; margin: 0.8rem 0; background: #fff; padding: 8px; border-radius: 8px; }
 .totp-secret { font-family: var(--mono); letter-spacing: 0.08em; word-break: break-all; }
 .totp-codes { font-family: var(--mono); font-size: 1.05rem; line-height: 1.7; padding: 0.8rem 1rem; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; width: max-content; max-width: 100%; user-select: all; }
+
+.session-list { list-style: none; margin: 0.8rem 0 0; padding: 0; display: grid; gap: 0.5rem; }
+.session-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.7rem 0.9rem; border: 1px solid var(--line, rgba(255,255,255,0.12)); border-radius: 6px; }
+.session-row small { opacity: 0.75; }

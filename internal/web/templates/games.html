@@ -23,6 +23,45 @@
   <h2 class="section-title">// your fleet</h2>
   <div id="fleet" class="fleet" aria-live="polite"></div>
 
+  <section id="sources" class="sources" hidden>
+    <h2 class="section-title">// game modules from a source</h2>
+    <p class="hero-sub">Install a module published by someone you trust. It must be signed by one of the keys the operator listed in <code>config.yaml</code> (<span id="sources-keys"></span>). Installing a module grants it nothing: a game from it still has to fit the policy.</p>
+    <form id="source-form" class="pane-form" autocomplete="off">
+      <label class="field">Address of the module <small>An https:// address of a module.yaml, with its signature next to it at the same address plus <code>.sig</code>.</small>
+        <input type="url" name="url" maxlength="300" placeholder="https://example.com/modules/mygame/module.yaml" spellcheck="false" required></label>
+      <div class="pane-actions"><button class="btn btn-primary" type="submit">Look at it</button></div>
+    </form>
+    <div id="source-preview" class="pane-form" hidden>
+      <h3 id="source-title"></h3>
+      <p id="source-desc" class="hero-sub"></p>
+      <p class="hero-sub">Signed by <b id="source-signer"></b> · sha256 <code id="source-sha"></code></p>
+      <p class="hero-sub">Installing it lets this module:</p>
+      <ul id="source-review"></ul>
+      <form id="source-install" autocomplete="off">
+        <label class="field">Your password <small>Asked again, as for the other changes to what the dashboard may run.</small>
+          <input type="password" name="password" maxlength="72" autocomplete="current-password" required></label>
+        <div class="pane-actions">
+          <button id="source-cancel" class="btn btn-ghost" type="button">Cancel</button>
+          <button class="btn btn-primary" type="submit">Install this exact file</button>
+        </div>
+      </form>
+    </div>
+    <p id="source-error" class="settings-error" role="alert" hidden></p>
+    <label class="field" id="source-pw-field">Your password <small>Needed to remove or update a module below.</small>
+      <input id="source-pw" type="password" maxlength="72" autocomplete="current-password"></label>
+    <div id="update-preview" class="pane-form" hidden>
+      <h3 id="update-title"></h3>
+      <p class="hero-sub">Signed by <b id="update-signer"></b> · sha256 <code id="update-sha"></code>. Compared with what is installed, the new file:</p>
+      <p class="hero-sub">Adds</p><ul id="update-added"></ul>
+      <p class="hero-sub">Removes</p><ul id="update-removed"></ul>
+      <div class="pane-actions">
+        <button id="update-cancel" class="btn btn-ghost" type="button">Cancel</button>
+        <button id="update-apply" class="btn btn-primary" type="button">Update to this exact file</button>
+      </div>
+    </div>
+    <ul id="source-installed" class="session-list"></ul>
+  </section>
+
   <div id="setup-section">
   <h2 class="section-title">// add a game</h2>
 

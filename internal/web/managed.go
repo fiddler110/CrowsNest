@@ -58,7 +58,7 @@ func (a *App) handleGamesPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	data := dashboardData{Page: "games", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken, NeedsPassword: !a.Auth.HasPassword(session.Username)}
+	data := dashboardData{Page: "games", Username: session.Username, DisplayName: a.Profiles.DisplayName(session.Username), IsAdmin: true, CSRFToken: session.CSRFToken, NeedsPassword: !a.Auth.HasPassword(session.Username)}
 	render(w, a.Templates.Games, data, "games page")
 }
 
@@ -69,7 +69,7 @@ func (a *App) handleSettingsPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/", http.StatusSeeOther)
 		return
 	}
-	data := dashboardData{Page: "settings", Username: session.Username, IsAdmin: true, CSRFToken: session.CSRFToken, NeedsPassword: !a.Auth.HasPassword(session.Username)}
+	data := dashboardData{Page: "settings", Username: session.Username, DisplayName: a.Profiles.DisplayName(session.Username), IsAdmin: true, CSRFToken: session.CSRFToken, NeedsPassword: !a.Auth.HasPassword(session.Username)}
 	render(w, a.Templates.Settings, data, "settings page")
 }
 
@@ -143,7 +143,11 @@ func (a *App) handleManagedEnable(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	a.record(r, req.ID, "enabled from module "+req.Module)
+	detail := "enabled from module " + req.Module
+	if req.CopyFrom != "" {
+		detail += ", as a copy of " + req.CopyFrom
+	}
+	a.record(r, req.ID, detail)
 	a.pokeGame(req.ID) // re-observe; an id the hub lacks prompts a registry reconcile
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": req.ID, "state": managed.StateInstalling})
 }

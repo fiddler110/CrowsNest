@@ -145,7 +145,80 @@ func TestModuleInstall_Refusals(t *testing.T) {
 
 func TestModuleInstall_BundledIDRefused(t *testing.T) {
 	body := []byte("api_version: 1\nid: valheim\nname: V\nruntime:\n  image: x/y\n")
-	if _, err := modules.Install(t.TempDir(), "https://x/y", body, "", false); err == nil {
+	if _, err := modules.Install(t.TempDir(), "https://x/y", body, "", false, ""); err == nil {
 		t.Error("a bundled id was installable")
+	}
+}
+
+// keygen and sign make a publisher's key and signature; an install under a trusted key records it, and an update
+// that is no longer signed is refused.
+func TestModuleSignedInstallAndDowngrade(t *testing.T) {
+	work := t.TempDir()
+	wd, _ := os.Getwd()
+	if err := os.Chdir(work); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chdir(wd) })
+
+	out := &bytes.Buffer{}
+	pub := &moduleTool{out: out}
+	if code := pub.run([]string{"keygen", "me"}); code != 0 || !strings.Contains(out.String(), "public_key:") {
+		t.Fatalf("keygen exit %d:\n%s", code, out)
+	}
+	if fi, err := os.Stat(filepath.Join(work, "me.key")); err != nil || fi.Mode().Perm() != 0o600 {
+		t.Fatalf("me.key: %v %v", fi, err)
+	}
+	if code := pub.run([]string{"keygen", "me"}); code != 1 { // never overwritten
+		t.Error("keygen overwrote an existing key")
+	}
+	var pubKey string
+	for _, f := range strings.Fields(out.String()) {
+		if strings.HasPrefix(f, "public_key:") {
+			pubKey = strings.TrimSuffix(strings.TrimSpace(strings.Fields(strings.SplitN(out.String(), "public_key:", 2)[1])[0]), "}")
+		}
+	}
+	keys, err := modules.ParseTrustedKeys([]modules.TrustedKey{{Name: "me", Key: pubKey}})
+	if err != nil {
+		t.Fatalf("the printed public key does not parse: %v (%q)", err, pubKey)
+	}
+
+	manifest, _ := os.ReadFile(filepath.Join(wd, "../../docs/examples/mygame/module.yaml"))
+	file := filepath.Join(work, "module.yaml")
+	os.WriteFile(file, manifest, 0o644)
+	out.Reset()
+	if code := pub.run([]string{"sign", file, "--key", filepath.Join(work, "me.key")}); code != 0 {
+		t.Fatalf("sign exit %d:\n%s", code, out)
+	}
+	sig, _ := os.ReadFile(file + ".sig")
+
+	serveSigned := true
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case strings.HasSuffix(r.URL.Path, ".sig") && serveSigned:
+			w.Write(sig)
+		case strings.HasSuffix(r.URL.Path, ".sig"):
+			http.NotFound(w, r)
+		default:
+			w.Write(manifest)
+		}
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	o := &bytes.Buffer{}
+	tl := &moduleTool{dir: dir, keys: keys, client: srv.Client(), in: strings.NewReader("mygame\n"), out: o}
+	if code := tl.run([]string{"install", srv.URL + "/m.yaml"}); code != 0 || !strings.Contains(o.String(), `signed by the trusted key "me"`) {
+		t.Fatalf("install exit %d:\n%s", code, o)
+	}
+	if l, _ := modules.ReadLock(dir); l.Modules[0].SignedBy != "me" {
+		t.Fatalf("lock = %+v", l)
+	}
+
+	// The source stops signing (or a different file is served): update refuses rather than quietly downgrading.
+	serveSigned = false
+	manifest = append(manifest, []byte("\n# changed\n")...)
+	o.Reset()
+	tl = &moduleTool{dir: dir, keys: keys, client: srv.Client(), in: strings.NewReader("mygame\n"), out: o}
+	if code := tl.run([]string{"update", "mygame"}); code != 1 || !strings.Contains(o.String(), "not signed by a trusted key") {
+		t.Fatalf("unsigned update exit %d:\n%s", code, o)
 	}
 }
