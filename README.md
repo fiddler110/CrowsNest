@@ -70,24 +70,16 @@ sequenceDiagram
     participant D as Docker (via the guards)
     participant H as State hub
     U->>P: Start valheim
-    rect rgb(254, 243, 199)
     P->>X: one game at a time? cooldown over? enough free memory?
-    end
     alt another game is running
-        rect rgb(254, 226, 226)
         X-->>U: refused, offer to switch
-        end
     else allowed
-        rect rgb(220, 252, 231)
         X-->>P: ok
         P-->>U: accepted
-        end
-        rect rgb(219, 234, 254)
         P->>D: start the container (background, 30 minute limit)
         D-->>H: container up
         H->>H: follow the log and probes until the ready line
         H-->>U: starting, progress, online (live over SSE)
-        end
     end
     Note over H: with 0 players for the idle timeout,<br/>the panel stops the game and logs it
 ```
