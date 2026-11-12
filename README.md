@@ -2,7 +2,8 @@
 
 A self-hosted web dashboard for starting, stopping and watching game server containers on a home server. It shows
 live status, logs, player counts and resource use, keeps one game running at a time by default, and stops a game on
-its own when nobody has been on for a while.
+its own when nobody has been on for a while. Admins can add and manage games from the web page, within limits set in
+a policy file the panel cannot change.
 
 ## Why this exists
 
@@ -121,7 +122,9 @@ flowchart TD
 
 I run this myself, with Valheim, Windrose and Palworld. The login, dashboard, start, stop and switch,
 live logs, startup progress, player counts, idle and overnight auto-stop, Discord notifications, the Games page and
-memory checks are built and have tests. The Docker guards have their own tests too.
+memory checks are built and have tests, as are backups with restore and an offsite copy, per-device sessions, Google
+and OpenID Connect sign-in with an optional authenticator app, copying a game, and installing signed modules from a
+URL. The Docker guards have their own tests too.
 
 What I haven't verified against real servers yet:
 
@@ -131,7 +134,8 @@ What I haven't verified against real servers yet:
 
 The Minecraft, Source and Don't Starve Together modules were written and tested against sample logs, not against
 servers I run. Treat them as a starting point. The quickstart stack hasn't been run end to end on a clean machine
-either, though its config and policy are checked by a test. [`docs/implementation-plan.md`](docs/implementation-plan.md)
+either, though its config and policy are checked by a test. Installing and updating a module from a URL, per-device sessions and the offsite copy have been run in tests and on
+a test copy of the stack, not yet on the setup I use every day. [`docs/implementation-plan.md`](docs/implementation-plan.md)
 has the history and the open items, and [`roadmap.md`](roadmap.md) has what's next.
 
 ## Games
@@ -152,7 +156,8 @@ codes, and why an HTTP tunnel can't carry game traffic) is in [docs/connecting.m
 
 A game is one `module.yaml` file and no code. [docs/writing-modules.md](docs/writing-modules.md) walks through
 writing one, checking it with `crowsnest module check` against a captured log before you run the game, installing it
-(by hand or from a URL, with the download pinned to a hash), and sharing it. CrowsNest doesn't need to know about
+(by hand, or from a URL with the download pinned to a hash and, if you trust the publisher's key, its signature
+checked), and sharing it. CrowsNest doesn't need to know about
 your module for it to work.
 
 Community-style modules that are not bundled live in [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules): one folder per module, each signed, with a README
@@ -161,13 +166,27 @@ signing key for `managed.trusted_keys` is in that README.
 
 ## Running it
 
-Images are published to `ghcr.io/fiddler110/crowsnest` (`:latest`, `:X.Y.Z`, `:X.Y`, `:dev`), scanned, signed with
-cosign and shipped with an SBOM ([publishing](docs/publishing.md)). You don't need a Go toolchain.
+Images are published to `ghcr.io/fiddler110/crowsnest` (`:latest`, `:X.Y.Z`, `:X.Y`, `:sha-<commit>` and `:dev`),
+scanned, signed with cosign and shipped with an SBOM ([publishing](docs/publishing.md)). You don't need a Go
+toolchain, but you do need the [`quickstart/`](quickstart/README.md) folder, so clone the repository (or copy that
+folder).
 
-**The fastest start** is [`quickstart/`](quickstart/README.md): the panel plus the guard, with no games configured.
-You add games from the web page. Then open `http://<host>:5000`, read the setup code from
-`docker compose logs crowsnest` and create the first admin. `docker compose exec crowsnest crowsnest doctor` checks
-Docker access, file permissions, the policy and a few safety settings, and tells you what to fix.
+**The fastest start** is the quickstart: the panel plus the guard, with no games configured. You add games from the
+web page.
+
+```sh
+cd quickstart
+cp .env.example .env                       # set DOCKER_GID: stat -c '%g' /var/run/docker.sock
+sudo mkdir -p /srv/games && sudo chown 1000:1000 /srv/games
+mkdir -p data/managed && sudo chown -R 1000:1000 data
+docker compose up -d
+docker compose exec crowsnest crowsnest doctor     # checks Docker access, permissions, the policy; says what to fix
+docker compose logs crowsnest                       # shows the setup code
+```
+
+Open <http://localhost:5000> (the panel listens on this machine only until you set `CROWSNEST_BIND` in `.env`, and
+you should put HTTPS in front before exposing it), enter the setup code and choose the first admin's name and
+passphrase. There are no default credentials. Then open **Games**, pick a game and add it.
 
 Prefer to define games by hand in `config.yaml` and a compose file, or to see how CrowsNest reaches Docker (the
 guard, or a socket proxy)? That is [docs/setup.md](docs/setup.md).
