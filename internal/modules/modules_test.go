@@ -3,6 +3,7 @@ package modules
 import (
 	"context"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -65,9 +66,16 @@ func TestRegisterRejectsDuplicateAndEmpty(t *testing.T) {
 }
 
 func TestBundledIDs(t *testing.T) {
-	want := []string{"dontstarve", "minecraft", "palworld", "source", "valheim", "windrose"}
-	if got := Bundled().IDs(); !reflect.DeepEqual(got, want) {
-		t.Errorf("Bundled IDs = %v, want %v", got, want)
+	// What ships in the binary; the tests also register copies of the modules published from crowsnest-modules.
+	want := []string{"palworld", "valheim", "windrose"}
+	s := NewSet()
+	sub, err := fs.Sub(bundledFS, "bundled")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registerFS(s, sub)
+	if got := s.IDs(); !reflect.DeepEqual(got, want) {
+		t.Errorf("embedded IDs = %v, want %v", got, want)
 	}
 }
 

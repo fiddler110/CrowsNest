@@ -244,6 +244,12 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
 
 ## Done
 
+- [x] **Modules moved out (2026-11-12).** Minecraft, Source and Don't Starve Together are no longer bundled; they are
+  published, signed, in [crowsnest-modules](https://github.com/fiddler110/crowsnest-modules) with `sevendtd`.
+  Valheim, Palworld and Windrose stay in the binary. The engine tests keep copies under
+  `internal/modules/modtest/` (registered through `modules.AddBundled`, only in test binaries). Upgrade note in
+  `docs/modules.md`.
+
 - [x] **Pinned container addresses in guard scopes; game wiring extracted;
   golden tests (2026-11-08).** A `GUARD_SCOPES` entry may carry
   `"ipv4": {"<network>": ["a.b.c.d"]}`: the exact addresses that container may

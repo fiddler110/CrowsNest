@@ -6,8 +6,8 @@ its state in its log, a module is usually 30 lines.
 
 This guide builds one from scratch. The finished example is
 [`examples/mygame/module.yaml`](examples/mygame/module.yaml); the bundled modules in
-`internal/modules/bundled/` are bigger, real ones (`minecraft` reads the log, `source` and `valheim` use RCON and
-REST).
+`internal/modules/bundled/` (`valheim`, `palworld`, `windrose`) and those in
+[fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules) (`minecraft` reads the log, `source` uses RCON, `sevendtd`, `dontstarve`) are bigger, real ones.
 
 ## What a module can and cannot do
 
@@ -125,7 +125,7 @@ else: a pattern that does not match real output is the usual bug.
   need.
 - **Host steps:** `host_setup:` lists things only the operator can do (a firewall rule, a network), shown beside
   the form.
-- **Admin console, REST actions, pre-stop save:** see `palworld` (REST) and `minecraft` (RCON).
+- **Admin console, REST actions, pre-stop save:** see `palworld` (REST) and `minecraft` (RCON, in the modules repository).
 - **Card colour:** `accent: "#rrggbb"`.
 
 ## Memory
