@@ -1,7 +1,9 @@
-# Bundled modules
+# Modules
 
 A module tells CrowsNest how to read one kind of game server (status, players, startup progress, consoles).
-Bundled modules ship inside the binary; your own go in `modules_dir` as `<id>/module.yaml` (same format).
+Three modules ship inside the binary (the bundled ones below); every other module is installed into `modules_dir` as
+`<id>/module.yaml` (same format), from your own file or from a source. Ready-made ones are published in
+[fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules).
 A game in `config.yaml` uses the module whose id equals the game's `id`, or the one named by `module:`.
 
 | Module id | Covers | Players come from |
@@ -9,13 +11,26 @@ A game in `config.yaml` uses the module whose id equals the game's `id`, or the 
 | `valheim` | Valheim (lloesche/valheim-server) | container log |
 | `palworld` | Palworld (thijsvanloef/palworld-server-docker) | REST API |
 | `windrose` | Windrose (+ optional Windrose+ mod) | container log, mod cross-check |
+
+Published in [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules) (one signed folder each; see its README to install them):
+
+| Module id | Covers | Players come from |
+|---|---|---|
 | `minecraft` | Minecraft Java (itzg/minecraft-server; vanilla, Paper, Fabric, Forge) | container log |
 | `source` | Source/GoldSrc family: TF2, CS2, CS:S, CS 1.6, L4D, L4D2, DoD:S, HL2DM and similar | RCON `status` |
 | `dontstarve` | Don't Starve Together | container log |
+| `sevendtd` | 7 Days to Die (didstopia/7dtd-server) | container log |
 
-Markers for Valheim and Windrose were checked against real sessions. Minecraft, Source and Don't Starve Together
-were written from the games' documented log/`status` formats and fixtures in `internal/modules/testdata`; confirm
-on the first real session and adjust a local copy of the module if a line differs.
+Markers for Valheim and Windrose were checked against real sessions. The others were written from the games'
+documented log/`status` formats (Minecraft also against a real start-up log); confirm on the first real session and
+adjust a local copy of the module if a line differs.
+
+**Minecraft, Source and Don't Starve Together used to be bundled.** If you have a game that uses one (a `minecraft`
+game on the Games page, or `module: minecraft|source|dontstarve` in `config.yaml`), install that module again from the
+modules repository before upgrading, or the game shows as failed ("module is not installed"); its container and data are
+untouched. A Minecraft game from the dashboard also needs `docker.io/itzg/minecraft-server` and `25565/tcp` in
+`policy.yaml` now (`@modules` and the port list only cover the bundled modules), and the module switched on under Games.
+`source` and `dontstarve` have no `runtime:` section, so they belong to `config.yaml` games.
 
 ## Using a module
 
@@ -97,10 +112,10 @@ folders or image. It is shown in the approval summary. See docs/backups.md, "Res
 An optional `accent: "#rrggbb"` sets the colour of the game's dashboard card. Without one the card uses the
 default theme colour.
 
-Copy `internal/modules/bundled/minecraft/module.yaml` (log-based) or `source` (RCON-based) into
+Copy `minecraft/module.yaml` (log-based) or `source/module.yaml` (RCON-based) from [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules) into
 `<modules_dir>/<id>/module.yaml`, change the regexes, and add the game to `config.yaml`. Unknown keys are an
 error, so a typo cannot silently disable a setting. Add a fixture of real log lines and test it the way
-`internal/modules/minecraft_test.go` does.
+`internal/modules/minecraft_test.go` does (its fixtures live in `internal/modules/modtest/`).
 
 ## Memory admission
 
@@ -148,8 +163,8 @@ crowsnest render --config config.yaml --compose games.compose.yaml --scopes scop
   has no `runtime:` and keeps its hand-written service and scope.
 - Rendered Valheim and Palworld services are checked in tests against the hand-written production ones.
 
-Runtime sections today: `valheim`, `palworld`, `minecraft`, and `source` (image required per game).
-`dontstarve` has none yet, because I haven't verified an image's ports and data layout.
+Runtime sections today: `valheim`, `palworld` and, in the modules repository, `minecraft`, `sevendtd`, and `source`
+(image required per game). `dontstarve` has none, because I haven't verified an image's ports and data layout.
 
 ## The policy envelope and managed scopes (guard)
 
@@ -402,7 +417,7 @@ managed: {dir: /app/data/managed, policy_file: /etc/crowsnest/policy/policy.yaml
   if its id is a container name the policy's `names` allows, so a rewritten `games.json` cannot aim a module's
   backup command at an unrelated container either. Execguard therefore needs `config.yaml` (for `managed.dir` and
   `managed.policy_file`), the managed dir and the policy directory mounted read-only; with the policy unreadable it
-  issues no dashboard-game rules. `valheim`, `palworld` and `minecraft`
+  issues no dashboard-game rules. `valheim`, `palworld` and the modules repository's `minecraft` and `sevendtd`
   ship a backup; a module without one has none.
 
 ## Where this is heading: enable games from the dashboard

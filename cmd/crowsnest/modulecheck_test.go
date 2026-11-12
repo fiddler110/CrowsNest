@@ -7,9 +7,9 @@ import (
 	"testing"
 )
 
-func TestModuleCheck_BundledAndExampleWithLog(t *testing.T) {
+func TestModuleCheck_ModuleAndExampleWithLog(t *testing.T) {
 	for _, c := range []struct{ dir, log, want string }{
-		{"../../internal/modules/bundled/minecraft", "../../internal/modules/testdata/minecraft_session.log", "peak players 2"},
+		{"../../internal/modules/modtest/mods/minecraft", "../../internal/modules/testdata/minecraft_session.log", "peak players 2"},
 		{"../../docs/examples/mygame", "../../docs/examples/mygame/sample.log", "peak players 2"},
 	} {
 		var out strings.Builder

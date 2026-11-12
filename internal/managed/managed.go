@@ -1436,6 +1436,9 @@ func (m *Manager) unsealSecrets(secrets map[string]map[string]string) (plain map
 func (m *Manager) writeScopes() error {
 	rs := make([]*modules.Rendered, 0, len(m.entries))
 	for _, e := range m.entries {
+		if e.rendered == nil {
+			continue // its module is gone or it no longer renders; it has no scope to issue
+		}
 		rs = append(rs, e.rendered)
 	}
 	if len(rs) == 0 {

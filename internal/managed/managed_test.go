@@ -131,6 +131,27 @@ func waitState(t *testing.T, m *Manager, id, want string) {
 	t.Fatalf("%s never reached %s: %+v", id, want, m.List())
 }
 
+// A game whose module is no longer installed (Minecraft after it moved out of
+// the binary) is kept as failed with nothing rendered; restoring must not
+// crash writing the guard scopes, and its game stays listed as failed.
+func TestRestoreSurvivesAMissingModule(t *testing.T) {
+	m, _ := newManager(t)
+	req := Request{ID: "minecraft", Module: "minecraft",
+		Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+
+	gone := &Manager{Dir: m.Dir, PolicyFile: m.PolicyFile, Platform: m.Platform, Config: m.Config,
+		Modules: modules.NewSet()} // the module is gone
+	m2, _ := newManagerAt(t, gone)
+	waitState(t, m2, "minecraft", StateFailed)
+	if b, err := os.ReadFile(m2.path("scopes.json")); err != nil || strings.Contains(string(b), "minecraft") {
+		t.Errorf("scopes.json = %q, %v; want no scope for a game with no module", b, err)
+	}
+}
+
 func TestEnableAndDisable(t *testing.T) {
 	m, fd := newManager(t)
 	req := Request{ID: "minecraft", Module: "minecraft",

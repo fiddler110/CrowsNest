@@ -129,8 +129,9 @@ What I haven't verified against real servers yet:
 - Valheim player joins and leaves on a live server;
 - a full Start then Switch between two real games.
 
-The Minecraft, Source and Don't Starve Together modules were written and tested against sample logs, not against
-servers I run. Treat them as a starting point. The quickstart stack hasn't been run end to end on a clean machine
+The Minecraft, Source, Don't Starve Together and 7 Days to Die modules (published in
+[crowsnest-modules](https://github.com/fiddler110/crowsnest-modules)) were written and tested against sample logs, not
+against servers I run. Treat them as a starting point. The quickstart stack hasn't been run end to end on a clean machine
 either, though its config and policy are checked by a test. [`docs/implementation-plan.md`](docs/implementation-plan.md)
 has the history and the open items, and [`roadmap.md`](roadmap.md) has what's next.
 
@@ -141,9 +142,12 @@ has the history and the open items, and [`roadmap.md`](roadmap.md) has what's ne
 | `valheim` | Valheim (`lloesche/valheim-server`) | the container log |
 | `palworld` | Palworld (`thijsvanloef/palworld-server-docker`) | its REST API |
 | `windrose` | Windrose (`indifferentbroccoli/windrose-server-docker`) | the container log; richer info if the optional Windrose+ integration is on |
-| `minecraft` | Minecraft (`itzg/minecraft-server`) | the container log |
-| `source` | TF2, CS2, L4D2 and other Source-engine games | RCON |
-| `dontstarve` | Don't Starve Together | the container log |
+
+Valheim, Palworld and Windrose ship inside CrowsNest. Others are modules you install, and are published in
+[fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules): Minecraft (`itzg/minecraft-server`,
+container log), Source-engine games such as TF2, CS2 and L4D2 (RCON), Don't Starve Together (container log) and 7 Days
+to Die (container log). Minecraft, Source and Don't Starve Together used to be bundled; see
+[docs/modules.md](docs/modules.md) if you used them.
 
 Every game's setup is in [docs/modules.md](docs/modules.md). How players actually reach a server (Tailscale, invite
 codes, and why an HTTP tunnel can't carry game traffic) is in [docs/connecting.md](docs/connecting.md).

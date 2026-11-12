@@ -111,6 +111,32 @@ func TestOfflineRecordsLeaves(t *testing.T) {
 	}
 }
 
+// The last player leaving a game that reports names comes back as an empty
+// list, not a count-only reading: the leave must still be recorded by name
+// (found live on Palworld, where the final leave was announced as "Someone
+// left" and never closed the player's playtime).
+func TestLastNamedPlayerLeaves(t *testing.T) {
+	w, _, pl, out := setup(t)
+	h := &rec{}
+	w.History = h
+	ctx := context.Background()
+
+	pl.names = []string{"ann"}
+	w.Tick(ctx) // baseline
+	pl.names, pl.count = nil, 0
+	w.Tick(ctx)
+	if len(h.events) != 1 || h.events[0] != "leave:g:ann" {
+		t.Fatalf("events = %v, want leave for ann", h.events)
+	}
+	if len(out.msgs) != 1 || !strings.Contains(out.msgs[0], "ann") || strings.Contains(out.msgs[0], "Someone") {
+		t.Fatalf("messages = %v, want a named leave", out.msgs)
+	}
+	w.Tick(ctx)
+	if len(h.events) != 1 {
+		t.Fatalf("leave recorded twice: %v", h.events)
+	}
+}
+
 type hubStatus struct {
 	mu  sync.Mutex
 	s   games.Status
