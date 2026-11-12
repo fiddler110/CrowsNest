@@ -43,7 +43,7 @@
     <a id="games-btn" class="btn btn-ghost nav-link" href="/games"{{if eq .Page "games"}} aria-current="page"{{end}}><svg class="icon" aria-hidden="true"><use href="#i-play"/></svg><span class="btn-label">Games</span></a>
     <a id="settings-btn" class="btn btn-ghost nav-link" href="/settings"{{if eq .Page "settings"}} aria-current="page"{{end}}><svg class="icon" aria-hidden="true"><use href="#i-gear"/></svg><span class="btn-label">Settings</span></a>
     {{end}}
-    <a class="user-chip" href="/account"{{if eq .Page "account"}} aria-current="page"{{end}} title="Your account"><svg class="icon" aria-hidden="true"><use href="#i-user"/></svg><span class="sr-only">Signed in as </span><b>{{.Username}}</b></a>
+    <a class="user-chip" href="/account"{{if eq .Page "account"}} aria-current="page"{{end}} title="Your account"><svg class="icon" aria-hidden="true"><use href="#i-user"/></svg><span class="sr-only">Signed in as </span><b data-username="{{.Username}}">{{if .DisplayName}}{{.DisplayName}}{{else}}{{.Username}}{{end}}</b></a>
     <button id="logout-btn" class="btn btn-ghost" type="button"><svg class="icon" aria-hidden="true"><use href="#i-logout"/></svg><span class="btn-label">Log out</span></button>
   </nav>
 </header>

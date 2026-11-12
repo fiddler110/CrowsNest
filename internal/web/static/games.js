@@ -13,6 +13,7 @@ let modules = [];
 let games = [];
 let selected = null; // module id
 let editing = null; // game id while editing
+let copying = null; // game id whose settings a new profile starts from
 let idTouched = false;
 let previewTimer = null;
 let previewSeq = 0;
@@ -83,6 +84,10 @@ function renderFleet(configured) {
     if (g.state === "failed" && g.error) c.append(el("p", "settings-error", g.error.slice(-300)));
     const row = el("div", "fleet-actions");
     const busy = g.state === "installing";
+    const dup = el("button", "btn btn-ghost", "Make a copy");
+    dup.type = "button"; dup.disabled = busy;
+    dup.title = "A new game with these settings: its own name, folder and port";
+    dup.addEventListener("click", () => startCopy(g));
     const edit = el("button", "btn btn-ghost", "Settings");
     edit.type = "button"; edit.disabled = busy;
     edit.addEventListener("click", () => startEdit(g));
@@ -146,7 +151,7 @@ function renderFleet(configured) {
     form.hidden = true;
     wipe.addEventListener("click", () => { form.hidden = !form.hidden; });
     buildWipeForm(form, g, wipe);
-    row.append(edit, upd, back, del, wipe);
+    row.append(edit, dup, upd, back, del, wipe);
     c.append(row, form);
     root.append(c);
   });
@@ -285,7 +290,7 @@ async function reloadModules() {
 }
 
 function choose(id) {
-  if (editing) return;
+  if (editing || copying) return;
   selected = id;
   renderCatalogue();
   form.elements.connect_address.value = "";
@@ -319,8 +324,8 @@ function buildForm(values = {}) {
     input.autocomplete = "off";
     input.spellcheck = false;
     if (o.secret) {
-      input.placeholder = editing ? "leave empty to keep the current value" : "";
-      input.required = !!o.required && !editing;
+      input.placeholder = editing ? "leave empty to keep the current value" : copying ? `leave empty to use the same as ${copying}` : "";
+      input.required = !!o.required && !editing && !copying;
     } else if (o.auto) {
       // Wiring that follows from the game itself: left empty, it is filled in automatically.
       input.value = values[o.key] !== undefined ? values[o.key] : "";
@@ -425,6 +430,7 @@ function collect() {
     connect_address: form.elements.connect_address.value.trim(),
     options: {}, secrets: {},
   };
+  if (copying) req.copy_from = copying;
   if (m.needs_image && form.elements.image.value.trim()) req.options.image = form.elements.image.value.trim();
   const tag = chosenTag(m);
   if (tag) req.options.tag = tag;
@@ -539,6 +545,7 @@ form.addEventListener("submit", async (e) => {
     ? await callAPI(`/api/managed/games/${editing}`, { method: "PUT", body: JSON.stringify(req) })
     : await callAPI("/api/managed/games", { method: "POST", body: JSON.stringify(req) });
   if (!res.ok) { showError(await errorText(res)); $("enable").disabled = false; return; }
+  if (copying) leaveCopy();
   installId = req.id;
   seenInstalling[req.id] = true;
   showProgress(editing ? "Applying your changes…" : `Setting up ${req.display_name || req.id}…`);
@@ -614,7 +621,49 @@ function startEdit(g) {
   form.scrollIntoView({ behavior: "smooth", block: "nearest" });
 }
 
+// startCopy opens the add form filled from g's settings, for a new game of the same module (a second world, a
+// friends' server). Its folder, ports and wiring are left empty so they follow the new id; secrets are left empty
+// and the server carries them across (copy_from), so nothing secret ever reaches the browser.
+function startCopy(g) {
+  const m = moduleById(g.module);
+  if (!m) { toast("That game's module is not installed.", "error"); return; }
+  editing = null;
+  copying = g.id;
+  selected = g.module;
+  idTouched = false;
+  renderCatalogue();
+  document.querySelectorAll(".pick").forEach((b) => { b.disabled = true; });
+  form.reset();
+  const auto = new Set((m.options || []).filter((o) => o.auto).map((o) => o.key));
+  const vals = {};
+  Object.entries(g.options || {}).forEach(([k, v]) => { if (!auto.has(k) && k !== "data_dir" && k !== "ports") vals[k] = v; });
+  buildForm(vals);
+  form.elements.display_name.value = `${g.display_name || g.id} copy`;
+  form.elements.id.value = slug(form.elements.display_name.value);
+  form.elements.id.readOnly = false;
+  if (g.options && g.options.image) form.elements.image.value = g.options.image;
+  $("basics-title").textContent = `A copy of ${g.display_name || g.id}`;
+  $("enable").textContent = "Enable the copy";
+  $("cancel-edit").hidden = false;
+  form.hidden = false;
+  $("progress").hidden = true;
+  schedulePreview();
+  form.scrollIntoView({ behavior: "smooth", block: "nearest" });
+  form.elements.display_name.select();
+}
+
+function leaveCopy() {
+  copying = null;
+  selected = null;
+  $("basics-title").textContent = "Name it";
+  $("enable").textContent = "Enable";
+  $("cancel-edit").hidden = true;
+  document.querySelectorAll(".pick").forEach((b) => { b.disabled = false; });
+  renderCatalogue();
+}
+
 $("cancel-edit").addEventListener("click", () => {
+  if (copying) { form.hidden = true; leaveCopy(); return; }
   editing = null;
   selected = null;
   form.hidden = true;
@@ -623,6 +672,127 @@ $("cancel-edit").addEventListener("click", () => {
   $("enable").textContent = "Enable";
   $("cancel-edit").hidden = true;
   renderCatalogue();
+});
+
+// ---------- modules from a source ----------
+const srcErr = (msg) => { $("source-error").textContent = msg; $("source-error").hidden = !msg; };
+let previewed = null; // {url, sha256}
+
+async function loadSources() {
+  const res = await callAPI("/api/managed/modules/sources");
+  if (!res.ok) return;
+  const v = await res.json();
+  $("sources").hidden = !v.enabled;
+  if (!v.enabled) return;
+  $("sources-keys").textContent = (v.keys || []).join(", ");
+  const list = $("source-installed");
+  list.replaceChildren();
+  v.installed.forEach((m) => {
+    const li = el("li", "session-row");
+    const info = el("div");
+    info.append(el("b", "", `${m.name || m.id} (${m.id})`), document.createElement("br"),
+      el("small", "", `${m.signed_by ? "signed by " + m.signed_by : "pinned by hash"} · sha256 ${m.sha256.slice(0, 12)} · ${m.source}`));
+    li.append(info);
+    const rm = el("button", "btn btn-ghost btn-danger", "Remove");
+    rm.type = "button";
+    rm.disabled = m.in_use;
+    rm.title = m.in_use ? "A game still uses this module: disable it first" : "";
+    rm.addEventListener("click", async () => {
+      const password = $("source-pw").value;
+      if (!password) { srcErr("Type your password in the box above the list to remove a module."); $("source-pw").focus(); return; }
+      srcErr("");
+      const r = await callAPI(`/api/managed/modules/remote/${encodeURIComponent(m.id)}/remove`, { method: "POST", body: JSON.stringify({ password }) });
+      if (!r.ok) { toast(await errorText(r, "Remove"), "error"); return; }
+      $("source-pw").value = "";
+      toast(`${m.id} removed.`, "ok");
+      await reloadModules();
+      loadSources();
+    });
+    const up = el("button", "btn btn-ghost", "Check for update");
+    up.type = "button";
+    up.addEventListener("click", () => checkUpdate(m));
+    li.append(up, rm);
+    list.append(li);
+  });
+}
+
+let updating = null; // {id, sha256}
+const base = (id) => `/api/managed/modules/remote/${encodeURIComponent(id)}/update`;
+
+async function checkUpdate(m) {
+  srcErr("");
+  $("update-preview").hidden = true;
+  updating = null;
+  const res = await callAPI(base(m.id) + "/preview", { method: "POST", body: "{}" });
+  if (!res.ok) { srcErr(await errorText(res)); return; }
+  const v = await res.json();
+  if (v.up_to_date) { toast(`${m.id} is up to date.`, "ok"); return; }
+  updating = { id: m.id, sha256: v.sha256 };
+  $("update-title").textContent = `${v.name || m.id} (${m.id})`;
+  $("update-signer").textContent = v.signed_by;
+  $("update-sha").textContent = v.sha256.slice(0, 16) + "…";
+  for (const [id, lines] of [["update-added", v.added], ["update-removed", v.removed]]) {
+    const ul = $(id);
+    ul.replaceChildren();
+    (lines && lines.length ? lines : ["nothing"]).forEach((l) => ul.append(el("li", "", l)));
+  }
+  $("update-preview").hidden = false;
+}
+
+$("update-cancel").addEventListener("click", () => { updating = null; $("update-preview").hidden = true; });
+
+$("update-apply").addEventListener("click", async () => {
+  if (!updating) return;
+  const password = $("source-pw").value;
+  if (!password) { srcErr("Type your password in the box below to update."); $("source-pw").focus(); return; }
+  srcErr("");
+  const res = await callAPI(base(updating.id), { method: "POST", body: JSON.stringify({ sha256: updating.sha256, password }) });
+  $("source-pw").value = "";
+  if (!res.ok) { srcErr(await errorText(res)); return; }
+  const v = await res.json();
+  updating = null;
+  $("update-preview").hidden = true;
+  toast(v.note || `${v.id} updated.`, "ok");
+  await reloadModules();
+  loadSources();
+});
+
+$("source-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  srcErr("");
+  $("source-preview").hidden = true;
+  const url = e.target.elements.url.value.trim();
+  const res = await callAPI("/api/managed/modules/remote/preview", { method: "POST", body: JSON.stringify({ url }) });
+  if (!res.ok) { srcErr(await errorText(res)); return; }
+  const v = await res.json();
+  previewed = { url, sha256: v.sha256 };
+  $("source-title").textContent = `${v.name} (${v.id})`;
+  $("source-desc").textContent = v.description || "";
+  $("source-signer").textContent = v.signed_by;
+  $("source-sha").textContent = v.sha256.slice(0, 16) + "…";
+  const ul = $("source-review");
+  ul.replaceChildren();
+  (v.review || []).forEach((l) => ul.append(el("li", "", l)));
+  $("source-preview").hidden = false;
+  $("source-install").elements.password.focus();
+});
+
+$("source-cancel").addEventListener("click", () => { previewed = null; $("source-preview").hidden = true; });
+
+$("source-install").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  if (!previewed) return;
+  srcErr("");
+  const res = await callAPI("/api/managed/modules/remote/install", { method: "POST", body: JSON.stringify({ ...previewed, password: e.target.elements.password.value }) });
+  e.target.reset();
+  if (!res.ok) { srcErr(await errorText(res)); return; }
+  const v = await res.json();
+  previewed = null;
+  $("source-preview").hidden = true;
+  $("source-form").reset();
+  toast(`${v.id} installed, signed by ${v.signed_by}. It is in the list below.`, "ok");
+  await reloadModules();
+  loadSources();
 });
 
 // ---------- start ----------
@@ -638,6 +808,7 @@ $("cancel-edit").addEventListener("click", () => {
   renderCatalogue();
   await loadGames();
   selectFromHash();
+  loadSources();
 })();
 
 // /games#module-<id> (linked from Settings → Game modules) picks that game.

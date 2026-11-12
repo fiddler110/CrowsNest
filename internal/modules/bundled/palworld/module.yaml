@@ -46,6 +46,9 @@ backup:
   exec: ["backup"]                 # the image saves through the REST API and writes a dated tar.gz
   dir: /palworld/backups
   before_stop: true
+  # The archive holds Saved/ (relative to /palworld/Pal). Only the worlds are put back: Saved/Config is
+  # regenerated from the options on every start, so an old copy must not win.
+  restore: ["/bin/sh", "-c", "set -e; rm -rf /palworld/Pal/Saved/SaveGames; tar xzf \"$CROWSNEST_RESTORE_FILE\" -C /palworld/Pal Saved/SaveGames; chown -R \"$(stat -c %u:%g /palworld)\" /palworld/Pal/Saved/SaveGames"]
 
 options:
   - {key: max_players, label: Max players, default: "8"}

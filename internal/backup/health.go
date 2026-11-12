@@ -49,6 +49,12 @@ func (m *Manager) Health() Health {
 	return m.health.last
 }
 
+// Offsite is the offsite sidecar's latest report, read from its status file now (it is a few hundred bytes).
+func (m *Manager) Offsite() OffsiteStatus { return ReadOffsite(m.OffsiteFile, time.Now()) }
+
+// OffsiteHealthy is true when no offsite copy is set up or the last one went well.
+func (m *Manager) OffsiteHealthy() bool { return m.Offsite().Healthy() }
+
 // Healthy reports whether the backups folder passed its latest check (true when
 // there is no shared folder or no check has run).
 func (m *Manager) Healthy() bool {
@@ -133,7 +139,30 @@ func (m *Manager) RunMonitor(ctx context.Context, interval time.Duration, defs f
 	if m.Root == nil {
 		return
 	}
+	offState := OffsiteOK // what the last check said; only a change is announced
+	checkOffsite := func() {
+		o := m.Offsite()
+		if !o.Configured || o.State == offState {
+			return
+		}
+		prev := offState
+		offState = o.State
+		switch {
+		case o.State == OffsiteOK:
+			log.Printf("backup: offsite copy is working again")
+			m.record("", "", "offsite copy is working again")
+			m.notify("✅ The offsite backup copy is working again.")
+		case o.State == OffsiteMissing && prev == OffsiteOK:
+			// Not reported yet: the sidecar may simply still be starting, so say nothing until it is overdue.
+		default:
+			msg := "offsite backup copy: " + o.Message
+			log.Printf("backup: %s", msg)
+			m.record("", "", msg)
+			m.notify("⚠️ **The offsite backup copy has a problem.** " + o.Message)
+		}
+	}
 	check := func() {
+		checkOffsite()
 		h := m.CheckHealth(defs())
 		m.health.mu.Lock()
 		prev := m.health.last

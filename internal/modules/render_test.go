@@ -349,10 +349,26 @@ func TestRenderRestoreContainer(t *testing.T) {
 	if _, ok := r2.RestoreSpec("x.tgz"); ok || r2.RestoreScope != nil {
 		t.Error("a restore container without a backups folder")
 	}
-	pal, _ := Bundled().Manifest("palworld")
-	r3, _ := pal.Render(config.GameConfig{ID: "pal", ContainerName: "pal"}, p)
+	dst, _ := Bundled().Manifest("dontstarve")
+	r3, err := dst.Render(config.GameConfig{ID: "dst", ContainerName: "dst", Options: map[string]string{"image": "example/dst"}}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if _, ok := r3.RestoreSpec("x.tgz"); ok || r3.RestoreScope != nil {
-		t.Error("palworld has no verified restore command")
+		t.Error("dontstarve declares no restore command")
+	}
+	// Palworld restores only the worlds (Saved/SaveGames), never Saved/Config, which is regenerated on start.
+	pal, _ := Bundled().Manifest("palworld")
+	r4, err := pal.Render(config.GameConfig{ID: "pal", ContainerName: "pal"}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ps, ok := r4.RestoreSpec("palworld-save-1.tar.gz")
+	if !ok || len(ps.Env) != 1 || !strings.Contains(strings.Join(ps.Entrypoint, " "), "Saved/SaveGames") {
+		t.Errorf("palworld restore spec = %+v, %v", ps, ok)
+	}
+	if strings.Contains(strings.Join(ps.Entrypoint, " "), "rm -rf /palworld/Pal/Saved ") {
+		t.Error("palworld restore must not wipe Saved/Config")
 	}
 }
 

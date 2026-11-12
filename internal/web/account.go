@@ -3,8 +3,10 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/skip2/go-qrcode"
 
@@ -18,7 +20,7 @@ const totpIssuer = "CrowsNest"
 
 func (a *App) handleAccountPage(w http.ResponseWriter, r *http.Request) {
 	session, _ := auth.FromContext(r.Context())
-	data := dashboardData{Page: "account", Username: session.Username,
+	data := dashboardData{Page: "account", Username: session.Username, DisplayName: a.Profiles.DisplayName(session.Username),
 		IsAdmin:   a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
 		CSRFToken: session.CSRFToken}
 	data.NeedsPassword = data.IsAdmin && !a.Auth.HasPassword(session.Username)
@@ -242,4 +244,132 @@ func (a *App) resetMFA(name string) error {
 		}
 	}
 	return a.MFA.Remove(strings.ToLower(name))
+}
+
+type profileSession struct {
+	ID        string `json:"id"`
+	Current   bool   `json:"current"`
+	Device    string `json:"device"`
+	IP        string `json:"ip,omitempty"`
+	Created   string `json:"created"`
+	LastSeen  string `json:"last_seen"`
+	UserAgent string `json:"user_agent,omitempty"`
+}
+
+type profileView struct {
+	Username    string           `json:"username"`
+	DisplayName string           `json:"display_name"`
+	Sessions    []profileSession `json:"sessions"`
+	// PerDevice is false when the server keeps no session list, so only "sign out everywhere" is offered.
+	PerDevice bool `json:"per_device"`
+}
+
+func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
+	session, _ := auth.FromContext(r.Context())
+	v := profileView{Username: session.Username, DisplayName: a.Profiles.DisplayName(session.Username), Sessions: []profileSession{}}
+	if reg := a.Auth.Sessions.Registry; reg != nil {
+		v.PerDevice = true
+		for _, rec := range reg.List(session.Username) {
+			v.Sessions = append(v.Sessions, profileSession{ID: rec.ID, Current: rec.ID == session.ID, Device: describeDevice(rec.UserAgent),
+				IP: rec.IP, Created: rec.Created.UTC().Format(time.RFC3339), LastSeen: rec.LastSeen.UTC().Format(time.RFC3339), UserAgent: rec.UserAgent})
+		}
+	}
+	writeJSON(w, http.StatusOK, v)
+}
+
+func (a *App) handleSetProfile(w http.ResponseWriter, r *http.Request) {
+	if a.Profiles == nil {
+		http.NotFound(w, r)
+		return
+	}
+	var body struct {
+		DisplayName string `json:"display_name"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := a.Profiles.SetDisplayName(actor(r), body.DisplayName); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"display_name": a.Profiles.DisplayName(actor(r))})
+}
+
+// handleRevokeSession signs out one device ({"id": "..."}), or every other device ({"others": true}), or every
+// device including this one ({"all": true}). It only ever touches the caller's own sessions.
+func (a *App) handleRevokeSession(w http.ResponseWriter, r *http.Request) {
+	session, _ := auth.FromContext(r.Context())
+	reg := a.Auth.Sessions.Registry
+	var body struct {
+		ID     string `json:"id"`
+		Others bool   `json:"others"`
+		All    bool   `json:"all"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&body); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if reg == nil {
+		// No session list: the only tool is the per-user marker that ends every session made before now.
+		http.NotFound(w, r)
+		return
+	}
+	var (
+		n   int
+		err error
+	)
+	switch {
+	case body.All:
+		n, err = reg.RevokeAll(session.Username, "")
+	case body.Others:
+		n, err = reg.RevokeAll(session.Username, session.ID)
+	case body.ID != "":
+		var ok bool
+		if ok, err = reg.Revoke(session.Username, body.ID); err == nil && !ok {
+			http.Error(w, "no such session", http.StatusNotFound)
+			return
+		}
+		n = 1
+	default:
+		http.Error(w, "say which session", http.StatusBadRequest)
+		return
+	}
+	if err != nil {
+		http.Error(w, "could not save: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	a.recordUser(r, fmt.Sprintf("signed out %d session(s)", n))
+	writeJSON(w, http.StatusOK, map[string]any{"revoked": n, "signed_out": body.All || body.ID == session.ID})
+}
+
+// describeDevice makes a short "Browser on System" label from a User-Agent; the full string stays in the title.
+func describeDevice(ua string) string {
+	if ua == "" {
+		return "Unknown device"
+	}
+	browser := "Browser"
+	for _, b := range []struct{ token, name string }{{"Edg/", "Edge"}, {"OPR/", "Opera"}, {"Firefox/", "Firefox"}, {"Chrome/", "Chrome"}, {"Safari/", "Safari"}, {"curl/", "curl"}} {
+		if strings.Contains(ua, b.token) {
+			browser = b.name
+			break
+		}
+	}
+	system := ""
+	for _, o := range []struct{ token, name string }{{"Android", "Android"}, {"iPhone", "iPhone"}, {"iPad", "iPad"}, {"Windows", "Windows"}, {"Mac OS X", "macOS"}, {"Linux", "Linux"}} {
+		if strings.Contains(ua, o.token) {
+			system = o.name
+			break
+		}
+	}
+	if system == "" {
+		return browser
+	}
+	return browser + " on " + system
 }

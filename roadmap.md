@@ -83,14 +83,16 @@ derived from it.
   `max_active_games` stays as an optional cap.) One poller per game on an adaptive cadence, one
   SSE stream to browsers, memory-budget admission instead of
   `max_active_games` as a RAM proxy.
-- [ ] **Phase 5: modules in the UI.** (done: the Games page enables, edits,
-  refreshes and disables games from bundled modules inside the policy envelope,
-  with preview, host-setup steps and install progress; Settings shows the policy.
-  Remaining: profiles, installing modules from signed remote sources with a
-  lock file of what was installed, moved here from Phase 3.) Install, enable, configure and remove
-  modules and profiles from the dashboard (inside the policy envelope);
-  signed remote sources. Done when a profile is created and started with no
-  file edits.
+- [x] **Phase 5: modules in the UI (done 2026-11-12).** The Games page enables, edits, refreshes and disables
+  games from bundled modules inside the policy envelope, with preview, host-setup steps and install progress;
+  Settings shows the policy. **Profiles:** "Make a copy" on a game's card opens the add form from that game's
+  settings (own id, folder, backups and next free ports; secrets copied by the server through `copy_from`, never
+  shown). **Signed remote sources:** `managed.trusted_keys` (ed25519, in config.yaml) + `<url>.sig`;
+  `crowsnest module keygen/sign`; install/update record the signing key in the lock and an update that drops the
+  signature is refused; the Games page installs a signed module from a URL (https, public addresses only, password
+  again, the exact bytes previewed), updates one from its recorded source (diff shown, same id, signed) and removes an
+  unused one. Not built: a catalogue/index of modules (one URL per module), key rotation UI,
+  and an install for a module whose image the policy does not list (still shown as "needs policy lines").
 - [ ] **Phase 6 (optional):** drop the docker CLI and compose from the image
   (create containers through the Engine API behind the guard); also removes
   the compose-from-source Dockerfile stage and its x/net CVE churn.
@@ -148,9 +150,13 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   activity feed and playtime, and every per-game route answers 404 for them. Starting a game while a hidden one
   is running says only "another server is running" and offers no switch. Not built: a CLI command for it
   (edit the users file or use the panel), and per-game *actions* (a friend who may start but not stop).
-- [ ] **Profile page**: display name, "my sessions", sign out of all
-  devices. Needs a **server-side session store** (today revocation is one
-  `ValidAfter` timestamp per user) to offer "revoke this device".
+- [x] **Profile page (done 2026-11-12).** Account page: display name (display only; the sign-in name stays the
+  identity), the user's signed-in devices (browser/system, address, signed-in and last-seen times), sign out one
+  device, the others, or everywhere. Needs the new server-side session store (`auth.SessionStore`,
+  `sessions.json`): a cookie must carry a session id still in the store, so a revoked device ends at once, a restart
+  keeps people signed in, and cookies from before the store (no id) are ended once. `revoke-sessions` (the
+  `ValidAfter` marker) still works. Not built: the user's email/avatar, naming a device, an admin view of other
+  people's sessions, and a "new sign-in" notice.
 - [x] **Admin audit view (done 2026-11-11).** Settings, Audit log: filter the
   activity log by game, kind, user, text and date range, paged 50 at a time
   (`GET /api/audit`, admin only, shows the admin kinds the logbook hides from
@@ -183,13 +189,14 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   panel being able to delete, ids as folder names, nothing deleted on disable, retention counts files) are in the
   README under "A shared backups folder". Not built:
   - **Restore: done** for Minecraft, Valheim and Windrose (a Restore button per file; a one-shot `<id>-restore`
-    container runs the module's `restore:` command while the game is stopped). Open: Palworld (confirm what its image's
-    `backup` archives contain before writing a command), a restore for config-file games, and trying each command on
-    a real world (Minecraft was tried live on the test stack 2026-11-11: backup, restore and safety backup work).
+    container runs the module's `restore:` command while the game is stopped). Palworld **done 2026-11-12**: the image's `backup` is
+    `tar` of `Saved/` under `/palworld/Pal`; the command replaces only `Saved/SaveGames` (Config is regenerated from the
+    options on start) and was run against the real image on a made-up tree. Open: a restore for config-file games, and
+    trying each command on a real world (Minecraft was tried live on the test stack 2026-11-11: backup, restore and safety backup work).
   - **Disable and delete: done.** `DELETE /api/managed/games/{id}` takes `delete_data` / `delete_backups` (id typed +
     password); data goes through a one-shot `<id>-clean` container, backups are removed by the panel through `os.Root`.
     Empty `games/<id>` folders left behind are swept from the host by `quickstart/sweep-empty-games.sh` (+ systemd timer).
-  - **Offsite copy.** A restic/rclone sidecar reading the same folder; CrowsNest itself should not hold the credentials.
+  - **Offsite copy: done 2026-11-12** (`quickstart/offsite/`, an rclone sidecar; README, "Offsite copy").  The dashboard shows its status (banner, health, Discord alert).
   - **Config-file games** (hand-written compose) still back up inside their own data; they would need the bind added by hand.
   - **Backups-folder detail in the UI** (last backup per game, orphan folders): the dashboard shows a banner and
     `GET /api/backups/health` has the detail, but there is no page for it yet.

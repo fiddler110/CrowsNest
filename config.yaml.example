@@ -140,6 +140,7 @@ games:
 # platform:
 #   games_root: /srv/games
 #   host_ip: 10.0.0.2
+#   offsite_status_file: /offsite-status/offsite.json   # written by quickstart/offsite; shown in the dashboard
 #   backups_root: /mnt/usb/backups   # optional shared backups folder: <backups_root>/<game id> per game (see README, Backups)
 #   backups_mount: /game-backups     # where the panel sees it; mount the host folder there, read-write
 #   backups_confirm_new: true        # required on first use: confirms the drive is really mounted (see README, Backups)
@@ -147,3 +148,5 @@ games:
 # managed:
 #   dir: /app/data/managed
 #   policy_file: /etc/crowsnest/policy.yaml
+#   trusted_keys:                        # publishers whose signed modules the dashboard may install from a URL
+#     - {name: me, public_key: "<base64 from `crowsnest module keygen me`>"}   # needs modules_dir too (see docs/modules.md)

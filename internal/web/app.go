@@ -30,6 +30,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/memadmit"
 	"github.com/fiddler110/crowsnest/internal/memo"
 	"github.com/fiddler110/crowsnest/internal/mfa"
+	"github.com/fiddler110/crowsnest/internal/modules"
 	"github.com/fiddler110/crowsnest/internal/restore"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
@@ -53,6 +54,14 @@ type App struct {
 	AuthPrefs *auth.PrefsStore
 	// MFA is the TOTP second-factor store; nil turns the feature off.
 	MFA *mfa.Store
+	// Modules, ModulesDir and TrustedKeys let an admin install a signed module from a URL; all three are needed
+	// (and Managed), or the feature is off. ModuleClient fetches; nil means modules.PublicClient().
+	Modules      *modules.Set
+	ModulesDir   string
+	TrustedKeys  []modules.TrustedKey
+	ModuleClient *http.Client
+	// Profiles holds display names; nil means everyone is shown by sign-in name.
+	Profiles *auth.ProfileStore
 	// OIDC serves sign-in through other OpenID Connect providers; nil turns it off.
 	OIDC *auth.OIDCLogin
 	// Settings backs the dashboard's settings dialog (/api/settings).
@@ -230,6 +239,12 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("PUT /api/settings", a.requireAdmin(http.HandlerFunc(a.handlePutSettings)))
 	mux.Handle("GET /api/managed/modules", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedModules))))
 	mux.Handle("GET /api/managed/configured", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedConfigured))))
+	mux.Handle("GET /api/managed/modules/sources", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleModuleSources))))
+	mux.Handle("POST /api/managed/modules/remote/preview", a.requireAdmin(http.HandlerFunc(a.handleRemotePreview)))
+	mux.Handle("POST /api/managed/modules/remote/install", a.requireAdmin(http.HandlerFunc(a.handleRemoteInstall)))
+	mux.Handle("POST /api/managed/modules/remote/{id}/update/preview", a.requireAdmin(http.HandlerFunc(a.handleRemoteUpdatePreview)))
+	mux.Handle("POST /api/managed/modules/remote/{id}/update", a.requireAdmin(http.HandlerFunc(a.handleRemoteUpdate)))
+	mux.Handle("POST /api/managed/modules/remote/{id}/remove", a.requireAdmin(http.HandlerFunc(a.handleRemoteRemove)))
 	mux.Handle("GET /api/managed/policy", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedPolicy))))
 	mux.Handle("PUT /api/managed/modules/{id}/allow", a.requireAdmin(http.HandlerFunc(a.handleManagedAllow)))
 	mux.Handle("PUT /api/managed/policy", a.requireAdmin(http.HandlerFunc(a.handleManagedSetPolicy)))
@@ -241,6 +256,9 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/managed/games/{id}/rollback", a.requireAdmin(http.HandlerFunc(a.handleManagedRollback)))
 	mux.Handle("DELETE /api/managed/games/{id}", a.requireAdmin(http.HandlerFunc(a.handleManagedDisable)))
 	mux.Handle("GET /account", a.requireSessionHTML(http.HandlerFunc(a.handleAccountPage)))
+	mux.Handle("GET /api/account/profile", a.requireSession(http.HandlerFunc(a.handleGetProfile)))
+	mux.Handle("POST /api/account/profile", a.requireSessionAndCSRF(http.HandlerFunc(a.handleSetProfile)))
+	mux.Handle("POST /api/account/sessions/revoke", a.requireSessionAndCSRF(http.HandlerFunc(a.handleRevokeSession)))
 	mux.Handle("GET /api/account/security", a.requireSession(http.HandlerFunc(a.handleGetSecurity)))
 	mux.Handle("POST /api/account/totp/begin", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPBegin)))
 	mux.Handle("GET /api/account/totp/qr", a.requireSession(http.HandlerFunc(a.handleTOTPQR)))
@@ -409,11 +427,13 @@ type dashboardGame struct {
 // dashboardData is the data of every signed-in page. Page names the page
 // ("dashboard", "games", "settings") so the shared top bar can mark it.
 type dashboardData struct {
-	Page      string
-	Username  string
-	IsAdmin   bool
-	CSRFToken string
-	Games     []dashboardGame
+	Page     string
+	Username string
+	// DisplayName is what the user chose to be called, "" to show Username.
+	DisplayName string
+	IsAdmin     bool
+	CSRFToken   string
+	Games       []dashboardGame
 	// NeedsPassword: an admin with no stored password sees a banner, because
 	// widening the guard asks for one.
 	NeedsPassword bool
@@ -425,6 +445,7 @@ func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	data := dashboardData{
 		Page:          "dashboard",
 		Username:      session.Username,
+		DisplayName:   a.Profiles.DisplayName(session.Username),
 		IsAdmin:       a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
 		NeedsPassword: a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin && !a.Auth.HasPassword(session.Username),
 		CSRFToken:     session.CSRFToken,
@@ -680,7 +701,10 @@ func (a *App) handleBackupsHealth(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no shared backups folder is configured", http.StatusNotFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, a.Backups.Health())
+	writeJSON(w, http.StatusOK, struct {
+		backup.Health
+		Offsite backup.OffsiteStatus `json:"offsite"`
+	}{a.Backups.Health(), a.Backups.Offsite()})
 }
 
 // handleBackups lists a game's backup files, newest first.
@@ -743,6 +767,9 @@ func (a *App) health(ctx context.Context) map[string]bool {
 	h := map[string]bool{"docker": err == nil && ok}
 	if a.Backups != nil && a.Backups.Root != nil {
 		h["backups"] = a.Backups.Healthy()
+		if a.Backups.Offsite().Configured {
+			h["offsite"] = a.Backups.OffsiteHealthy()
+		}
 	}
 	return h
 }

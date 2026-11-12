@@ -219,7 +219,7 @@ func (o *OIDCLogin) ServeCallback(w http.ResponseWriter, r *http.Request, id str
 		o.fail(w, r, LoginErrorNotAllowed)
 		return
 	}
-	if err := o.Service.startSession(w, username); err != nil {
+	if err := o.Service.startSession(w, r, username); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

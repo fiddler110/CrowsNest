@@ -17,6 +17,10 @@
     <svg class="icon"><use href="#i-alert"/></svg>
     <span>The backups folder has a problem, so backups are paused. Check that the drive is mounted (the activity log and Discord say what is wrong, and <code>crowsnest doctor</code> checks it).</span>
   </div>
+  <div id="offsite-banner" class="banner" role="alert" hidden>
+    <svg class="icon"><use href="#i-alert"/></svg>
+    <span>The offsite backup copy has a problem or has stopped reporting, so your backups may not be leaving this machine. <b id="offsite-detail"></b> See <code>docker compose logs crowsnest-offsite</code>.</span>
+  </div>
   <section class="hero" id="fleet" aria-live="polite">
     <div class="hero-body">
       <p class="eyebrow"><i class="beacon"></i>// fleet status</p>

@@ -1,0 +1,29 @@
+# Offsite copy of CrowsNest's shared backups folder (see "Offsite copy" in the README). Merge it into your
+# compose project or run it on its own:  docker compose -f quickstart/offsite/compose.yaml up -d
+#
+# It reads the backups folder read-only and holds the remote's credentials in its own rclone.conf, so a
+# compromised CrowsNest can neither reach the credentials nor change what is already offsite.
+services:
+  crowsnest-offsite:
+    image: rclone/rclone:1.76   # pin a version you have looked at; bump on purpose
+    container_name: crowsnest-offsite
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/offsite.sh"]
+    # Backups are written by the games (often uid 1000); run as whoever can read them, never root unless you must.
+    user: "1000:1000"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp"]
+    environment:
+      OFFSITE_REMOTE: "offsite:crowsnest"     # <remote name in rclone.conf>:<path>
+      OFFSITE_INTERVAL: "21600"
+      # OFFSITE_KEEP_DAYS: "90"
+      RCLONE_CONFIG: /config/rclone.conf
+    volumes:
+      - ${BACKUPS_ROOT:?set BACKUPS_ROOT to platform.backups_root}:/backups:ro
+      # Where it reports each result for the dashboard. Make the folder writable by the user above
+      # (mkdir -p status && chown 1000:1000 status) and mount the same folder read-only into CrowsNest.
+      - ./status:/status
+      - ./offsite.sh:/offsite.sh:ro
+      - ./rclone.conf:/config/rclone.conf:ro

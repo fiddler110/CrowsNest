@@ -28,10 +28,12 @@ var (
 	ErrSessionRevoked = errors.New("auth: session revoked")
 )
 
-// Session is the payload signed into the session cookie. There is no
-// server-side session store: everything needed to verify and use a session
-// is in this struct.
+// Session is the payload signed into the session cookie. Everything needed to
+// verify it is in this struct; when the manager has a Registry, the session's
+// ID must also still be listed there.
 type Session struct {
+	// ID names the session in the SessionStore, so one device can be signed out on its own.
+	ID        string    `json:"sid,omitempty"`
 	Username  string    `json:"user"`
 	IssuedAt  time.Time `json:"issued_at"`
 	ExpiresAt time.Time `json:"expires_at"`
@@ -60,6 +62,10 @@ type SessionManager struct {
 	// sign-in is on) or is on the Google allowlist", so taking someone off the
 	// allowlist and restarting ends their sessions without revoke-sessions.
 	Allowed func(username string) bool
+
+	// Registry, when set, is the server-side list of live sessions: Decode rejects a session whose ID is not
+	// in it (signed out from the profile page, or made before the registry existed).
+	Registry *SessionStore
 }
 
 func NewSessionManager(secret []byte, ttl time.Duration) *SessionManager {
@@ -72,8 +78,13 @@ func (m *SessionManager) New(username string) (Session, error) {
 	if _, err := rand.Read(token); err != nil {
 		return Session{}, fmt.Errorf("auth: generate csrf token: %w", err)
 	}
+	id, err := NewSessionID()
+	if err != nil {
+		return Session{}, err
+	}
 	now := time.Now().UTC()
 	return Session{
+		ID:        id,
 		Username:  username,
 		IssuedAt:  now,
 		ExpiresAt: now.Add(m.ttl),
@@ -123,6 +134,9 @@ func (m *SessionManager) Decode(token string) (Session, error) {
 		return Session{}, ErrSessionRevoked
 	}
 	if m.Allowed != nil && !m.Allowed(s.Username) {
+		return Session{}, ErrSessionRevoked
+	}
+	if m.Registry != nil && (s.ID == "" || !m.Registry.Touch(s.ID, time.Now().UTC())) {
 		return Session{}, ErrSessionRevoked
 	}
 	return s, nil

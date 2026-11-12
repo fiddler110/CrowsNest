@@ -1259,3 +1259,56 @@ func TestConnectAddressWindroseUsesItsLANAddress(t *testing.T) {
 		t.Fatalf("connectAddress = %q, want the macvlan address 10.0.1.50", got)
 	}
 }
+
+func TestEnableCopyFrom(t *testing.T) {
+	m, fd := newManager(t)
+	first := Request{ID: "minecraft", Module: "minecraft",
+		Options: map[string]string{"eula": "TRUE", "motd": "one"}, Secrets: map[string]string{"rcon_password": "hunter2"}}
+	if err := m.Enable(first); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+
+	// A profile of it: no secrets typed, a different id; the secret comes across, the folder and port do not.
+	second := Request{ID: "gs-2", Module: "minecraft", CopyFrom: "minecraft", Options: map[string]string{"eula": "TRUE", "motd": "two"}}
+	plan, err := m.Preview(second)
+	if err != nil || !plan.Fits || strings.Contains(plan.Service, "hunter2") {
+		t.Fatalf("preview: %+v %v", plan, err)
+	}
+	if err := m.Enable(second); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-2", StateReady)
+	if len(fd.created) != 2 {
+		t.Fatalf("created %d containers", len(fd.created))
+	}
+	c := fd.created[1]
+	if env := strings.Join(c.Env, "|"); !strings.Contains(env, "RCON_PASSWORD=hunter2") || !strings.Contains(env, "MOTD=two") {
+		t.Errorf("copied env = %s", env)
+	}
+	if c.Binds[0] != "/srv/games/gs-2:/data" {
+		t.Errorf("a profile must get its own folder, binds = %v", c.Binds)
+	}
+	games, _ := os.ReadFile(filepath.Join(m.Dir, "games.json"))
+	if strings.Contains(string(games), "copy_from") || strings.Contains(string(games), "hunter2") {
+		t.Errorf("games.json carries the copy request or a secret: %s", games)
+	}
+
+	// A secret typed in the form wins over the source's.
+	third := Request{ID: "gs-3", Module: "minecraft", CopyFrom: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "other"}}
+	if err := m.Enable(third); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "gs-3", StateReady)
+	if env := strings.Join(fd.created[2].Env, "|"); !strings.Contains(env, "RCON_PASSWORD=other") {
+		t.Errorf("a typed secret was overridden: %s", env)
+	}
+
+	// Refusals: nothing to copy from, or a different module.
+	if err := m.Enable(Request{ID: "gs-4", Module: "minecraft", CopyFrom: "nope", Options: map[string]string{"eula": "TRUE"}}); err == nil {
+		t.Error("copied from a game that does not exist")
+	}
+	if err := m.Enable(Request{ID: "pal-2", Module: "palworld", CopyFrom: "minecraft"}); err == nil || !strings.Contains(err.Error(), "one module") {
+		t.Errorf("copied across modules: %v", err)
+	}
+}
