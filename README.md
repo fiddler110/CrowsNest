@@ -39,6 +39,22 @@ flowchart LR
     P --> S[("Data folder<br/>users, settings,<br/>activity log, managed games")]
     S -.->|"managed games, reloaded live"| G
     S -.-> E
+
+    classDef user fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+    classDef panel fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+    classDef guard fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef docker fill:#cffafe,stroke:#0891b2,stroke-width:2px,color:#0f172a
+    classDef game fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    classDef policy fill:#fee2e2,stroke:#dc2626,stroke-width:2px,stroke-dasharray:4 3,color:#0f172a
+    classDef data fill:#f1f5f9,stroke:#64748b,stroke-width:2px,color:#0f172a
+    class B user
+    class P panel
+    class E,G guard
+    class D docker
+    class C game
+    class Pol policy
+    class S data
+    style GC fill:#fffbeb,stroke:#d97706,stroke-width:2px,color:#78350f
 ```
 
 The panel can read the policy but can't change what the guard enforces. If someone gets into the panel, they can
@@ -54,16 +70,24 @@ sequenceDiagram
     participant D as Docker (via the guards)
     participant H as State hub
     U->>P: Start valheim
+    rect rgb(254, 243, 199)
     P->>X: one game at a time? cooldown over? enough free memory?
+    end
     alt another game is running
+        rect rgb(254, 226, 226)
         X-->>U: refused, offer to switch
+        end
     else allowed
+        rect rgb(220, 252, 231)
         X-->>P: ok
         P-->>U: accepted
+        end
+        rect rgb(219, 234, 254)
         P->>D: start the container (background, 30 minute limit)
         D-->>H: container up
         H->>H: follow the log and probes until the ready line
         H-->>U: starting, progress, online (live over SSE)
+        end
     end
     Note over H: with 0 players for the idle timeout,<br/>the panel stops the game and logs it
 ```
@@ -86,6 +110,19 @@ flowchart TD
     W --> GR["Guard reloads its scopes"]
     GR --> Cr["Panel creates the container"]
     Cr --> Card["Card appears on the dashboard"]
+
+    classDef input fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+    classDef step fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+    classDef check fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef bad fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
+    classDef good fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    class M,O input
+    class R,W,GR,Cr step
+    class Pre check
+    class Fix bad
+    class Card good
+    linkStyle 3 stroke:#dc2626,stroke-width:2px
+    linkStyle 4 stroke:#16a34a,stroke-width:2px
 ```
 
 ## Status
@@ -125,6 +162,10 @@ A game is one `module.yaml` file and no code. [docs/writing-modules.md](docs/wri
 writing one, checking it with `crowsnest module check` against a captured log before you run the game, installing it
 (by hand or from a URL, with the download pinned to a hash), and sharing it. CrowsNest doesn't need to know about
 your module for it to work.
+
+Community-style modules that are not bundled live in [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules): one folder per module, each signed, with a README
+that covers everything a module needs, scripts to check, sign and install them, and a template to start from. Its
+signing key for `managed.trusted_keys` is in that README.
 
 ## Running it
 
@@ -347,7 +388,38 @@ file adds and removes, and replaces it after your password. The new file must be
 the same id. Games already using the module keep their current wiring until you save their settings or restart them.
 Installing grants nothing: a game from the
 module still has to fit `policy.yaml`. The panel only fetches https from public addresses (a private, loopback,
-link-local or Tailscale address is refused, even through a redirect). See docs/modules.md, "Signed modules".
+link-local or Tailscale address is refused, even through a redirect). See docs/modules.md, "Signed modules". Modules to try this with: [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules).
+
+#### Pulling in a module, step by step
+
+Example: the 7 Days to Die module from [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules).
+
+1. **Trust the publisher** (once). Add the key to `config.yaml`, then restart CrowsNest. The key for that repository is
+   in its README; check it there, not in the same place you got the module from.
+   ```yaml
+   modules_dir: /app/data/modules          # must be set, and writable by the panel
+   managed:
+     trusted_keys:
+       - {name: publisher, public_key: OzuKyYzMpWBZrFtKy9MMumlEY5isVbJI/MVrL4sJCyk=}
+   ```
+2. **Install it.** On the Games page, under **Game modules from a source**, paste the address and press **Look at
+   it**:
+   `https://raw.githubusercontent.com/fiddler110/crowsnest-modules/main/sevendtd/module.yaml`
+   Read the list of what the module would run (image, ports, environment, backup command), type your password and press
+   **Install this exact file**. Use the `main` address (or a branch or tag you follow) if you want updates later; an
+   address with a commit hash in it is pinned for good and **Check for update** will never find anything new.
+   The same from a terminal: `docker compose exec crowsnest crowsnest module install <address>` (restart CrowsNest to
+   load it).
+3. **Let the policy allow it.** Add the module's image and ports to `policy.yaml` on the host (the module's own README
+   lists them; for 7 Days to Die: image `docker.io/didstopia/7dtd-server`, ports `26900/tcp` and `26900-26903/udp`).
+   Keep `@modules` in `images:` so the bundled games stay allowed, and set `exec: true` if the module has a backup.
+4. **Switch it on.** A module from a source is off until you turn it on under **Games** (your password is asked).
+5. **Add a game from it.** Games, pick the module, give it an id, fill in the options, **Preview** (it says which policy
+   rule a game fails, if any), then **Enable**.
+
+Prefer files? Clone the repository and copy the folder: `scripts/install.sh <modules_dir> sevendtd` (or copy
+`sevendtd/module.yaml` to `<modules_dir>/sevendtd/module.yaml`), then restart. That copy is not pinned or
+signature-checked, so only do it for a file you have read.
 
 ### Disabling a game and deleting its data
 
