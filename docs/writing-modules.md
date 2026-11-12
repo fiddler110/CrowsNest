@@ -201,7 +201,9 @@ again. `crowsnest module list` shows what is installed and flags any file that n
 
 ## Sharing your module
 
-There is no central catalogue: you publish the file and people install it from your URL.
+There is no central catalogue: you publish the file and people install it from your URL. A ready-made layout for
+a repository of modules (one folder each, signing and check scripts, a template) is
+[fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules).
 
 1. **Host the file over https** at a stable address. A raw file in a git repo works (use a tag or commit in the URL
    so it does not change under people): `https://raw.githubusercontent.com/you/crowsnest-mygame/v1.0/module.yaml`.

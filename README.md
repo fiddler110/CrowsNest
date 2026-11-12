@@ -126,6 +126,10 @@ writing one, checking it with `crowsnest module check` against a captured log be
 (by hand or from a URL, with the download pinned to a hash), and sharing it. CrowsNest doesn't need to know about
 your module for it to work.
 
+Community-style modules that are not bundled live in [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules): one folder per module, each signed, with a README
+that covers everything a module needs, scripts to check, sign and install them, and a template to start from. Its
+signing key for `managed.trusted_keys` is in that README.
+
 ## Running it
 
 Images are published to `ghcr.io/fiddler110/crowsnest` (`:latest`, `:X.Y.Z`, `:X.Y`, `:dev`). Every push to `main`
@@ -347,7 +351,7 @@ file adds and removes, and replaces it after your password. The new file must be
 the same id. Games already using the module keep their current wiring until you save their settings or restart them.
 Installing grants nothing: a game from the
 module still has to fit `policy.yaml`. The panel only fetches https from public addresses (a private, loopback,
-link-local or Tailscale address is refused, even through a redirect). See docs/modules.md, "Signed modules".
+link-local or Tailscale address is refused, even through a redirect). See docs/modules.md, "Signed modules". Modules to try this with: [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules).
 
 ### Disabling a game and deleting its data
 
