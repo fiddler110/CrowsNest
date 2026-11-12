@@ -213,16 +213,19 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
 
 ### C. Verify and harden (against real servers)
 
-- [ ] **Real player joins** for Valheim (`Got handshake from client` /
-  `Closing socket` markers are unverified) and Palworld; record the logs as
-  fixtures for the Phase 1 loader.
-- [ ] **A real Start→Switch between two games** from the browser UI.
+- [x] **Real player joins** (done 2026-11-12, test stack). Valheim: `Got handshake from client` /
+  `Closing socket` markers fire on a real join and leave, `join`/`leave` events recorded. Palworld: the REST list
+  and the card count follow a real join and leave (its log lines are not parsed). Found and fixed: the last
+  named player leaving was never recorded (`internal/playerwatch`). Gap: Valheim players show as Steam IDs.
+- [x] **A real Start→Switch between two games** (2026-11-12, via the API on the test stack, both directions,
+  from a game that was actually running). Still to do from the browser UI itself.
 - [ ] **Windrose invite-code join** from the LAN and from outside, on the
   macvlan setup (the server itself runs and Windrose+ answers).
 - [ ] **Idle/night auto-stop and Discord notifications** against real
   servers (still untested); check firewall for `:5001`/game ports.
-- [ ] **Palworld `backup` command, the exec path through the guard and the
-  console replies** against real containers (flagged untested 2026-11-07).
+- [x] **Palworld `backup` command, the exec path through the guard and the
+  console replies** against real containers (done 2026-11-12). Idle auto-stop fired on the test stack
+  (done); Discord notices still untested (no webhook on the test stack).
 - [ ] **Show Valheim/Windrose join codes on the game cards** by reading them
   from the server logs (follow-up to `docs/connecting.md`).
 
