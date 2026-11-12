@@ -187,7 +187,7 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   lists and prunes it directly (no exec), the policy has a matching `backups_root`, and a marker file plus a remembered
   token refuse a folder that is not the one used before (unmounted external drive). The watch-outs (permissions, the
   panel being able to delete, ids as folder names, nothing deleted on disable, retention counts files) are in the
-  README under "A shared backups folder". Not built:
+  docs/backups.md under "A shared backups folder". Not built:
   - **Restore: done** for Minecraft, Valheim and Windrose (a Restore button per file; a one-shot `<id>-restore`
     container runs the module's `restore:` command while the game is stopped). Palworld **done 2026-11-12**: the image's `backup` is
     `tar` of `Saved/` under `/palworld/Pal`; the command replaces only `Saved/SaveGames` (Config is regenerated from the
@@ -196,7 +196,7 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   - **Disable and delete: done.** `DELETE /api/managed/games/{id}` takes `delete_data` / `delete_backups` (id typed +
     password); data goes through a one-shot `<id>-clean` container, backups are removed by the panel through `os.Root`.
     Empty `games/<id>` folders left behind are swept from the host by `quickstart/sweep-empty-games.sh` (+ systemd timer).
-  - **Offsite copy: done 2026-11-12** (`quickstart/offsite/`, an rclone sidecar; README, "Offsite copy").  The dashboard shows its status (banner, health, Discord alert).
+  - **Offsite copy: done 2026-11-12** (`quickstart/offsite/`, an rclone sidecar; docs/backups.md, "Offsite copy").  The dashboard shows its status (banner, health, Discord alert).
   - **Config-file games** (hand-written compose) still back up inside their own data; they would need the bind added by hand.
   - **Backups-folder detail in the UI** (last backup per game, orphan folders): the dashboard shows a banner and
     `GET /api/backups/health` has the detail, but there is no page for it yet.
@@ -506,7 +506,7 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   user to re-authenticate everywhere without touching anyone else's
   session — takes effect on the next restart, same as `set-password`.
   Rotating the session-secret file remains the blunter "log out everyone"
-  option. See `README.md`'s new "Sessions" section.
+  option. See `docs/accounts.md`, "Sessions".
   Files: `internal/auth/session.go`, `internal/auth/users.go`,
   `internal/auth/login.go`, `cmd/crowsnest/main.go`.
 
