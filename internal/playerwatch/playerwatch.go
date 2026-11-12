@@ -128,7 +128,9 @@ func (w *Watcher) check(ctx context.Context, d games.GameDef, o statehub.Observa
 	}
 
 	switch {
-	case cur.names != nil && (prev.names != nil || prev.count == 0):
+	case (cur.names != nil || cur.count == 0) && (prev.names != nil || prev.count == 0):
+		// An empty list (cur.names nil, count 0) is the last named player
+		// leaving, not a count-only reading, so diff it by name too.
 		joined, left := diff(prev.names, cur.names)
 		for _, n := range joined {
 			w.record(history.KindJoin, d.ID, n)
