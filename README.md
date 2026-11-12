@@ -39,6 +39,22 @@ flowchart LR
     P --> S[("Data folder<br/>users, settings,<br/>activity log, managed games")]
     S -.->|"managed games, reloaded live"| G
     S -.-> E
+
+    classDef user fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+    classDef panel fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+    classDef guard fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef docker fill:#cffafe,stroke:#0891b2,stroke-width:2px,color:#0f172a
+    classDef game fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    classDef policy fill:#fee2e2,stroke:#dc2626,stroke-width:2px,stroke-dasharray:4 3,color:#0f172a
+    classDef data fill:#f1f5f9,stroke:#64748b,stroke-width:2px,color:#0f172a
+    class B user
+    class P panel
+    class E,G guard
+    class D docker
+    class C game
+    class Pol policy
+    class S data
+    style GC fill:#fffbeb,stroke:#d97706,stroke-width:2px,color:#78350f
 ```
 
 The panel can read the policy but can't change what the guard enforces. If someone gets into the panel, they can
@@ -54,16 +70,24 @@ sequenceDiagram
     participant D as Docker (via the guards)
     participant H as State hub
     U->>P: Start valheim
+    rect rgb(254, 243, 199)
     P->>X: one game at a time? cooldown over? enough free memory?
+    end
     alt another game is running
+        rect rgb(254, 226, 226)
         X-->>U: refused, offer to switch
+        end
     else allowed
+        rect rgb(220, 252, 231)
         X-->>P: ok
         P-->>U: accepted
+        end
+        rect rgb(219, 234, 254)
         P->>D: start the container (background, 30 minute limit)
         D-->>H: container up
         H->>H: follow the log and probes until the ready line
         H-->>U: starting, progress, online (live over SSE)
+        end
     end
     Note over H: with 0 players for the idle timeout,<br/>the panel stops the game and logs it
 ```
@@ -86,6 +110,19 @@ flowchart TD
     W --> GR["Guard reloads its scopes"]
     GR --> Cr["Panel creates the container"]
     Cr --> Card["Card appears on the dashboard"]
+
+    classDef input fill:#dbeafe,stroke:#2563eb,stroke-width:2px,color:#0f172a
+    classDef step fill:#ede9fe,stroke:#7c3aed,stroke-width:2px,color:#0f172a
+    classDef check fill:#fef3c7,stroke:#d97706,stroke-width:2px,color:#0f172a
+    classDef bad fill:#fee2e2,stroke:#dc2626,stroke-width:2px,color:#0f172a
+    classDef good fill:#dcfce7,stroke:#16a34a,stroke-width:2px,color:#0f172a
+    class M,O input
+    class R,W,GR,Cr step
+    class Pre check
+    class Fix bad
+    class Card good
+    linkStyle 3 stroke:#dc2626,stroke-width:2px
+    linkStyle 4 stroke:#16a34a,stroke-width:2px
 ```
 
 ## Status
