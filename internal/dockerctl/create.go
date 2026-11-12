@@ -41,6 +41,11 @@ type CreateSpec struct {
 	// GwPriority carries the default route.
 	Networks []NetEndpoint
 	SecOpts  []string
+	// Entrypoint, when set, replaces the image's (a one-shot helper container).
+	Entrypoint []string
+	// NoRestart creates the container with restart policy "no" instead of
+	// unless-stopped, for a run-once container.
+	NoRestart bool
 }
 
 // NetEndpoint is one network to join.
@@ -63,6 +68,9 @@ func (s CreateSpec) body() ([]byte, error) {
 		"PortBindings":  bindings,
 		"NetworkMode":   s.Network,
 		"RestartPolicy": map[string]any{"Name": "unless-stopped"},
+	}
+	if s.NoRestart {
+		host["RestartPolicy"] = map[string]any{"Name": "no"}
 	}
 	if s.MemoryBytes > 0 {
 		host["Memory"] = s.MemoryBytes
@@ -93,6 +101,9 @@ func (s CreateSpec) body() ([]byte, error) {
 		"Image": s.Image, "Env": s.Env, "Labels": s.Labels, "ExposedPorts": exposed,
 		"HostConfig":       host,
 		"NetworkingConfig": map[string]any{"EndpointsConfig": endpoints},
+	}
+	if len(s.Entrypoint) > 0 {
+		body["Entrypoint"] = s.Entrypoint
 	}
 	if s.StopTimeout > 0 {
 		body["StopTimeout"] = s.StopTimeout

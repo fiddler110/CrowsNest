@@ -21,7 +21,7 @@ type ManagedGames interface {
 	Update(managed.Request) error
 	Refresh(id string) error
 	Rollback(id string) error
-	Disable(id string) error
+	Disable(id string, o managed.DisableOptions) error
 	Policy() (managed.PolicyState, error)
 	SetPolicy(managed.PolicyDoc) error
 	SetAllowed(id string, on bool) error
@@ -148,16 +148,67 @@ func (a *App) handleManagedEnable(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusAccepted, map[string]string{"id": req.ID, "state": managed.StateInstalling})
 }
 
+// handleManagedDisable removes a stopped game. An optional JSON body can also
+// ask for its data folders and/or its backups to be deleted; that is
+// irreversible, so it needs the game's id typed out and the admin's password.
 func (a *App) handleManagedDisable(w http.ResponseWriter, r *http.Request) {
 	if !a.managedOn(w) {
 		return
 	}
 	id := r.PathValue("id")
-	if err := a.Managed.Disable(id); err != nil {
+	var body struct {
+		DeleteData    bool   `json:"delete_data"`
+		DeleteBackups bool   `json:"delete_backups"`
+		ConfirmID     string `json:"confirm_id"`
+		Password      string `json:"password"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	if raw, err := io.ReadAll(r.Body); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	} else if len(strings.TrimSpace(string(raw))) > 0 {
+		dec := json.NewDecoder(strings.NewReader(string(raw)))
+		dec.DisallowUnknownFields()
+		if err := dec.Decode(&body); err != nil {
+			http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	opts := managed.DisableOptions{Data: body.DeleteData, Backups: body.DeleteBackups}
+	if opts.Data || opts.Backups {
+		if body.ConfirmID != id {
+			http.Error(w, "type the game's id to confirm deleting its data", http.StatusBadRequest)
+			return
+		}
+		session, _ := auth.FromContext(r.Context())
+		ok, have, limited := a.Auth.ConfirmPassword(r, session.Username, body.Password)
+		switch {
+		case !have:
+			http.Error(w, "set a password for your account first (Settings, Users): deleting data asks for it, even if you sign in with Google", http.StatusForbidden)
+			return
+		case limited:
+			http.Error(w, "too many attempts, try again later", http.StatusTooManyRequests)
+			return
+		case !ok:
+			a.record(r, id, "refused to delete game data: wrong password")
+			http.Error(w, "that password is not right", http.StatusForbidden)
+			return
+		}
+	}
+	if err := a.Managed.Disable(id, opts); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	a.record(r, id, "disabled")
+	detail := "disabled"
+	switch {
+	case opts.Data && opts.Backups:
+		detail = "disabled; its data folders and its backups were deleted"
+	case opts.Data:
+		detail = "disabled; its data folders were deleted (backups kept)"
+	case opts.Backups:
+		detail = "disabled; its backups were deleted (data folders kept)"
+	}
+	a.record(r, id, detail)
 	a.pokeGame(id) // re-observe; an id the hub lacks prompts a registry reconcile
 	w.WriteHeader(http.StatusNoContent)
 }

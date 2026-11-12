@@ -1180,3 +1180,33 @@ func TestConcurrentRequests(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestRestoreContainerCreateIsAllowedOnlyWithinItsScope(t *testing.T) {
+	scopes := `[{"name":"valheim-restore","images":["lloesche/valheim-server"],"binds":["/srv/games/valheim","/mnt/usb/backups/valheim"],` +
+		`"networks":["crowsnest-games-net"],"ports":[],"labels":{"io.crowsnest.owner":"true"}}]`
+	h := newHarness(t, scopes)
+	body := func(bind string) map[string]any {
+		return map[string]any{
+			"Image":      "lloesche/valheim-server:latest",
+			"Entrypoint": []string{"/bin/sh", "-c", "tar xzf \"$CROWSNEST_RESTORE_FILE\" -C /config"},
+			"Env":        []string{"CROWSNEST_RESTORE_FILE=/config/backups/x.tgz"},
+			"Labels":     map[string]string{"io.crowsnest.owner": "true"},
+			"HostConfig": map[string]any{
+				"Binds":         []string{"/srv/games/valheim:/config", bind + ":/config/backups:ro"},
+				"NetworkMode":   "crowsnest-games-net",
+				"RestartPolicy": map[string]any{"Name": "no"},
+			},
+			"NetworkingConfig": map[string]any{"EndpointsConfig": map[string]any{"crowsnest-games-net": map[string]any{}}},
+		}
+	}
+	if r := h.request("POST", "/v1.52/containers/create?name=valheim-restore", body("/mnt/usb/backups/valheim")); r.code != 201 {
+		t.Fatalf("the restore container was refused: %s", r)
+	}
+	// Another game's backups, or a name outside the scope, are still refused.
+	if r := h.request("POST", "/v1.52/containers/create?name=valheim-restore", body("/mnt/usb/backups/other")); r.code != 403 {
+		t.Errorf("a bind outside the scope: %s", r)
+	}
+	if r := h.request("POST", "/v1.52/containers/create?name=valheim-restore-2", body("/mnt/usb/backups/valheim")); r.code != 403 {
+		t.Errorf("another name: %s", r)
+	}
+}

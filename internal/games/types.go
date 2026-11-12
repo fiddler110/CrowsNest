@@ -181,9 +181,15 @@ type GameDef struct {
 
 // BackupSpec mirrors config.BackupConfig.
 type BackupSpec struct {
-	Exec       []string
-	ListDir    string
+	Exec    []string
+	ListDir string
+	// LocalDir is the game's backup folder as the panel sees it. When set, the
+	// panel lists and prunes it directly and ListDir is unused.
+	LocalDir   string
 	BeforeStop bool
+	Keep       int
+	// CanRestore is true when the game can restore a backup from its folder.
+	CanRestore bool
 }
 
 // ConnectSecret is a labelled value shown on a game's dashboard card.

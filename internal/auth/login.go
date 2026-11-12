@@ -2,10 +2,15 @@ package auth
 
 import (
 	"encoding/json"
+	"errors"
+	"log"
 	"net"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
+
+	"github.com/fiddler110/crowsnest/internal/mfa"
 )
 
 // dummyHash is compared against on an unknown username so that a login
@@ -46,6 +51,58 @@ type Service struct {
 	// password (e.g. Google sign-in only): every password attempt is refused
 	// before any credential is looked at. The zero value keeps it on.
 	DisablePasswordLogin bool
+
+	// passwordOverride is the dashboard's choice, which wins over
+	// DisablePasswordLogin once set: 0 none, 1 password sign-in on, 2 off.
+	passwordOverride atomic.Int32
+
+	// MFA, when set, asks for a second factor after a correct password for
+	// every user who has one. Google sign-in skips it: the identity provider
+	// is the authenticator there.
+	MFA SecondFactor
+}
+
+// SecondFactor is the TOTP store as the login code sees it.
+type SecondFactor interface {
+	Enabled(user string) bool
+	// Verify checks a sign-in code (or recovery code). usedRecovery reports a
+	// recovery code was used up.
+	Verify(user, code string) (usedRecovery bool, err error)
+	RecoveryLeft(user string) int
+}
+
+const (
+	mfaCookieName = "crowsnest_mfa"
+	mfaPendingTTL = 5 * time.Minute
+)
+
+type mfaPending struct {
+	User string `json:"u"`
+	Exp  int64  `json:"e"`
+}
+
+// PasswordLoginDisabled reports whether password sign-in is off right now.
+func (s *Service) PasswordLoginDisabled() bool {
+	switch s.passwordOverride.Load() {
+	case 1:
+		return false
+	case 2:
+		return true
+	}
+	return s.DisablePasswordLogin
+}
+
+// SetPasswordLoginOverride applies the dashboard's choice at once; nil goes
+// back to DisablePasswordLogin (config.yaml).
+func (s *Service) SetPasswordLoginOverride(enabled *bool) {
+	switch {
+	case enabled == nil:
+		s.passwordOverride.Store(0)
+	case *enabled:
+		s.passwordOverride.Store(1)
+	default:
+		s.passwordOverride.Store(2)
+	}
 }
 
 // passwordLoginDisabled is the 403 body when password sign-in is off.
@@ -64,7 +121,7 @@ type loginResponse struct {
 // cookie and returns the session's CSRF token. Exempt from CSRF checking —
 // it's what creates the token in the first place.
 func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
-	if s.DisablePasswordLogin {
+	if s.PasswordLoginDisabled() {
 		http.Error(w, passwordLoginDisabled, http.StatusForbidden)
 		return
 	}
@@ -102,6 +159,20 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.MFA != nil && s.MFA.Enabled(username) {
+		token, err := s.Sessions.signPurpose("mfa-pending", mfaPending{User: username, Exp: time.Now().Add(mfaPendingTTL).Unix()})
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		// #nosec G124 -- HttpOnly and SameSite=Lax always; Secure follows server.secure_cookies, as for the session cookie
+		http.SetCookie(w, &http.Cookie{Name: mfaCookieName, Value: token, Path: "/login/mfa", MaxAge: int(mfaPendingTTL.Seconds()),
+			HttpOnly: true, Secure: s.SecureCookies, SameSite: http.SameSiteLaxMode})
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]bool{"mfa_required": true})
+		return
+	}
+
 	session, err := s.newSession(w, username)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
@@ -110,6 +181,63 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(loginResponse{CSRFToken: session.CSRFToken})
+}
+
+// ServeLoginMFA is the second step of a password sign-in: it checks the code
+// against the user named by the pending cookie ServeLogin set, and only then
+// starts the session.
+func (s *Service) ServeLoginMFA(w http.ResponseWriter, r *http.Request) {
+	if s.MFA == nil || s.PasswordLoginDisabled() {
+		http.NotFound(w, r)
+		return
+	}
+	ip := ClientIP(r, s.TrustedProxies)
+	if s.LoginLimiter != nil && !s.LoginLimiter.Allow(ip) {
+		http.Error(w, "too many login attempts, try again later", http.StatusTooManyRequests)
+		return
+	}
+	c, err := r.Cookie(mfaCookieName)
+	var p mfaPending
+	if err != nil || s.Sessions.verifyPurpose("mfa-pending", c.Value, &p) != nil || time.Now().Unix() > p.Exp || p.User == "" {
+		http.Error(w, "your sign-in expired: enter your password again", http.StatusUnauthorized)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxLoginBodyBytes)
+	var req struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, "invalid request", http.StatusBadRequest)
+		return
+	}
+	used, err := s.MFA.Verify(p.User, req.Code)
+	switch {
+	case err == nil:
+	case errors.Is(err, mfa.ErrLocked):
+		log.Printf("audit: %q second factor refused: locked", p.User)
+		http.Error(w, "too many wrong codes, try again in a few minutes", http.StatusTooManyRequests)
+		return
+	default:
+		log.Printf("audit: %q second factor refused: %v", p.User, err)
+		http.Error(w, "that code is not right", http.StatusUnauthorized)
+		return
+	}
+	if used {
+		log.Printf("audit: %q signed in with a recovery code (%d left)", p.User, s.MFA.RecoveryLeft(p.User))
+	}
+	// #nosec G124 -- clears the pending cookie; same attributes as when it was set
+	http.SetCookie(w, &http.Cookie{Name: mfaCookieName, Value: "", Path: "/login/mfa", MaxAge: -1, Expires: time.Unix(0, 0),
+		HttpOnly: true, Secure: s.SecureCookies, SameSite: http.SameSiteLaxMode})
+	session, err := s.newSession(w, p.User)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(struct {
+		loginResponse
+		RecoveryLeft int `json:"recovery_left"`
+	}{loginResponse{CSRFToken: session.CSRFToken}, s.MFA.RecoveryLeft(p.User)})
 }
 
 // startSession signs a new session for username and sets its cookie; used by

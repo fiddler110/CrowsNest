@@ -61,6 +61,16 @@ form.addEventListener("submit", async (event) => {
   }
 
   if (res.ok) {
+    let body = {};
+    try { body = await res.json(); } catch (err) { /* a plain success */ }
+    if (body.mfa_required) {
+      setBusy(false);
+      pwInput.value = "";
+      form.hidden = true;
+      mfaForm.hidden = false;
+      mfaForm.code.focus();
+      return;
+    }
     submitTxt.textContent = "Welcome aboard";
     window.location.href = "/";
     return;
@@ -71,3 +81,38 @@ form.addEventListener("submit", async (event) => {
     ? "Too many attempts — try again later."
     : "Invalid username or password.");
 });
+
+// Second step: the code from the authenticator app (or a recovery code).
+const mfaForm = document.getElementById("mfa-form");
+if (mfaForm) {
+  mfaForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    alertEl.hidden = true;
+    const code = mfaForm.code.value.trim();
+    if (!code) { fail("Enter the code from your authenticator app."); return; }
+    mfaForm.querySelector("button").disabled = true;
+    let res;
+    try {
+      res = await fetch("/login/mfa", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ code }),
+      });
+    } catch (err) {
+      mfaForm.querySelector("button").disabled = false;
+      fail("Network error — please try again.");
+      return;
+    }
+    if (res.ok) { window.location.href = "/"; return; }
+    mfaForm.querySelector("button").disabled = false;
+    if (res.status === 401 && /expired/.test(await res.text())) {
+      // The five minutes ran out: start again from the password.
+      mfaForm.hidden = true;
+      form.hidden = false;
+      fail("That sign-in timed out. Enter your password again.");
+      return;
+    }
+    mfaForm.code.select();
+    fail(res.status === 429 ? "Too many wrong codes — try again in a few minutes." : "That code is not right.");
+  });
+}

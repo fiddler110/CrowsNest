@@ -74,8 +74,25 @@ Bots are never counted. Without `rcon_addr` the game still starts and stops, but
 See the step-by-step [guide to writing a module](writing-modules.md), and check yours with
 `crowsnest module check <dir> --log <captured log>`.
 
-A module may also carry a `backup:` block (`exec`, `list_dir`, `before_stop`, same meaning as the config.yaml block).
+A module may also carry a `backup:` block (`exec`, `list_dir`, `before_stop`, `keep`, same meaning as the config.yaml block).
+`keep: N` (needs `list_dir`) makes CrowsNest delete all but the newest N files in `list_dir` after each successful
+backup, with one more fixed `docker exec` (`sh`, GNU `find`, `sort`, `tail`, `cut` in the image; `rm -f` on direct
+children only). It counts files, so a backup that writes two files per run keeps N/2 runs. A failed prune is logged
+and shown in the activity log and never fails the backup.
 It applies to games enabled from the dashboard only; games in `config.yaml` keep their own.
+`dir: /path` (instead of `list_dir`) names where the backup command writes inside the container. With
+`platform.backups_root` set, each dashboard game gets `<backups_root>/<game id>` bound there (so two servers of one
+module never share a folder), and the panel lists and prunes it itself: no listing or prune `docker exec`, so the
+exec guard allows only the backup command. Without `backups_root`, `dir` behaves exactly like `list_dir`. Give
+`dir` or `list_dir`, not both. See the README's "A shared backups folder" for what to watch.
+
+`restore: [argv...]` (inside `backup:`, needs `dir`) makes each backup restorable from the dashboard: the argv is the
+entrypoint of a one-shot container, `<game id>-restore`, created from the game's pinned image with the game's data
+folders and its backup folder read-only, run while the game is stopped. The chosen file's full path arrives in
+`$CROWSNEST_RESTORE_FILE` (quote it in scripts; it is not substituted into the command). The command must replace
+the game's saves with the archive's contents and fix ownership; write it to match exactly what `exec` archives. Exit
+status 0 is success. The scope for that container is generated from the game's own, so it adds no ports, exec,
+folders or image. It is shown in the approval summary. See the README's "Restoring a backup".
 
 An optional `accent: "#rrggbb"` sets the colour of the game's dashboard card. Without one the card uses the
 default theme colour.
@@ -107,6 +124,7 @@ platform:
   games_root: ${USERDIR}        # where each game's data folder lives; written as-is
   host_ip: 10.0.0.2             # address game ports are published on (default 0.0.0.0)
   host_games_root: /srv/games   # games_root as a literal path, for the guard (only if games_root is a variable)
+  backups_root: /mnt/usb/backups  # optional: each game's backups go to <backups_root>/<game id> (see the README)
   games_network: crowsnest-games-net
 games:
   - id: minecraft
@@ -161,7 +179,7 @@ host_ips: [10.0.0.2]                   # optional: limits the address ports are 
 exec: false                            # may managed scopes use docker exec (save-on-stop hooks need it)
 labels: []                             # extra labels they may require (the watchtower opt-out is always fine)
 pin_digests: true                      # managed creates must name the image by digest (see "Image pinning" below)
-max_scopes: 32
+max_scopes: 64
 ```
 
 - **Ports come from the games you allow.** On the Games page each bundled game has a switch. Turning it on asks

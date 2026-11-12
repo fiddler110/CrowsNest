@@ -75,6 +75,8 @@ services:
       - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
       - WINDROSE_RCON_PASSWORD=${WINDROSE_RCON_PASSWORD:-}
       - PALWORLD_ADMIN_PASSWORD=${PALWORLD_ADMIN_PASSWORD:-}
+      # Encrypts the secrets CrowsNest stores (24+ characters; keep it out of the data volume).
+      - CROWSNEST_MASTER_KEY=${CROWSNEST_MASTER_KEY:-}
       - CROWSNEST_GOOGLE_CLIENT_ID=${CROWSNEST_GOOGLE_CLIENT_ID:-}
       - CROWSNEST_GOOGLE_CLIENT_SECRET=${CROWSNEST_GOOGLE_CLIENT_SECRET:-}
       - CROWSNEST_GOOGLE_USERS=${CROWSNEST_GOOGLE_USERS:-}
@@ -105,6 +107,8 @@ services:
       # Settings saved from the dashboard. A directory, not a file, and writable by uid 1000
       # (`mkdir -p ${USERDIR}/crowsnest/config && chown 1000 ${USERDIR}/crowsnest/config`).
       - ${USERDIR}/crowsnest/config:/app/data
+      # Shared backups folder (optional; see README, Backups): the host folder, read-write, one sub-folder per game.
+      # - ${BACKUPS_DIR}:/game-backups
       - ./compose.yaml:/data/compose.yaml:ro
       - ./.env:/data/.env:ro   # compose in the container interpolates from this
       - /var/run/docker.sock:/var/run/docker.sock

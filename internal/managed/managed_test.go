@@ -3,7 +3,9 @@ package managed
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/backup"
 	"net"
 	"net/http"
 	"os"
@@ -161,7 +163,7 @@ func TestEnableAndDisable(t *testing.T) {
 		t.Fatal(err)
 	}
 	sc, err := dockerguard.LoadScopes(string(scopes))
-	if err != nil || len(sc) != 1 {
+	if err != nil || len(sc) != 2 { // the game and its data cleaner
 		t.Fatalf("scopes.json: %v\n%s", err, scopes)
 	}
 	pol, _ := dockerguard.LoadPolicy(m.PolicyFile)
@@ -183,20 +185,20 @@ func TestEnableAndDisable(t *testing.T) {
 	}
 
 	fd.running["minecraft"] = true
-	if err := m.Disable("minecraft"); err == nil {
+	if err := m.Disable("minecraft", DisableOptions{}); err == nil {
 		t.Error("a running game was disabled")
 	}
 	fd.running["minecraft"] = false
 	// A start still pulling has no running container yet: the start/stop manager says it is busy.
 	m.Busy = func(id string) bool { return id == "minecraft" }
-	if err := m.Disable("minecraft"); err == nil || fd.have["minecraft"] == false {
+	if err := m.Disable("minecraft", DisableOptions{}); err == nil || fd.have["minecraft"] == false {
 		t.Errorf("disabled a game that is starting or stopping: err=%v", err)
 	}
 	if err := m.Update(Request{ID: "minecraft", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}}); err == nil {
 		t.Error("changed a game that is starting or stopping")
 	}
 	m.Busy = nil
-	if err := m.Disable("minecraft"); err != nil {
+	if err := m.Disable("minecraft", DisableOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, ok := m.Registry.Get("minecraft"); ok || fd.have["minecraft"] {
@@ -1069,5 +1071,191 @@ func TestInstalledModuleNeedsItsSwitchAndThePolicy(t *testing.T) {
 	}
 	if plan.Fits {
 		t.Errorf("the guard would accept an image and port the policy never listed: %+v", plan)
+	}
+}
+
+// With a shared backups folder, an enabled game gets its own folder in it
+// (made by the panel, not Docker), the panel lists it itself, and the exec
+// guard is not asked to allow a listing or prune command for it.
+func TestSharedBackupsFolderPerGame(t *testing.T) {
+	m, fd := newManager(t)
+	root := t.TempDir()
+	pol, _ := os.ReadFile(m.PolicyFile)
+	pol = []byte(strings.Replace(string(pol), "names: [", "names: [minecraft-2, minecraft-3, ", 1))
+	if err := os.WriteFile(m.PolicyFile, append(pol, []byte("\nbackups_root: /mnt/usb/backups\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Platform.BackupsRoot, m.Platform.BackupsMount = "/mnt/usb/backups", root
+	m.Backups = &backup.Root{Mount: root, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state"), ConfirmNew: true}
+
+	for _, id := range []string{"minecraft", "minecraft-2"} {
+		req := Request{ID: id, Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}
+		if id == "minecraft-2" {
+			req.Options["ports"] = "25566:25565/tcp"
+		}
+		if err := m.Enable(req); err != nil {
+			t.Fatalf("%s: %v", id, err)
+		}
+		waitState(t, m, id, StateReady)
+		if fi, err := os.Stat(filepath.Join(root, id)); err != nil || !fi.IsDir() {
+			t.Errorf("%s: the panel did not create its backup folder: %v", id, err)
+		}
+		g, ok := m.Registry.Get(id)
+		if !ok || g.Backup == nil || g.Backup.LocalDir != filepath.Join(root, id) {
+			t.Errorf("%s: backup spec = %+v", id, g.Backup)
+		}
+	}
+	_ = fd
+	rules, err := ExecRulesFor(m.Dir, m.PolicyFile, m.Modules, true)
+	if err != nil || len(rules) != 2 { // each game's backup command only
+		t.Fatalf("rules = %+v, %v", rules, err)
+	}
+	for _, r := range rules {
+		if strings.Contains(strings.Join(r.Cmd, " "), "find ") {
+			t.Errorf("a listing command is allowlisted although the panel reads the folder itself: %v", r.Cmd)
+		}
+	}
+
+	// Each game has a restore container of its own: <id>-restore, from its image,
+	// with its folders; the guard loads those scopes under the same policy.
+	if spec, ok := m.RestoreSpec("minecraft-2", "manual-1.tgz"); !ok || spec.Name != "minecraft-2-restore" ||
+		!strings.Contains(strings.Join(spec.Binds, " "), "/mnt/usb/backups/minecraft-2:/data/backups:ro") {
+		t.Errorf("restore spec = %+v, %v", spec, ok)
+	}
+	if _, ok := m.RestoreSpec("nope", "x.tgz"); ok {
+		t.Error("a restore spec for a game that is not managed")
+	}
+	res, lerr := dockerguard.Sources{ManagedFile: m.path("scopes.json"), PolicyFile: m.PolicyFile, AllowedFile: dockerguard.AllowedPath(m.path("scopes.json"))}.Load()
+	if lerr != nil || len(res.Rejected) > 0 {
+		t.Fatalf("the guard rejected the scopes: %v %v", lerr, res)
+	}
+	names := map[string]bool{}
+	for _, sc := range res.Scopes {
+		names[sc.Name] = true
+	}
+	if !names["minecraft-restore"] || !names["minecraft-2-restore"] {
+		t.Errorf("scopes in force = %v", names)
+	}
+	if err := m.Enable(Request{ID: "mc-restore", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}}); err == nil ||
+		!strings.Contains(err.Error(), "-restore") {
+		t.Errorf("an id ending in -restore was accepted: %v", err)
+	}
+
+	// A drive that went missing stops the next game being created on it.
+	_ = os.Remove(filepath.Join(root, ".crowsnest-backups"))
+	err = m.Enable(Request{ID: "minecraft-3", Module: "minecraft", Options: map[string]string{"eula": "TRUE", "ports": "25567:25565/tcp"},
+		Secrets: map[string]string{"rcon_password": "x"}})
+	if err == nil {
+		waitState(t, m, "minecraft-3", StateFailed)
+	}
+}
+
+func TestDisableCanDeleteDataAndBackups(t *testing.T) {
+	m, fd := newManager(t)
+	root := t.TempDir()
+	pol, _ := os.ReadFile(m.PolicyFile)
+	if err := os.WriteFile(m.PolicyFile, append(pol, []byte("\nbackups_root: /mnt/usb/backups\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	m.Platform.BackupsRoot, m.Platform.BackupsMount = "/mnt/usb/backups", root
+	m.Backups = &backup.Root{Mount: root, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state"), ConfirmNew: true}
+	var helper []dockerctl.CreateSpec
+	var helperErr error
+	m.RunHelper = func(_ context.Context, s dockerctl.CreateSpec) error { helper = append(helper, s); return helperErr }
+	enable := func(id string) {
+		t.Helper()
+		if err := m.Enable(Request{ID: id, Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}}); err != nil {
+			t.Fatal(err)
+		}
+		waitState(t, m, id, StateReady)
+		_ = os.WriteFile(filepath.Join(root, id, "b.tgz"), []byte("x"), 0o600)
+	}
+	enable("minecraft")
+
+	// A failed cleaner changes nothing: the game stays, its backups stay.
+	helperErr = errors.New("find: permission denied")
+	if err := m.Disable("minecraft", DisableOptions{Data: true, Backups: true}); err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Fatalf("Disable = %v", err)
+	}
+	if _, ok := m.Registry.Get("minecraft"); !ok || !fd.have["minecraft"] {
+		t.Error("a failed data deletion removed the game")
+	}
+	if _, err := os.Stat(filepath.Join(root, "minecraft", "b.tgz")); err != nil {
+		t.Error("backups were deleted although the data deletion failed")
+	}
+
+	// Data only: the helper runs with the data folder alone, backups stay.
+	helperErr, helper = nil, nil
+	if err := m.Disable("minecraft", DisableOptions{Data: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(helper) != 1 || helper[0].Name != "minecraft-clean" || len(helper[0].Binds) != 1 || !strings.HasSuffix(helper[0].Binds[0], ":/data") {
+		t.Fatalf("helper = %+v", helper)
+	}
+	if _, err := os.Stat(filepath.Join(root, "minecraft", "b.tgz")); err != nil {
+		t.Error("backups were deleted although only data was asked for")
+	}
+
+	// Backups only: no helper, the folder is gone.
+	enable("minecraft")
+	helper = nil
+	if err := m.Disable("minecraft", DisableOptions{Backups: true}); err != nil {
+		t.Fatal(err)
+	}
+	if len(helper) != 0 {
+		t.Error("the data cleaner ran for a backups-only deletion")
+	}
+	if _, err := os.Stat(filepath.Join(root, "minecraft")); !os.IsNotExist(err) {
+		t.Errorf("backup folder left behind: %v", err)
+	}
+
+	// An unverifiable backups folder refuses before anything else is touched.
+	enable("minecraft")
+	os.Remove(filepath.Join(root, ".crowsnest-backups"))
+	helper = nil
+	if err := m.Disable("minecraft", DisableOptions{Data: true, Backups: true}); err == nil || len(helper) != 0 {
+		t.Errorf("Disable = %v, helper runs = %d", err, len(helper))
+	}
+}
+
+func TestIdMayNotEndInClean(t *testing.T) {
+	m, _ := newManager(t)
+	err := m.Enable(Request{ID: "minecraft-clean", Module: "minecraft", Options: map[string]string{"eula": "TRUE"}, Secrets: map[string]string{"rcon_password": "x"}})
+	if err == nil || !strings.Contains(err.Error(), "-clean") {
+		t.Fatalf("Enable = %v", err)
+	}
+}
+
+// Players are shown the host's address and the game's first port without anyone typing it; a chosen port
+// moves it, and an address typed into the form still wins.
+func TestConnectAddressIsAutomatic(t *testing.T) {
+	m, _ := newManager(t)
+	req := Request{ID: "mc", Module: "minecraft", Secrets: map[string]string{"rcon_password": "x"}}
+	p, err := m.Preview(req)
+	if err != nil || p.Connect != "10.0.0.2:25565" {
+		t.Fatalf("default: Connect = %q, err %v; want 10.0.0.2:25565", p.Connect, err)
+	}
+	req.Options = map[string]string{"ports": "25570:25565/tcp"}
+	if p, err = m.Preview(req); err != nil || p.Connect != "10.0.0.2:25570" {
+		t.Fatalf("chosen port: Connect = %q, err %v; want 10.0.0.2:25570", p.Connect, err)
+	}
+	req.ConnectAddress = "play.example.com:25565"
+	if p, err = m.Preview(req); err != nil || p.Connect != "play.example.com:25565" {
+		t.Fatalf("typed address: Connect = %q, err %v; want the typed one", p.Connect, err)
+	}
+	m.Platform.HostIP = ""
+	req.ConnectAddress = ""
+	if p, err = m.Preview(req); err != nil || p.Connect != "" {
+		t.Fatalf("published on every address: Connect = %q, err %v; want none", p.Connect, err)
+	}
+}
+
+func TestConnectAddressWindroseUsesItsLANAddress(t *testing.T) {
+	mf, ok := modules.Bundled().Manifest("windrose")
+	if !ok {
+		t.Fatal("no windrose module")
+	}
+	if got := connectAddress(mf, map[string]string{"lan_ipv4": "10.0.1.50"}, nil); got != "10.0.1.50" {
+		t.Fatalf("connectAddress = %q, want the macvlan address 10.0.1.50", got)
 	}
 }

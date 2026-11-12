@@ -14,11 +14,14 @@
 package managed
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/vault"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -52,21 +55,30 @@ type Docker interface {
 
 // Manager owns the dashboard-enabled games.
 type Manager struct {
-	Dir        string // state directory
+	Dir string // state directory
+	// Vault encrypts secrets.json; nil leaves values as they are (tests).
+	Vault      *vault.Vault
 	PolicyFile string // operator's policy.yaml
 	// PolicyEditable lets SetPolicy rewrite PolicyFile (the operator mounted it writable and opted in).
 	PolicyEditable bool
 	Platform       modules.Platform
-	Modules        *modules.Set
-	Config         *config.Config
-	Docker         Docker
-	Wire           *dockerctl.Client // for module wiring (status, logs, exec)
-	Registry       *games.Registry
+	// Backups is the panel's view of the shared backups folder; each game's
+	// folder is created in it before the container is. Needed when
+	// Platform.BackupsRoot is set.
+	Backups  *backup.Root
+	Modules  *modules.Set
+	Config   *config.Config
+	Docker   Docker
+	Wire     *dockerctl.Client // for module wiring (status, logs, exec)
+	Registry *games.Registry
 	// Settle is how long a new game waits for the guard to pick up its scope.
 	Settle time.Duration
 	// Busy, when set, reports a game that is mid start/stop. A start still
 	// pulling has no container yet, so Docker.Running alone would miss it.
 	Busy func(id string) bool
+	// RunHelper runs a one-shot container to completion (the data cleaner);
+	// needed only for Disable with DisableOptions.Data.
+	RunHelper func(ctx context.Context, spec dockerctl.CreateSpec) error
 
 	mu      sync.Mutex
 	ctx     context.Context
@@ -125,7 +137,8 @@ type Info struct {
 	Error  string `json:"error,omitempty"`
 	// What the edit form pre-fills. Secret values are never listed.
 	DisplayName    string            `json:"display_name,omitempty"`
-	ConnectAddress string            `json:"connect_address,omitempty"`
+	ConnectAddress string            `json:"connect_address,omitempty"` // only what was typed in the form
+	Connect        string            `json:"connect,omitempty"`         // what players use: typed, or worked out from the published port
 	Options        map[string]string `json:"options,omitempty"`
 	// Image is the tag the game follows (repo:tag); Digest is the exact image it
 	// runs (empty for a game installed before pinning, until its next update);
@@ -148,6 +161,7 @@ type Plan struct {
 	Container string   `json:"container,omitempty"`
 	Image     string   `json:"image,omitempty"`
 	Ports     []string `json:"ports,omitempty"`   // host_ip:port/proto -> container
+	Connect   string   `json:"connect,omitempty"` // what players type to join
 	Folders   []string `json:"folders,omitempty"` // host folders the game stores data in
 	Memory    string   `json:"memory,omitempty"`
 	// Pinning says how the image is held still: the tag is resolved to a digest on install.
@@ -181,12 +195,16 @@ type PortNote struct {
 }
 
 type ModuleInfo struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	NeedsImage  bool     `json:"needs_image"` // the module has no image of its own
-	Description string   `json:"description,omitempty"`
-	Image       string   `json:"image,omitempty"`
-	Ports       []string `json:"ports,omitempty"` // "25565/tcp"
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	NeedsImage  bool   `json:"needs_image"` // the module has no image of its own
+	Description string `json:"description,omitempty"`
+	Image       string `json:"image,omitempty"`
+	// DefaultTag is the tag a game follows unless told otherwise; StableTag is
+	// the image's stable-release tag, when the module knows one.
+	DefaultTag string   `json:"default_tag,omitempty"`
+	StableTag  string   `json:"stable_tag,omitempty"`
+	Ports      []string `json:"ports,omitempty"` // "25565/tcp"
 	// PortNotes says what each published port is for, as the module declares it.
 	PortNotes []PortNote `json:"port_notes,omitempty"`
 	// Allowed is whether the operator switched this module on. Bundled is whether
@@ -225,6 +243,7 @@ const (
 
 var (
 	idRe    = regexp.MustCompile(`^[a-z][a-z0-9-]{1,30}$`)
+	tagRe   = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$`)
 	reserve = map[string]bool{"image": true, "tag": true, "ports": true, "data_dir": true, "ram": true}
 )
 
@@ -241,7 +260,8 @@ func (m *Manager) Catalogue() []ModuleInfo {
 		rt := mf.Runtime
 		mi := ModuleInfo{ID: mf.ID, Name: mf.Name, NeedsImage: mf.Runtime.Image == "",
 			NeedsException: len(rt.SecOpts) > 0 || len(rt.Networks) > 0 || rt.GamesIPv4Option != "",
-			Description:    mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil}
+			Description:    mf.Description, Image: mf.Runtime.Image, HasBackup: mf.Backup != nil,
+			DefaultTag: cmp.Or(rt.Tag, "latest"), StableTag: rt.StableTag}
 		for _, p := range mf.Runtime.Ports {
 			mi.Ports = append(mi.Ports, modules.PortSpec(p))
 			mi.PortNotes = append(mi.PortNotes, PortNote{Port: modules.PortSpec(p), Why: p.Why})
@@ -359,6 +379,12 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	if !idRe.MatchString(r.ID) {
 		return g, nil, errors.New("id must be 2-31 lowercase letters, digits or dashes, starting with a letter")
 	}
+	if strings.HasSuffix(r.ID, modules.CleanSuffix) {
+		return g, nil, fmt.Errorf("id may not end in %q: that name is the one-shot container that empties a game's data", modules.CleanSuffix)
+	}
+	if strings.HasSuffix(r.ID, modules.RestoreSuffix) {
+		return g, nil, fmt.Errorf("id may not end in %q: that name is the one-shot container that restores a backup", modules.RestoreSuffix)
+	}
 	mf, ok := m.Modules.Manifest(r.Module)
 	if !ok {
 		return g, nil, fmt.Errorf("module %q is not installed", r.Module)
@@ -392,6 +418,9 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		}
 		if err := plainValue(k, v); err != nil {
 			return g, nil, err
+		}
+		if k == "tag" && v != "" && !tagRe.MatchString(v) {
+			return g, nil, fmt.Errorf("image version %q: use letters, digits, dots, dashes and underscores only (no digest or repository)", v)
 		}
 		if k == "ram" && v != "" {
 			if _, err := modules.SizeBytes("ram", v); err != nil {
@@ -438,10 +467,15 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 	}
 	g = config.GameConfig{
 		ID: r.ID, ContainerName: r.ID, DisplayName: r.DisplayName, Module: r.Module,
-		ConnectAddress: r.ConnectAddress, Options: opts, Backup: mf.Backup,
+		ConnectAddress: r.ConnectAddress, Options: opts, Backup: m.backupFor(mf, r.ID),
 	}
 	if g.DisplayName == "" {
 		g.DisplayName = mf.Name
+	}
+	if g.ConnectAddress == "" {
+		if rd, err := mf.Render(g, m.Platform); err == nil {
+			g.ConnectAddress = connectAddress(mf, opts, rd)
+		}
 	}
 	if rd, err := mf.Render(g, m.Platform); err == nil && !r.probe { // a catalogue probe asks about the policy, not the ports in use
 		if clash := m.portClash(g.ID, rd); clash != "" {
@@ -455,6 +489,55 @@ func (m *Manager) validate(r Request, existing bool) (config.GameConfig, *module
 		}
 	}
 	return g, mf, nil
+}
+
+// backupFor is the module's backup block for game id. With a shared backups
+// folder and a module that names a backup dir, the panel reads that game's own
+// folder (<backups_root>/<id>) instead of listing through docker exec.
+// RestoreSpec is the one-shot container that restores file into game id, or
+// false when the game is not a dashboard game or its module cannot restore.
+func (m *Manager) RestoreSpec(id, file string) (dockerctl.CreateSpec, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, e := range m.entries {
+		if e.ID == id && e.rendered != nil {
+			return e.rendered.RestoreSpec(file)
+		}
+	}
+	return dockerctl.CreateSpec{}, false
+}
+
+func (m *Manager) backupFor(mf *modules.Manifest, id string) *config.BackupConfig {
+	if mf.Backup == nil {
+		return nil
+	}
+	b := *mf.Backup
+	if mf.Backup.Dir != "" && m.Platform.BackupsRoot != "" {
+		b.LocalDir = m.Platform.BackupLocalDir(id)
+	}
+	return &b
+}
+
+// connectAddress is what a player types to join: a game on a LAN (macvlan)
+// network is reached at its own LAN address; any other game at the address its
+// first port is published on, with that port. An address typed into the form
+// wins over this (someone who reaches the game by a DNS name or a Tailscale
+// address says so there). It is "" when nothing is certain, as when the game is
+// published on every address.
+func connectAddress(mf *modules.Manifest, opts map[string]string, rd *modules.Rendered) string {
+	for _, n := range mf.Runtime.Networks {
+		if n.IPv4Option != "" && opts[n.IPv4Option] != "" {
+			return opts[n.IPv4Option]
+		}
+	}
+	if rd == nil || len(rd.Scope.Ports) == 0 {
+		return ""
+	}
+	p := rd.Scope.Ports[0]
+	if p.HostIP == "" || p.HostIP == "0.0.0.0" {
+		return ""
+	}
+	return net.JoinHostPort(p.HostIP, p.HostPort)
 }
 
 func plainValue(k, v string) error {
@@ -664,7 +747,7 @@ func (m *Manager) Preview(r Request) (*Plan, error) {
 	}
 	svc, _ := yaml.Marshal(map[string]any{r.ID: rd.Service})
 	sc, _ := json.MarshalIndent(rd.Scope, "", "  ")
-	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil,
+	p := &Plan{Service: string(svc), Scope: string(sc), Fits: fitErr == nil, Connect: g.ConnectAddress,
 		Container: rd.Service.ContainerName, Image: rd.Service.Image, Ports: rd.Service.Ports, Memory: rd.Service.MemLimit,
 		Pinning: "Pinned: the container runs the exact image " + rd.Ref() + " points to when it is installed, by digest. Update image moves it on; Roll back returns to the one before."}
 	for _, v := range rd.Service.Volumes {
@@ -813,6 +896,17 @@ func (m *Manager) doInstall(e *entry, g config.GameConfig, mode installMode) err
 	ctx := m.ctx
 	if ctx == nil {
 		ctx = context.Background()
+	}
+	// The panel makes the game's backup folder itself: if Docker created the
+	// bind source it would be root-owned, and a missing external drive would
+	// look like a fresh empty folder.
+	if g.Backup != nil && g.Backup.LocalDir != "" {
+		if m.Backups == nil {
+			return errors.New("platform.backups_root is set but the panel has no backups folder mounted")
+		}
+		if err := m.Backups.EnsureGameDir(rd.ID); err != nil {
+			return err
+		}
 	}
 	exists, err := m.Docker.Exists(ctx, name)
 	if err != nil {
@@ -1118,9 +1212,17 @@ func (m *Manager) reinstall(r Request, op reinstallOp) error {
 	return nil
 }
 
+// DisableOptions says what Disable deletes besides the game itself.
+type DisableOptions struct {
+	Data    bool // empty the game's data folders (a one-shot <id>-clean container)
+	Backups bool // delete the game's folder in the shared backups folder
+}
+
 // Disable removes a stopped game: its container, dashboard entry, scope and
-// secrets. Its data folder is left untouched.
-func (m *Manager) Disable(id string) error {
+// secrets. Its data folders and backups are kept unless o says otherwise;
+// when it does, they are deleted first, so a failure leaves the game listed
+// and the deletion can be retried.
+func (m *Manager) Disable(id string, o DisableOptions) error {
 	m.mu.Lock()
 	e := m.find(id)
 	m.mu.Unlock()
@@ -1141,9 +1243,39 @@ func (m *Manager) Disable(id string) error {
 	if running {
 		return errors.New("stop the game before disabling it")
 	}
+	if o.Backups && (m.Backups == nil || m.Platform.BackupsRoot == "") {
+		return errors.New("this panel has no shared backups folder, so there is nothing to delete there")
+	}
+	var clean dockerctl.CreateSpec
+	if o.Data {
+		var ok bool
+		m.mu.Lock()
+		if e.rendered != nil {
+			clean, ok = e.rendered.CleanSpec()
+		}
+		m.mu.Unlock()
+		if !ok || m.RunHelper == nil {
+			return errors.New("this game has no data folders the panel can empty")
+		}
+	}
+	if o.Backups {
+		if err := m.Backups.Verify(); err != nil { // refuse before anything is deleted
+			return err
+		}
+	}
+	if o.Data {
+		if err := m.RunHelper(ctx, clean); err != nil {
+			return fmt.Errorf("emptying the data folders failed (nothing else was changed): %w", err)
+		}
+	}
 	if ok, _ := m.Docker.Exists(ctx, id); ok {
 		if err := m.Docker.Remove(ctx, id); err != nil {
 			return err
+		}
+	}
+	if o.Backups {
+		if err := m.Backups.RemoveGameDir(id); err != nil {
+			return fmt.Errorf("deleting the backups failed: %w", err)
 		}
 	}
 	m.mu.Lock()
@@ -1174,8 +1306,12 @@ func (m *Manager) List() []Info {
 		for k, v := range e.Options {
 			opts[k] = v
 		}
+		connect := e.ConnectAddress
+		if mf, ok := m.Modules.Manifest(e.Module); ok && connect == "" {
+			connect = connectAddress(mf, e.Options, e.rendered)
+		}
 		in := Info{ID: e.ID, Module: e.Module, State: e.State, Error: e.Error,
-			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Options: opts,
+			DisplayName: e.DisplayName, ConnectAddress: e.ConnectAddress, Connect: connect, Options: opts,
 			Image: e.Image, Digest: e.Digest, PreviousDigest: e.PreviousDigest, Refresh: e.refresh}
 		if in.Image == "" && e.rendered != nil {
 			in.Image = e.rendered.Ref()
@@ -1216,7 +1352,47 @@ func (m *Manager) save() error {
 	if err := writeJSON(m.path("games.json"), st, 0o600); err != nil {
 		return err
 	}
-	return writeJSON(m.path("secrets.json"), secrets, 0o600)
+	sealed, err := m.sealSecrets(secrets)
+	if err != nil {
+		return err
+	}
+	return writeJSON(m.path("secrets.json"), sealed, 0o600)
+}
+
+func secretPurpose(game, key string) string { return "managed:" + game + ":" + key }
+
+// sealSecrets encrypts every value of secrets (game id, option key, value).
+func (m *Manager) sealSecrets(secrets map[string]map[string]string) (map[string]map[string]string, error) {
+	out := make(map[string]map[string]string, len(secrets))
+	for id, kv := range secrets {
+		out[id] = make(map[string]string, len(kv))
+		for k, v := range kv {
+			enc, err := m.Vault.Seal(secretPurpose(id, k), v)
+			if err != nil {
+				return nil, err
+			}
+			out[id][k] = enc
+		}
+	}
+	return out, nil
+}
+
+// unsealSecrets decrypts what sealSecrets wrote. legacy says some value was
+// still plain text from an older version, so the file should be rewritten.
+func (m *Manager) unsealSecrets(secrets map[string]map[string]string) (plain map[string]map[string]string, legacy bool, err error) {
+	plain = make(map[string]map[string]string, len(secrets))
+	for id, kv := range secrets {
+		plain[id] = make(map[string]string, len(kv))
+		for k, v := range kv {
+			p, old, err := m.Vault.Unseal(secretPurpose(id, k), v)
+			if err != nil {
+				return nil, false, fmt.Errorf("secrets.json (%s, %s): %w", id, k, err)
+			}
+			legacy = legacy || old
+			plain[id][k] = p
+		}
+	}
+	return plain, legacy, nil
 }
 
 func (m *Manager) writeScopes() error {
@@ -1286,6 +1462,23 @@ func (m *Manager) Restore(ctx context.Context) error {
 			return fmt.Errorf("secrets.json: %w", err)
 		}
 	}
+	secrets, legacy, uerr := m.unsealSecrets(secrets)
+	if uerr != nil {
+		m.mu.Unlock()
+		return uerr
+	}
+	if legacy && m.Vault != nil {
+		// Written by an older version in plain text: seal it now.
+		sealed, err := m.sealSecrets(secrets)
+		if err == nil {
+			err = writeJSON(m.path("secrets.json"), sealed, 0o600)
+		}
+		if err != nil {
+			log.Printf("warning: could not encrypt %s: %v", m.path("secrets.json"), err)
+		} else {
+			log.Printf("secrets: encrypted the game secrets in %s", m.path("secrets.json"))
+		}
+	}
 	type todo struct {
 		e *entry
 		g config.GameConfig
@@ -1311,6 +1504,13 @@ func (m *Manager) Restore(ctx context.Context) error {
 		m.entries = append(m.entries, e)
 		installs = append(installs, todo{e, g})
 	}
+	// Re-issue the scopes so a game installed before an upgrade gets any scope
+	// the new version added (a restore container).
+	if len(m.entries) > 0 {
+		if err := m.writeScopes(); err != nil {
+			log.Printf("managed: rewriting the guard scopes: %v", err)
+		}
+	}
 	m.mu.Unlock()
 	for _, t := range installs {
 		if t.e.State == StateReady {
@@ -1333,6 +1533,13 @@ func (m *Manager) Restore(ctx context.Context) error {
 // tampered games.json cannot aim a backup command at an unrelated container.
 // The policy file is required; unreadable, no rules are issued.
 func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, error) {
+	return ExecRulesFor(dir, policyFile, mods, false)
+}
+
+// ExecRulesFor is ExecRules for a platform that may share a backups folder.
+// With sharedBackups, a module that names a backup dir gets no listing or
+// pruning command: the panel reads and prunes that folder itself.
+func ExecRulesFor(dir, policyFile string, mods *modules.Set, sharedBackups bool) ([]execguard.Rule, error) {
 	if policyFile == "" {
 		return nil, errors.New("exec rules for dashboard games need managed.policy_file")
 	}
@@ -1358,8 +1565,14 @@ func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, err
 			continue
 		}
 		rules = append(rules, execguard.Rule{Container: g.ID, Cmd: mf.Backup.Exec})
-		if mf.Backup.ListDir != "" {
-			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.ListArgs(mf.Backup.ListDir)})
+		if sharedBackups && mf.Backup.Dir != "" {
+			continue
+		}
+		if dir := mf.Backup.ExecListDir(); dir != "" {
+			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.ListArgs(dir)})
+		}
+		if mf.Backup.Keep > 0 {
+			rules = append(rules, execguard.Rule{Container: g.ID, Cmd: backup.PruneArgs(mf.Backup.ExecListDir(), mf.Backup.Keep)})
 		}
 	}
 	return rules, nil
@@ -1367,15 +1580,17 @@ func ExecRules(dir, policyFile string, mods *modules.Set) ([]execguard.Rule, err
 
 // PolicyDoc is policy.yaml as the dashboard shows and edits it.
 type PolicyDoc struct {
-	GamesRoot string   `json:"games_root" yaml:"games_root"`
-	Names     []string `json:"names" yaml:"names"`
-	Images    []string `json:"images" yaml:"images"`
-	Networks  []string `json:"networks" yaml:"networks"`
-	Ports     []string `json:"ports" yaml:"ports"`
-	HostIPs   []string `json:"host_ips" yaml:"host_ips,omitempty"`
-	Exec      bool     `json:"exec" yaml:"exec"`
-	Labels    []string `json:"labels" yaml:"labels,omitempty"`
-	MaxScopes int      `json:"max_scopes" yaml:"max_scopes"`
+	GamesRoot string `json:"games_root" yaml:"games_root"`
+	// BackupsRoot is read-only here, like GamesRoot.
+	BackupsRoot string   `json:"backups_root,omitempty" yaml:"backups_root,omitempty"`
+	Names       []string `json:"names" yaml:"names"`
+	Images      []string `json:"images" yaml:"images"`
+	Networks    []string `json:"networks" yaml:"networks"`
+	Ports       []string `json:"ports" yaml:"ports"`
+	HostIPs     []string `json:"host_ips" yaml:"host_ips,omitempty"`
+	Exec        bool     `json:"exec" yaml:"exec"`
+	Labels      []string `json:"labels" yaml:"labels,omitempty"`
+	MaxScopes   int      `json:"max_scopes" yaml:"max_scopes"`
 	// PinDigests: managed creates must name their image by digest. Nil in a save keeps what the file has.
 	PinDigests *bool `json:"pin_digests,omitempty" yaml:"pin_digests"`
 	// Exceptions are shown, never edited here: SetPolicy keeps whatever the file has.
@@ -1395,7 +1610,7 @@ func (m *Manager) Policy() (PolicyState, error) {
 		return PolicyState{}, err
 	}
 	return PolicyState{Editable: m.PolicyEditable, Policy: PolicyDoc{
-		GamesRoot: p.GamesRoot, Names: p.Names, Images: p.Images, Networks: p.Networks, Ports: p.Ports,
+		GamesRoot: p.GamesRoot, BackupsRoot: p.BackupsRoot, Names: p.Names, Images: p.Images, Networks: p.Networks, Ports: p.Ports,
 		HostIPs: p.HostIPs, Exec: p.Exec, Labels: p.Labels, MaxScopes: p.MaxScopes, Exceptions: p.Exceptions,
 		PinDigests: &p.PinDigests,
 	}}, nil
@@ -1420,6 +1635,9 @@ func narrowOnly(cur *dockerguard.Policy, d PolicyDoc) error {
 	}
 	if d.GamesRoot != cur.GamesRoot {
 		return fmt.Errorf("games_root cannot be changed here (%s)", hint)
+	}
+	if d.BackupsRoot != cur.BackupsRoot {
+		return fmt.Errorf("backups_root cannot be changed here (%s)", hint)
 	}
 	for _, l := range []struct {
 		name     string

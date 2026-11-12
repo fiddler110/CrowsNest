@@ -9,6 +9,8 @@ server:
   addr: ":5000"
   session_secret_file: /app/.session_secret   # generated on first run if absent
   tz: "America/New_York"                      # IANA name; used by night_shutdown and logs
+  # metrics_token_env: CROWSNEST_METRICS_TOKEN   # names an env var; when it is set, GET /metrics serves
+  #                                               # Prometheus metrics to `Authorization: Bearer <token>`
   # trusted_proxies: ["10.0.0.0/8"]           # CIDRs allowed to set X-Forwarded-For
   # docker_host: tcp://dockerproxy:2375       # route docker/compose calls through a
                                                # docker-socket-proxy instead of the raw
@@ -50,6 +52,13 @@ notifications:                 # Discord webhook, posted on both idle and night 
   discord_webhook_url_env: DISCORD_WEBHOOK_URL   # names an env var; unset/empty = disabled
   # player_events: false          # join/leave messages are on whenever a webhook is set
 
+# A game that crashes (non-zero exit, not a normal stop) this many times inside the window is
+# reported once: an entry in the activity log and, with a webhook above, a Discord message.
+# crash_loop:
+#   enabled: true
+#   crashes: 3
+#   window_minutes: 15
+
 users_file: /app/users.env     # <NAME>_PASSWORD_HASH entries; managed by `crowsnest set-password`
 
 # How people sign in. With no auth section, only username/password (users_file) is used.
@@ -62,7 +71,7 @@ users_file: /app/users.env     # <NAME>_PASSWORD_HASH entries; managed by `crows
 #     # These name env vars (set in .env); the defaults are shown.
 #     # client_id_env: CROWSNEST_GOOGLE_CLIENT_ID
 #     # client_secret_env: CROWSNEST_GOOGLE_CLIENT_SECRET
-#     # users_env: CROWSNEST_GOOGLE_USERS    # the allowlist: name=email,name=email
+#     # users_env: CROWSNEST_GOOGLE_USERS    # one-time import of old name=email pairs; the dashboard owns the list
 
 games:
   - id: windrose
@@ -123,6 +132,7 @@ games:
     # backup:
     #   exec: ["backup"]
     #   list_dir: /palworld/backups
+    #   keep: 14                      # optional: after each backup, delete all but the newest 14 files in list_dir
     #   before_stop: true      # also back up every time CrowsNest stops it on purpose
 
 # Enable and configure games from the dashboard, inside an operator policy
@@ -130,6 +140,10 @@ games:
 # platform:
 #   games_root: /srv/games
 #   host_ip: 10.0.0.2
+#   backups_root: /mnt/usb/backups   # optional shared backups folder: <backups_root>/<game id> per game (see README, Backups)
+#   backups_mount: /game-backups     # where the panel sees it; mount the host folder there, read-write
+#   backups_confirm_new: true        # required on first use: confirms the drive is really mounted (see README, Backups)
+#   backups_dir_mode: "0775"         # "0777" if a game runs as a different user than the panel
 # managed:
 #   dir: /app/data/managed
 #   policy_file: /etc/crowsnest/policy.yaml

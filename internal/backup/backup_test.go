@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -93,5 +94,59 @@ func TestList(t *testing.T) {
 	files, err := m.List(context.Background(), def())
 	if err != nil || len(files) != 1 || files[0].Name != "a.tgz" {
 		t.Fatalf("List = %+v, %v", files, err)
+	}
+}
+
+func TestPruneArgs_KeepsNewestFiles(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+	for i, name := range []string{"oldest.tgz", "with space.tgz", "mid.tgz", "newest.tgz"} {
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		ts := now.Add(time.Duration(i-10) * time.Hour)
+		if err := os.Chtimes(p, ts, ts); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Mkdir(filepath.Join(dir, "subdir"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	args := PruneArgs(dir, 2)
+	if out, err := exec.Command(args[0], args[1:]...).CombinedOutput(); err != nil { // #nosec G204 -- test
+		t.Fatalf("prune: %v: %s", err, out)
+	}
+	var left []string
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		left = append(left, e.Name())
+	}
+	if strings.Join(left, ",") != "mid.tgz,newest.tgz,subdir" {
+		t.Fatalf("left = %v, want the two newest files and the untouched subdir", left)
+	}
+}
+
+func TestRunBackup_PrunesAfterSuccess(t *testing.T) {
+	log := filepath.Join(t.TempDir(), "calls")
+	m := &Manager{Docker: fakeDocker(t, `case "$1" in ps) echo pal ;; exec) case "$*" in *"sh -c"*) echo prune >> `+log+` ;; *) echo backup >> `+log+` ;; esac ;; esac`), History: &rec{}}
+	d := def()
+	d.Backup.Keep = 3
+	if err := m.RunBackup(context.Background(), d, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(log)
+	if strings.TrimSpace(string(b)) != "backup\nprune" {
+		t.Fatalf("exec calls = %q, want the backup then the prune", b)
+	}
+
+	// A failing prune doesn't fail the backup, but is recorded.
+	r := &rec{}
+	m = &Manager{Docker: fakeDocker(t, `case "$1" in ps) echo pal ;; exec) case "$*" in *"sh -c"*) echo no find >&2; exit 1;; esac ;; esac`), History: r}
+	if err := m.RunBackup(context.Background(), d, "alex"); err != nil {
+		t.Fatalf("backup failed because the prune did: %v", err)
+	}
+	if len(r.events) != 1 || !strings.Contains(r.events[0], "pruning old backups failed") {
+		t.Fatalf("events = %v", r.events)
 	}
 }

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -22,7 +23,7 @@ func TestLoadUsers(t *testing.T) {
 		t.Fatalf("LoadUsers() error = %v", err)
 	}
 	want := Users{"admin": {Hash: "hash1"}, "alice": {Hash: "hash2"}}
-	if len(users) != len(want) || users["admin"] != want["admin"] || users["alice"] != want["alice"] {
+	if len(users) != len(want) || !reflect.DeepEqual(users, want) {
 		t.Fatalf("LoadUsers() = %+v, want %+v", users, want)
 	}
 }
@@ -257,5 +258,24 @@ func TestClearPasswordHash(t *testing.T) {
 	}
 	if err := ClearPasswordHash(path, "nobody", true); err == nil {
 		t.Error("unknown user accepted")
+	}
+}
+
+func TestImportGoogleEmails(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "users")
+	emails := GoogleUsers{"a@x.org": "alice", "b@x.org": "bob", "a2@x.org": "alice"}
+	if imp, _, err := ImportGoogleEmails(path, emails); err != nil || len(imp) != 0 {
+		t.Fatalf("empty file: imported %v, err %v; want nothing so first-run setup stays open", imp, err)
+	}
+	if err := CreateUser(path, "alice", "$2a$x", "", RoleAdmin); err != nil {
+		t.Fatal(err)
+	}
+	imp, skipped, err := ImportGoogleEmails(path, emails)
+	if err != nil || len(imp) != 2 || len(skipped) != 1 || skipped[0] != "a@x.org" && skipped[0] != "a2@x.org" {
+		t.Fatalf("imported %v skipped %v err %v", imp, skipped, err)
+	}
+	users, _ := LoadUsers(path)
+	if users["alice"].GoogleEmail == "" || users["alice"].Role != RoleAdmin || users["bob"].GoogleEmail != "b@x.org" || users["bob"].Role != RolePlayer {
+		t.Fatalf("users = %+v", users)
 	}
 }

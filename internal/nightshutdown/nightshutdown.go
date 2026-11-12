@@ -60,6 +60,10 @@ type Manager struct {
 	// window from New, so runtime settings changes apply without a restart.
 	Settings func() (enabled bool, startHour, endHour int)
 
+	// GameOverride, when set, lets a game opt in or out of night shutdown over
+	// its own default (GameDef.NightShutdown). set is false when it has none.
+	GameOverride func(id string) (enabled, set bool)
+
 	// StartedAt, with MinUptime, protects a game that was only just started
 	// inside the window (a late-night session nobody has joined yet): it is
 	// left alone until it has been up MinUptime. If StartedAt errors the game
@@ -139,7 +143,13 @@ func (m *Manager) Tick(ctx context.Context) {
 		return
 	}
 	for _, d := range m.registry.All() {
-		if !d.NightShutdown {
+		eligible := d.NightShutdown
+		if m.GameOverride != nil {
+			if on, set := m.GameOverride(d.ID); set {
+				eligible = on
+			}
+		}
+		if !eligible {
 			continue
 		}
 		m.checkGame(ctx, d)

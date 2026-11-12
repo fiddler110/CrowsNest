@@ -7,8 +7,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fiddler110/crowsnest/internal/auth"
+	"github.com/fiddler110/crowsnest/internal/mfa"
+	"github.com/fiddler110/crowsnest/internal/vault"
 )
 
 func TestUsersAPI(t *testing.T) {
@@ -97,6 +100,11 @@ func TestUsersAPI_GoogleOnly(t *testing.T) {
 	h.App.Auth.Store = store
 	h.App.Auth.Sessions.Store = store
 	h.App.Google = &auth.GoogleLogin{Users: auth.GoogleUsers{"env@example.com": "envuser"}, Store: store}
+	if h.App.OIDC == nil {
+		ostore, _ := auth.NewOIDCStore(filepath.Join(t.TempDir(), "oidc.json"), nil)
+		h.App.OIDC = &auth.OIDCLogin{Service: h.App.Auth, Store: ostore}
+	}
+	h.App.OIDC.Google = h.App.Google
 
 	do := func(method, p, body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -136,5 +144,381 @@ func TestUsersAPI_GoogleOnly(t *testing.T) {
 	code(do("DELETE", "/api/users/gina", ""), http.StatusOK)
 	if h.App.Google.Allows("gina") {
 		t.Error("deleted user still allowed")
+	}
+}
+
+func TestGameAllowlistHidesGames(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n", "palworld", "valheim")
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer, Games: []string{"palworld"}}}
+	do := func(method, path, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(method, path, []byte(body)))
+		return rec
+	}
+
+	var list []gameSummary
+	rec := do("GET", "/api/games", "")
+	if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil || len(list) != 1 || list[0].ID != "palworld" {
+		t.Fatalf("games = %s (%v)", rec.Body.String(), err)
+	}
+	for _, p := range []string{"/api/games/valheim/status", "/api/games/valheim/players", "/api/games/valheim/info"} {
+		if rec := do("GET", p, ""); rec.Code != http.StatusNotFound {
+			t.Errorf("GET %s = %d, want 404", p, rec.Code)
+		}
+	}
+	if rec := do("POST", "/api/games/valheim/start", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("start hidden game = %d, want 404", rec.Code)
+	}
+	if rec := do("POST", "/api/games/palworld/switch", `{"from":"valheim"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("switch from hidden game = %d, want 400", rec.Code)
+	}
+	if rec := do("GET", "/api/games/palworld/status", ""); rec.Code != http.StatusOK {
+		t.Errorf("allowed game status = %d", rec.Code)
+	}
+
+	// Admins ignore the list.
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin, Games: []string{"palworld"}}}
+	rec = do("GET", "/api/games", "")
+	json.Unmarshal(rec.Body.Bytes(), &list)
+	if len(list) != 2 {
+		t.Errorf("admin sees %d games, want 2", len(list))
+	}
+}
+
+func TestUsersAPIGames(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n", "palworld", "valheim")
+	path := filepath.Join(t.TempDir(), "users")
+	hash, _ := auth.HashPassword("whatever1")
+	if err := auth.SetUserHash(path, "tester", hash); err != nil {
+		t.Fatal(err)
+	}
+	store, _ := auth.NewUserStore(path)
+	h.App.Auth.Store = store
+	h.App.Auth.Sessions.Store = store
+	do := func(method, p, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(method, p, []byte(body)))
+		return rec
+	}
+	if rec := do("POST", "/api/users", `{"username":"bob","password":"hunter22x","games":["palworld"]}`); rec.Code != http.StatusCreated {
+		t.Fatalf("create = %d: %s", rec.Code, rec.Body.String())
+	}
+	if rec := do("PUT", "/api/users/bob", `{"games":["nope"]}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("unknown game = %d, want 400", rec.Code)
+	}
+	if rec := do("PUT", "/api/users/bob", `{"games":["valheim","palworld"]}`); rec.Code != http.StatusOK {
+		t.Fatalf("update = %d: %s", rec.Code, rec.Body.String())
+	}
+	rec := do("GET", "/api/users", "")
+	var out struct{ Users []userView }
+	json.Unmarshal(rec.Body.Bytes(), &out)
+	if got := out.Users[0].Games; len(got) != 2 || got[0] != "palworld" {
+		t.Fatalf("games = %v", got)
+	}
+	if rec := do("PUT", "/api/users/bob", `{"games":[]}`); rec.Code != http.StatusOK {
+		t.Fatalf("clear = %d", rec.Code)
+	}
+	if rec := do("PUT", "/api/users/bob", `{"games":[]}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("no-op update = %d, want 400", rec.Code)
+	}
+}
+
+func TestGoogleSettingsAPI(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	dir := t.TempDir()
+	users := filepath.Join(dir, "users")
+	hash, _ := auth.HashPassword("whatever1")
+	if err := auth.SetUserHash(users, "tester", hash); err != nil {
+		t.Fatal(err)
+	}
+	store, _ := auth.NewUserStore(users)
+	h.App.Auth.Store, h.App.Auth.Sessions.Store = store, store
+	h.App.Google = &auth.GoogleLogin{Store: store}
+	if h.App.OIDC == nil {
+		ostore, _ := auth.NewOIDCStore(filepath.Join(t.TempDir(), "oidc.json"), nil)
+		h.App.OIDC = &auth.OIDCLogin{Service: h.App.Auth, Store: ostore}
+	}
+	h.App.OIDC.Google = h.App.Google
+	vlt, err := vault.New("", filepath.Join(dir, "master.key"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	conf, err := auth.NewGoogleConfStore(filepath.Join(dir, "auth.json"), vlt, auth.GoogleSettings{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.GoogleConf = conf
+	conf.Apply(h.App.Google)
+
+	do := func(method, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(method, "/api/auth/google", []byte(body)))
+		return rec
+	}
+	if h.App.Google.Active() {
+		t.Fatal("Google is active before anything is configured")
+	}
+	// start route is 404 while off
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, auth.GoogleStartPath, nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("start while off = %d, want 404", rec.Code)
+	}
+
+	good := `{"enabled":true,"client_id":"cid","client_secret":"shh-secret","redirect_url":"https://c.example/auth/google/callback"`
+	if rec := do("PUT", good+`,"password":"wrong"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong password = %d", rec.Code)
+	}
+	if rec := do("PUT", `{"enabled":true,"client_id":"cid","redirect_url":"https://c.example/auth/google/callback","password":"whatever1"}`); rec.Code != http.StatusBadRequest {
+		t.Fatalf("no secret = %d, want 400", rec.Code)
+	}
+	rec = do("PUT", good+`,"password":"whatever1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save = %d: %s", rec.Code, rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), "shh-secret") {
+		t.Fatal("response leaks the client secret")
+	}
+	if !h.App.Google.Active() {
+		t.Fatal("not active after saving")
+	}
+	rec = httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, auth.GoogleStartPath, nil))
+	if rec.Code != http.StatusFound || !strings.Contains(rec.Header().Get("Location"), "client_id=cid") {
+		t.Fatalf("start after save = %d %s", rec.Code, rec.Header().Get("Location"))
+	}
+	// Keeping the secret: omit it.
+	if rec := do("PUT", `{"enabled":true,"client_id":"cid2","redirect_url":"https://c.example/auth/google/callback","password":"whatever1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("update without secret = %d: %s", rec.Code, rec.Body.String())
+	}
+	if v, _ := conf.Effective(); v.ClientSecret != "shh-secret" || v.ClientID != "cid2" {
+		t.Fatalf("effective = %+v", v)
+	}
+	// Turning it off is allowed while passwords work, and the routes go dark.
+	if rec := do("PUT", `{"enabled":false,"client_id":"cid2","redirect_url":"https://c.example/auth/google/callback","password":"whatever1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("disable = %d", rec.Code)
+	}
+	if h.App.Google.Active() {
+		t.Fatal("still active after disabling")
+	}
+	// Not when password sign-in is off: that would lock everyone out.
+	h.App.Auth.DisablePasswordLogin = true
+	if rec := do("PUT", `{"enabled":false,"client_id":"cid2","redirect_url":"https://c.example/auth/google/callback","password":"whatever1"}`); rec.Code != http.StatusConflict {
+		t.Errorf("disable with passwords off = %d, want 409", rec.Code)
+	}
+	h.App.Auth.DisablePasswordLogin = false
+	if rec := do("DELETE", `{"password":"whatever1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d", rec.Code)
+	}
+	if _, src := conf.Effective(); src != auth.GoogleSourceNone {
+		t.Errorf("source after delete = %s", src)
+	}
+}
+
+func TestPasswordLoginSwitch(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	dir := t.TempDir()
+	users := filepath.Join(dir, "users")
+	hash, _ := auth.HashPassword("whatever1")
+	auth.SetUserHash(users, "tester", hash) // an admin with a password and no Google link
+	auth.CreateUser(users, "linked", hash, "l@x.org", auth.RoleAdmin)
+	auth.CreateUser(users, "pwonly", hash, "", auth.RolePlayer)
+	store, _ := auth.NewUserStore(users)
+	h.App.Auth.Store, h.App.Auth.Sessions.Store = store, store
+	h.App.Google = &auth.GoogleLogin{Store: store}
+	if h.App.OIDC == nil {
+		ostore, _ := auth.NewOIDCStore(filepath.Join(t.TempDir(), "oidc.json"), nil)
+		h.App.OIDC = &auth.OIDCLogin{Service: h.App.Auth, Store: ostore}
+	}
+	h.App.OIDC.Google = h.App.Google
+	prefs, err := auth.NewPrefsStore(filepath.Join(dir, "prefs.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.AuthPrefs = prefs
+	put := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("PUT", "/api/auth/password-login", []byte(body)))
+		return rec
+	}
+
+	// Off: warns first, naming who is locked out, including the caller.
+	rec := put(`{"enabled":false,"password":"whatever1"}`)
+	var warn struct {
+		NeedsConfirm bool     `json:"needs_confirm"`
+		LockedOut    []string `json:"locked_out"`
+		You          bool     `json:"you_locked_out"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &warn)
+	if rec.Code != http.StatusConflict || !warn.NeedsConfirm || !warn.You || len(warn.LockedOut) != 2 {
+		t.Fatalf("first attempt = %d %s", rec.Code, rec.Body.String())
+	}
+	if !h.App.Auth.PasswordLoginDisabled() == false {
+		t.Fatal("changed before confirmation")
+	}
+	if rec := put(`{"enabled":false,"password":"nope","confirm":true}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong password = %d", rec.Code)
+	}
+	if rec := put(`{"enabled":false,"password":"whatever1","confirm":true}`); rec.Code != http.StatusOK {
+		t.Fatalf("confirmed = %d %s", rec.Code, rec.Body.String())
+	}
+	if !h.App.Auth.PasswordLoginDisabled() || prefs.PasswordLogin() == nil {
+		t.Fatal("not applied or not saved")
+	}
+	// Back on needs no confirmation.
+	if rec := put(`{"enabled":true,"password":"whatever1"}`); rec.Code != http.StatusOK || h.App.Auth.PasswordLoginDisabled() {
+		t.Fatalf("on again = %d", rec.Code)
+	}
+	// With no admin reachable by Google it is refused outright, even confirmed.
+	auth.SetGoogleEmail(users, "linked", "")
+	store.Reload()
+	rec = put(`{"enabled":false,"password":"whatever1","confirm":true}`)
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), `"refused":true`) || h.App.Auth.PasswordLoginDisabled() {
+		t.Fatalf("no-admin case = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestTOTPEnrolmentAPI(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	dir := t.TempDir()
+	users := filepath.Join(dir, "users")
+	hash, _ := auth.HashPassword("whatever1")
+	auth.SetUserHash(users, "tester", hash)
+	auth.CreateUser(users, "bob", hash, "", auth.RolePlayer)
+	store, _ := auth.NewUserStore(users)
+	h.App.Auth.Store, h.App.Auth.Sessions.Store = store, store
+	vlt, _ := vault.New("", filepath.Join(dir, "k"))
+	ms, err := mfa.NewStore(filepath.Join(dir, "mfa.json"), vlt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.MFA = ms
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(method, path, []byte(body)))
+		return rec
+	}
+
+	if rec := call("POST", "/api/account/totp/begin", `{"password":"wrong"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("begin with a wrong password = %d", rec.Code)
+	}
+	rec := call("POST", "/api/account/totp/begin", `{"password":"whatever1"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("begin = %d %s", rec.Code, rec.Body.String())
+	}
+	var begun struct{ Secret, URI string }
+	json.Unmarshal(rec.Body.Bytes(), &begun)
+	if !strings.HasPrefix(begun.URI, "otpauth://totp/CrowsNest:tester?") || begun.Secret == "" {
+		t.Fatalf("begin body = %s", rec.Body.String())
+	}
+	if rec := call("GET", "/api/account/totp/qr", ""); rec.Code != 200 || rec.Header().Get("Content-Type") != "image/png" || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("qr = %d %s %s", rec.Code, rec.Header().Get("Content-Type"), rec.Header().Get("Cache-Control"))
+	}
+	if rec := call("POST", "/api/account/totp/confirm", `{"code":"000000"}`); rec.Code != http.StatusForbidden {
+		t.Fatalf("confirm with a wrong code = %d", rec.Code)
+	}
+	code, _ := mfa.Code(begun.Secret, time.Now())
+	rec = call("POST", "/api/account/totp/confirm", `{"code":"`+code+`"}`)
+	var done struct {
+		Codes []string `json:"recovery_codes"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &done)
+	if rec.Code != 200 || len(done.Codes) != 10 || !ms.Enabled("tester") {
+		t.Fatalf("confirm = %d %s", rec.Code, rec.Body.String())
+	}
+	// Once enrolled the QR (which carries the secret) is gone.
+	if rec := call("GET", "/api/account/totp/qr", ""); rec.Code != http.StatusNotFound {
+		t.Errorf("qr after enrolment = %d, want 404", rec.Code)
+	}
+	// Turning it off needs the password and a code: a recovery code will do.
+	if rec := call("POST", "/api/account/totp/disable", `{"password":"whatever1","code":"000000"}`); rec.Code != http.StatusForbidden || !ms.Enabled("tester") {
+		t.Fatalf("disable with a wrong code = %d", rec.Code)
+	}
+	if rec := call("POST", "/api/account/totp/disable", `{"password":"whatever1","code":"`+done.Codes[0]+`"}`); rec.Code != 200 || ms.Enabled("tester") {
+		t.Fatalf("disable with a recovery code = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// An admin can reset another user's app.
+	secret, _ := ms.Begin("bob")
+	c, _ := mfa.Code(secret, time.Now())
+	ms.Confirm("bob", c)
+	if rec := call("PUT", "/api/users/bob", `{"reset_mfa":true}`); rec.Code != 200 || ms.Enabled("bob") {
+		t.Fatalf("reset = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := call("PUT", "/api/users/bob", `{"reset_mfa":true}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("reset with nothing to reset = %d, want 400", rec.Code)
+	}
+}
+
+func TestOIDCProvidersAPI(t *testing.T) {
+	idp := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		base := "http://" + r.Host
+		json.NewEncoder(w).Encode(map[string]any{"issuer": base, "authorization_endpoint": base + "/auth", "token_endpoint": base + "/token"})
+	}))
+	defer idp.Close()
+
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	dir := t.TempDir()
+	users := filepath.Join(dir, "users")
+	hash, _ := auth.HashPassword("whatever1")
+	auth.SetUserHash(users, "tester", hash)
+	store, _ := auth.NewUserStore(users)
+	h.App.Auth.Store, h.App.Auth.Sessions.Store = store, store
+	vlt, _ := vault.New("", filepath.Join(dir, "k"))
+	ostore, err := auth.NewOIDCStore(filepath.Join(dir, "oidc.json"), vlt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.OIDC = &auth.OIDCLogin{Store: ostore, Users: store, Service: h.App.Auth}
+	call := func(method, path, body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(method, path, []byte(body)))
+		return rec
+	}
+	body := func(secret string, enabled bool, pw string) string {
+		return `{"name":"Authentik","issuer":"` + idp.URL + `","client_id":"cid","client_secret":"` + secret + `","redirect_url":"http://localhost/auth/oidc/ak/callback","enabled":` + map[bool]string{true: "true", false: "false"}[enabled] + `,"password":"` + pw + `"}`
+	}
+	if rec := call("PUT", "/api/auth/oidc/ak", body("top-secret-value", true, "wrong")); rec.Code != http.StatusForbidden {
+		t.Fatalf("wrong password = %d", rec.Code)
+	}
+	if rec := call("PUT", "/api/auth/oidc/AK!", body("top-secret-value", true, "whatever1")); rec.Code != http.StatusBadRequest {
+		t.Fatalf("bad id = %d", rec.Code)
+	}
+	rec := call("PUT", "/api/auth/oidc/ak", body("top-secret-value", true, "whatever1"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("save = %d %s", rec.Code, rec.Body.String())
+	}
+	for _, r := range []*httptest.ResponseRecorder{rec, call("GET", "/api/auth/oidc", "")} {
+		if strings.Contains(r.Body.String(), "top-secret-value") {
+			t.Fatal("a response leaks the client secret")
+		}
+	}
+	if p, _ := ostore.Get("ak"); p.AuthURL == "" || !p.Enabled {
+		t.Fatalf("provider = %+v", p)
+	}
+	// The login page offers it, and the start route redirects to its endpoint.
+	login := httptest.NewRecorder()
+	h.mux().ServeHTTP(login, httptest.NewRequest("GET", "/login", nil))
+	if !strings.Contains(login.Body.String(), "Sign in with Authentik") {
+		t.Error("login page has no button for the provider")
+	}
+	start := httptest.NewRecorder()
+	h.mux().ServeHTTP(start, httptest.NewRequest("GET", "/auth/oidc/ak/start", nil))
+	if start.Code != http.StatusFound || !strings.HasPrefix(start.Header().Get("Location"), idp.URL+"/auth?") {
+		t.Fatalf("start = %d %s", start.Code, start.Header().Get("Location"))
+	}
+	// Updating without the secret keeps it; moving the issuer without one is refused.
+	if rec := call("PUT", "/api/auth/oidc/ak", `{"name":"Authentik","issuer":"`+idp.URL+`","client_id":"cid","redirect_url":"http://localhost/auth/oidc/ak/callback","enabled":true,"password":"whatever1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("update = %d %s", rec.Code, rec.Body.String())
+	}
+	if p, _ := ostore.Get("ak"); p.ClientSecret != "top-secret-value" {
+		t.Fatal("the secret was lost on update")
+	}
+	// Removing it works with the password.
+	if rec := call("DELETE", "/api/auth/oidc/ak", `{"password":"whatever1"}`); rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d %s", rec.Code, rec.Body.String())
+	}
+	if len(ostore.List()) != 0 {
+		t.Fatal("provider still listed")
 	}
 }

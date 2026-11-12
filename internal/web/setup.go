@@ -41,7 +41,7 @@ func (a *App) handleSetupPage(w http.ResponseWriter, r *http.Request) {
 	} else if created {
 		log.Printf("setup: no users yet. Open /setup and enter the setup code %s (also saved in %s)", code, a.Setup.CodeFile)
 	}
-	render(w, a.Templates.Setup, setupPage{PasswordLogin: !a.Auth.DisablePasswordLogin, Google: a.Google != nil}, "setup page")
+	render(w, a.Templates.Setup, setupPage{PasswordLogin: !a.Auth.PasswordLoginDisabled(), Google: a.Google.Active()}, "setup page")
 }
 
 // handleSetup creates the first admin. It is rate limited per client address
@@ -68,7 +68,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	hash, email := "", ""
-	if !a.Auth.DisablePasswordLogin {
+	if !a.Auth.PasswordLoginDisabled() {
 		if err := checkPassword(req.Password); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -80,7 +80,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		}
 		hash = h
 	}
-	if strings.TrimSpace(req.GoogleEmail) != "" || a.Auth.DisablePasswordLogin {
+	if strings.TrimSpace(req.GoogleEmail) != "" || a.Auth.PasswordLoginDisabled() {
 		e, err := a.checkGoogleEmail(req.GoogleEmail, "")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)

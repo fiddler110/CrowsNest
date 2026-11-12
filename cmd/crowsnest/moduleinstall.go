@@ -169,7 +169,7 @@ func (t *moduleTool) update(id, wantHash string, yes bool) error {
 		return err
 	}
 	var old []string
-	if b, err := os.ReadFile(filepath.Join(t.dir, id, "module.yaml")); err == nil { // #nosec G304 -- id is in the lock
+	if b, err := os.ReadFile(filepath.Join(t.dir, id, "module.yaml")); err == nil { // #nosec G304 G703 -- id is in the lock
 		if om, err := modules.Parse(bytes.NewReader(b)); err == nil {
 			old = om.Review()
 		}

@@ -114,3 +114,17 @@ func (s *UserStore) GoogleUsers() GoogleUsers {
 	}
 	return out
 }
+
+// OIDCUsers returns the OIDC email -> username pairs recorded in the users
+// file.
+func (s *UserStore) OIDCUsers() map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := map[string]string{}
+	for name, rec := range s.users {
+		if rec.OIDCEmail != "" {
+			out[rec.OIDCEmail] = name
+		}
+	}
+	return out
+}

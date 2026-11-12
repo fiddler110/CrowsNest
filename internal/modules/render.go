@@ -3,6 +3,7 @@ package modules
 import (
 	"encoding/json"
 	"fmt"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,8 +23,12 @@ import (
 type Runtime struct {
 	RestartCooldown time.Duration `yaml:"restart_cooldown"`
 
-	Image     string        `yaml:"image"` // repository, no tag
-	Tag       string        `yaml:"tag"`   // default "latest"
+	Image string `yaml:"image"` // repository, no tag
+	Tag   string `yaml:"tag"`   // default "latest"
+	// StableTag names the image's stable-release tag (e.g. "stable"), when it
+	// publishes one. The dashboard offers it next to "latest"; an image without
+	// one leaves it empty and only offers latest or a version typed in.
+	StableTag string        `yaml:"stable_tag"`
 	StopGrace time.Duration `yaml:"stop_grace"`
 	Memory    string        `yaml:"memory"` // compose mem_limit, e.g. 10g
 	// RAM is the memory the game typically uses, e.g. 6g. It is only a
@@ -97,13 +102,43 @@ type Platform struct {
 	// HostGamesRoot is GamesRoot as a literal path, for the guard's scopes;
 	// "" means GamesRoot is already literal.
 	HostGamesRoot string
-	HostIP        string // published-port address; "" = 0.0.0.0
-	Network       string // existing docker network; "" = crowsnest-games-net
+	// BackupsRoot is the host folder holding every game's backups, one folder
+	// per game id ("" = no shared backups folder). HostBackupsRoot is its
+	// literal form for the guard, like HostGamesRoot. BackupsMount and
+	// BackupsDirMode are the panel's view of it and the mode of each game's
+	// folder; they matter to the panel, not to the rendered service.
+	BackupsRoot, HostBackupsRoot, BackupsMount string
+	BackupsDirMode                             os.FileMode
+	HostIP                                     string // published-port address; "" = 0.0.0.0
+	Network                                    string // existing docker network; "" = crowsnest-games-net
 }
 
 // PlatformFrom reads the platform section of config.yaml.
 func PlatformFrom(c config.PlatformConfig) Platform {
-	return Platform{GamesRoot: c.GamesRoot, HostGamesRoot: c.HostGamesRoot, HostIP: c.HostIP, Network: c.GamesNetwork}
+	p := Platform{GamesRoot: c.GamesRoot, HostGamesRoot: c.HostGamesRoot, HostIP: c.HostIP, Network: c.GamesNetwork,
+		BackupsRoot: c.BackupsRoot, HostBackupsRoot: c.HostBackupsRoot, BackupsMount: c.BackupsMount}
+	if c.BackupsRoot != "" {
+		p.BackupsDirMode, _ = c.DirMode() // validated when the config loads
+	}
+	return p
+}
+
+// BackupHostDir is where game id's backups live on the host: <backups_root>/<id>.
+func (p Platform) BackupHostDir(id string) string {
+	return strings.TrimRight(p.BackupsRoot, "/") + "/" + id
+}
+
+// BackupLocalDir is the same folder as the panel sees it, "" without a shared
+// backups folder.
+func (p Platform) BackupLocalDir(id string) string {
+	if p.BackupsRoot == "" {
+		return ""
+	}
+	mount := p.BackupsMount
+	if mount == "" {
+		mount = "/game-backups"
+	}
+	return strings.TrimRight(mount, "/") + "/" + id
 }
 
 // Service is one rendered compose service (field order is output order).
@@ -152,6 +187,12 @@ type Rendered struct {
 	// is Repo:Tag until Pin names one exact image by digest.
 	Repo, Tag string
 	Scope     GuardScope
+	// RestoreScope is the guard scope of the game's one-shot restore container
+	// (<id>-restore), or nil when the module has no restore command.
+	RestoreScope *GuardScope
+	// CleanScope is the guard scope of the one-shot container that empties
+	// the game's data folders (<id>-clean), or nil when it has none.
+	CleanScope *GuardScope
 	// EnvVars are the .env variables the service reads, name -> default
 	// ("" for secrets and unset values), in a stable order.
 	EnvVars []EnvVar
@@ -159,6 +200,9 @@ type Rendered struct {
 	// What the dashboard needs to create the container itself: literal bind
 	// mounts (host:container), memory and stop grace.
 	binds     []string
+	backupDir string // the container path the game's backup folder is mounted at ("" = none)
+	restore   []string
+	dataBinds []string // host:container for the data folders only
 	nets      []NetEndpoint
 	secopts   []string
 	memory    string
@@ -305,6 +349,24 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		r.binds = append(r.binds, scopeHost+":"+d.Path)
 	}
 
+	r.dataBinds = append([]string{}, r.binds...)
+	dataScope := append([]string{}, scope.Binds...)
+
+	// Each game's backups go to their own folder, named after its id, so
+	// several servers of one game never share (or overwrite) a set.
+	if m.Backup != nil && m.Backup.Dir != "" && p.BackupsRoot != "" {
+		host := p.BackupHostDir(g.ID)
+		svc.Volumes = append(svc.Volumes, host+":"+m.Backup.Dir)
+		scopeHost := host
+		if p.HostBackupsRoot != "" {
+			scopeHost = strings.TrimRight(p.HostBackupsRoot, "/") + "/" + g.ID
+		}
+		scope.Binds = append(scope.Binds, scopeHost)
+		r.binds = append(r.binds, scopeHost+":"+m.Backup.Dir)
+		r.backupDir = m.Backup.Dir
+		r.restore = m.Backup.Restore
+	}
+
 	seen := map[string]bool{}
 	addVar := func(v EnvVar) {
 		if !seen[v.Name] {
@@ -348,7 +410,76 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		svc.Environment = append(svc.Environment, name+"="+val)
 	}
 	r.Service, r.Scope = svc, scope
+	if len(r.restore) > 0 {
+		rs := GuardScope{
+			Name: g.ID + RestoreSuffix, Images: scope.Images, Networks: scope.Networks,
+			Ports: []GuardPort{}, Binds: append([]string{}, scope.Binds...), Labels: scope.Labels,
+		}
+		r.RestoreScope = &rs
+	}
+	if len(r.dataBinds) > 0 {
+		cs := GuardScope{
+			Name: g.ID + CleanSuffix, Images: scope.Images, Networks: scope.Networks,
+			Ports: []GuardPort{}, Binds: dataScope, Labels: scope.Labels,
+		}
+		r.CleanScope = &cs
+	}
 	return r, nil
+}
+
+// CleanSuffix names a game's one-shot container that empties its data
+// folders: <id>-clean. Its guard scope has the game's image and data folders
+// (never the backups folder), nothing else.
+const CleanSuffix = "-clean"
+
+// cleanScript empties each folder named in its arguments, keeping the folder
+// itself (it may be a mount point).
+const cleanScript = `set -e; for d in "$@"; do find "$d" -mindepth 1 -delete; done`
+
+// CleanSpec is the one-shot container that deletes everything inside the
+// game's data folders: its own image, only the data folders mounted, a fixed
+// command (not the module's). It is never published and never restarts.
+// ok is false when the game has no data folders.
+func (r *Rendered) CleanSpec() (dockerctl.CreateSpec, bool) {
+	if r.CleanScope == nil || len(r.dataBinds) == 0 {
+		return dockerctl.CreateSpec{}, false
+	}
+	argv := []string{"/bin/sh", "-c", cleanScript, "sh"}
+	for _, b := range r.dataBinds {
+		i := strings.LastIndex(b, ":")
+		argv = append(argv, b[i+1:])
+	}
+	return dockerctl.CreateSpec{
+		Name: r.CleanScope.Name, Image: r.Service.Image, Labels: r.Service.Labels,
+		Network: r.nets[0].Name, Binds: r.dataBinds, Entrypoint: argv, NoRestart: true,
+	}, true
+}
+
+// RestoreSuffix names a game's one-shot restore container: <id>-restore. Its
+// guard scope shares the game's image and folders, nothing else.
+const RestoreSuffix = "-restore"
+
+// RestoreSpec is the one-shot container that restores file (a plain name inside
+// the game's backup folder): the game's own image with its data folders and its
+// backup folder read-only, the module's restore command as the entrypoint and
+// the file's path in CROWSNEST_RESTORE_FILE. It is never published and never
+// restarts. ok is false when the module has no restore command.
+func (r *Rendered) RestoreSpec(file string) (dockerctl.CreateSpec, bool) {
+	if len(r.restore) == 0 || r.backupDir == "" || r.RestoreScope == nil {
+		return dockerctl.CreateSpec{}, false
+	}
+	binds := make([]string, len(r.binds))
+	for i, b := range r.binds {
+		if strings.HasSuffix(b, ":"+r.backupDir) {
+			b += ":ro"
+		}
+		binds[i] = b
+	}
+	return dockerctl.CreateSpec{
+		Name: r.RestoreScope.Name, Image: r.Service.Image, Labels: r.Service.Labels,
+		Network: r.nets[0].Name, Binds: binds, Entrypoint: r.restore, NoRestart: true,
+		Env: []string{"CROWSNEST_RESTORE_FILE=" + strings.TrimRight(r.backupDir, "/") + "/" + file},
+	}, true
 }
 
 type renderPort struct {
@@ -437,6 +568,12 @@ func ScopesJSON(rs []*Rendered) ([]byte, error) {
 	scopes := make([]GuardScope, 0, len(rs))
 	for _, r := range rs {
 		scopes = append(scopes, r.Scope)
+		if r.RestoreScope != nil {
+			scopes = append(scopes, *r.RestoreScope)
+		}
+		if r.CleanScope != nil {
+			scopes = append(scopes, *r.CleanScope)
+		}
 	}
 	return json.MarshalIndent(scopes, "", "  ")
 }

@@ -32,9 +32,15 @@
       <span>Sign in with Google</span>
     </a>
     {{end}}
+    {{range .OIDC}}
+    <a class="google oidc-signin" href="{{.URL}}">
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l8 3v6c0 4.5-3.2 8.2-8 9-4.8-.8-8-4.5-8-9V6l8-3z"/><path d="M9 12l2 2 4-4"/></svg>
+      <span>Sign in with {{.Name}}</span>
+    </a>
+    {{end}}
 
     {{if .PasswordLogin}}
-    {{if .GoogleStartURL}}<p class="divider"><span>or</span></p>{{end}}
+    {{if or .GoogleStartURL .OIDC}}<p class="divider"><span>or</span></p>{{end}}
     <form id="login-form" autocomplete="on" novalidate>
       <label class="field">
         <span class="label">// Username</span>
@@ -58,6 +64,17 @@
       </label>
 
       <button class="submit" id="submit" type="submit"><span class="spin" aria-hidden="true"></span><span class="txt">Take the helm</span></button>
+    </form>
+    <form id="mfa-form" autocomplete="off" novalidate hidden>
+      <p class="lede">Enter the 6-digit code from your authenticator app, or a recovery code.</p>
+      <label class="field">
+        <span class="label">// Code</span>
+        <span class="control">
+          <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg>
+          <input name="code" type="text" inputmode="text" autocomplete="one-time-code" autocapitalize="none" spellcheck="false" maxlength="20" required>
+        </span>
+      </label>
+      <button class="submit" type="submit"><span class="txt">Verify</span></button>
     </form>
     {{end}}
 

@@ -144,6 +144,21 @@ games:
 	}
 }
 
+func TestLoad_CrashLoopDefaultsAndValidation(t *testing.T) {
+	base := "users_file: /u\ngames:\n  - {id: a, display_name: A, container_name: a, compose_file: /c.yaml, compose_profile: a, compose_service: a}\n"
+	cfg, err := Load(writeConfig(t, base))
+	if err != nil || cfg.CrashLoop.Crashes != 3 || cfg.CrashLoop.WindowMinutes != 15 || cfg.CrashLoop.Enabled != nil {
+		t.Fatalf("defaults = %+v, %v", cfg.CrashLoop, err)
+	}
+	cfg, err = Load(writeConfig(t, base+"crash_loop: {crashes: 5, window_minutes: 30, enabled: false}\n"))
+	if err != nil || cfg.CrashLoop.Crashes != 5 || cfg.CrashLoop.WindowMinutes != 30 || *cfg.CrashLoop.Enabled {
+		t.Fatalf("explicit = %+v, %v", cfg.CrashLoop, err)
+	}
+	if _, err := Load(writeConfig(t, base+"crash_loop: {crashes: -1}\n")); err == nil {
+		t.Fatal("accepted crashes: -1")
+	}
+}
+
 func TestLoad_NightShutdownAndNotifications(t *testing.T) {
 	path := writeConfig(t, `
 users_file: /app/users.env
@@ -593,5 +608,53 @@ func TestValidateManaged(t *testing.T) {
 	c.applyDefaults()
 	if err := c.validate(); err != nil {
 		t.Errorf("managed with no static games should be valid: %v", err)
+	}
+}
+
+func TestLoad_BackupsRoot(t *testing.T) {
+	base := "users_file: /u\ngames:\n  - {id: a, display_name: A, container_name: a, compose_file: /c.yaml, compose_profile: a, compose_service: a}\n"
+	cfg, err := Load(writeConfig(t, base))
+	if err != nil || cfg.Platform.BackupsRoot != "" || cfg.Platform.BackupsMount != "" {
+		t.Fatalf("unset = %+v, %v", cfg.Platform, err)
+	}
+	cfg, err = Load(writeConfig(t, base+"platform: {backups_root: /mnt/usb/backups}\n"))
+	if err != nil || cfg.Platform.BackupsMount != "/game-backups" || cfg.Platform.BackupsDirMode != "0775" {
+		t.Fatalf("defaults = %+v, %v", cfg.Platform, err)
+	}
+	if m, _ := cfg.Platform.DirMode(); m != 0o775 {
+		t.Errorf("DirMode = %o", m)
+	}
+	for name, y := range map[string]string{
+		"variable without a literal": "platform: {backups_root: '${BACKUPS_DIR}'}\n",
+		"relative mount":             "platform: {backups_root: /b, backups_mount: backups}\n",
+		"root mount":                 "platform: {backups_root: /b, backups_mount: /}\n",
+		"bad mode":                   "platform: {backups_root: /b, backups_dir_mode: rwx}\n",
+		"mode too wide":              "platform: {backups_root: /b, backups_dir_mode: '1777'}\n",
+	} {
+		if _, err := Load(writeConfig(t, base+y)); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+	if _, err := Load(writeConfig(t, base+"platform: {backups_root: '${B}', host_backups_root: /mnt/b}\n")); err != nil {
+		t.Errorf("a variable with its literal path was refused: %v", err)
+	}
+	g := "users_file: /u\ngames:\n  - {id: a, display_name: A, container_name: a, compose_file: /c.yaml, compose_profile: a, compose_service: a, backup: {exec: [x], dir: /d, list_dir: /e}}\n"
+	if _, err := Load(writeConfig(t, g)); err == nil {
+		t.Error("dir and list_dir together were accepted")
+	}
+}
+
+func TestBackupConfig_RestoreNeedsDir(t *testing.T) {
+	ok := &BackupConfig{Exec: []string{"b"}, Dir: "/data/backups", Restore: []string{"/bin/sh", "-c", "true"}}
+	if err := ok.CheckKeep(); err != nil {
+		t.Errorf("valid restore: %v", err)
+	}
+	for name, b := range map[string]*BackupConfig{
+		"no dir":    {Exec: []string{"b"}, ListDir: "/x", Restore: []string{"/bin/sh"}},
+		"empty arg": {Exec: []string{"b"}, Dir: "/x", Restore: []string{"/bin/sh", " "}},
+	} {
+		if err := b.CheckKeep(); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
 	}
 }

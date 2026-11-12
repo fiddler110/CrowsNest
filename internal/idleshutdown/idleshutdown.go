@@ -66,6 +66,10 @@ type Manager struct {
 	// take effect without a restart.
 	Settings func() (enabled bool, idle time.Duration)
 
+	// GameIdle, when set, returns a game's own idle timeout, replacing the
+	// one from Settings for that game. ok is false when it has none.
+	GameIdle func(id string) (idle time.Duration, ok bool)
+
 	// Now overrides time.Now. Intended for tests; production callers should
 	// leave it unset.
 	Now func() time.Time
@@ -102,7 +106,17 @@ func (m *Manager) IdleRemaining(id string) (time.Duration, bool) {
 	if !tracked || !m.empty[id] || m.idleFor <= 0 {
 		return 0, false
 	}
-	return max(0, m.graceFor(id, m.idleFor)-m.now().Sub(last)), true
+	return max(0, m.graceFor(id, m.idleOf(id, m.idleFor))-m.now().Sub(last)), true
+}
+
+// idleOf is the idle timeout for id: its own override, else global.
+func (m *Manager) idleOf(id string, global time.Duration) time.Duration {
+	if m.GameIdle != nil {
+		if d, ok := m.GameIdle(id); ok && d > 0 {
+			return d
+		}
+	}
+	return global
 }
 
 // graceFor returns the grace period for id: the startup grace until a player
@@ -175,7 +189,7 @@ func (m *Manager) Tick(ctx context.Context) {
 	m.idleFor = idle
 	m.mu.Unlock()
 	for _, d := range m.registry.All() {
-		m.checkGame(ctx, d, idle)
+		m.checkGame(ctx, d, m.idleOf(d.ID, idle))
 	}
 }
 

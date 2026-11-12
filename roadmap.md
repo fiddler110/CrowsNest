@@ -136,29 +136,72 @@ raw console) in `settings.json`. Expansion, tied to the phase it depends on:
   the real-server checks in track C. Hash-pinned remote install is done (`crowsnest module
   install|update|remove|list`, a lock file, an approval summary and re-approval on change); a web
   UI for it and signed catalogs are not built.
-- [ ] **Per-game settings** (idle timeout, restart cooldown, max players,
-  night opt-out per game, instead of global only). Comes from manifest
-  `params` and `runtime`: Phase 1-2, form in Phase 5.
-- [ ] **Per-user, per-game permissions** (a friend can start Palworld but not
-  see Windrose). Needs stable game/profile ids: Phase 2, UI in Phase 5.
+- [ ] **Per-game settings** (done 2026-11-11: idle timeout, restart cooldown
+  and night opt-in/out per game, as overrides in `settings.json` (`per_game`),
+  edited under Settings, General; each falls back to the global value or the
+  module's default, applies at once, and is audit-logged. Not built: max
+  players, which needs a per-module way to push the limit into the game's own
+  config.)
+- [x] **Per-user, per-game permissions (done 2026-11-11).** A player can be limited to chosen games
+  (`<NAME>_GAMES=palworld,valheim` in the users file; Settings, Users has a checkbox per game; empty means all,
+  admins always see all). Hidden games are absent from the dashboard, `/api/games`, the live stream, the
+  activity feed and playtime, and every per-game route answers 404 for them. Starting a game while a hidden one
+  is running says only "another server is running" and offers no switch. Not built: a CLI command for it
+  (edit the users file or use the panel), and per-game *actions* (a friend who may start but not stop).
 - [ ] **Profile page**: display name, "my sessions", sign out of all
   devices. Needs a **server-side session store** (today revocation is one
   `ValidAfter` timestamp per user) to offer "revoke this device".
-- [ ] **Admin audit view**: filterable UI over the existing activity log
-  (`/api/activity`, 180-day retention).
+- [x] **Admin audit view (done 2026-11-11).** Settings, Audit log: filter the
+  activity log by game, kind, user, text and date range, paged 50 at a time
+  (`GET /api/audit`, admin only, shows the admin kinds the logbook hides from
+  players). No export yet.
+- [x] **Google sign-in from the dashboard (done 2026-11-11).** Settings, Sign-in: client ID, client secret (encrypted
+  in `auth.json`, key in `auth-key`), redirect URL and an on/off switch, applied live; saving asks for the admin's
+  password; Google-allowlist users now get a users-file entry so they can be managed. Not built: the
+  password-sign-in switch (still `auth.password_login` in config.yaml), editing the `name=email` env allowlist
+  (use the per-user Google email instead), and other OIDC providers (Google only).
+- [x] **Sign-in methods and secrets at rest (done 2026-11-11).** `internal/vault` (AES-256-GCM, master key from
+  `CROWSNEST_MASTER_KEY` or a key file) seals the Google/OIDC client secrets, TOTP secrets, game `secrets.json` and
+  the session key, migrating old plain files. Password sign-in switch with lock-out analysis, double confirmation and
+  a `crowsnest enable-password-login` break-glass. TOTP (RFC 6238: replay guard, lockout, bcrypt recovery codes,
+  step-up on changes, admin reset, Account page). Generic OIDC providers (discovery, PKCE, subject-bound linking).
+  Not built: requiring MFA for admins or everyone (needs a limited "enrol first" session), WebAuthn/passkeys, ID-token
+  signature checks against the provider's JWKS (relying on TLS to the token endpoint, as OIDC Core 3.1.3.7 allows),
+  and encrypting the users file. MFA stays optional per person; Google and OIDC sign-ins skip it because the provider
+  is the second factor. The Google login now runs on the same OIDC code as other providers (built-in provider
+  `google`, still matched by the Google email allowlist rather than a linked subject).
 - [ ] **Per-user Discord notices** (opt in per game).
 - [ ] **Scheduled starts/stops** (deferred from the 2026-11-07 review) and
   **Discord slash commands** (deferred). Land after the Phase 4 state hub.
 - [ ] **Whitelist, ban and kick actions**, declared per module and run via
   RCON or the adapter (Phase 2+).
 - [ ] **Backup retention, restore button and offsite copy** (restic/rclone).
-  Backups and the admin panel exist; restore and retention do not.
-- [ ] **"Update available" and one-click rollback** to the last-known-good
-  image. (done: Roll back on the Games page recreates a dashboard game on its
-  previous digest, and Update image says whether anything changed. Not built:
-  an "update available" check that asks the registry without pulling.)
-- [ ] **Crash-loop detection** with a Discord/ntfy alert; **Prometheus
-  `/metrics`**.
+  Done 2026-11-11: retention (`backup.keep`), and a **shared backups folder**: `platform.backups_root` binds
+  `<root>/<game id>` into each dashboard game at its module's `backup.dir` and into the panel read-write; the panel
+  lists and prunes it directly (no exec), the policy has a matching `backups_root`, and a marker file plus a remembered
+  token refuse a folder that is not the one used before (unmounted external drive). The watch-outs (permissions, the
+  panel being able to delete, ids as folder names, nothing deleted on disable, retention counts files) are in the
+  README under "A shared backups folder". Not built:
+  - **Restore: done** for Minecraft, Valheim and Windrose (a Restore button per file; a one-shot `<id>-restore`
+    container runs the module's `restore:` command while the game is stopped). Open: Palworld (confirm what its image's
+    `backup` archives contain before writing a command), a restore for config-file games, and trying each command on
+    a real world (Minecraft was tried live on the test stack 2026-11-11: backup, restore and safety backup work).
+  - **Disable and delete: done.** `DELETE /api/managed/games/{id}` takes `delete_data` / `delete_backups` (id typed +
+    password); data goes through a one-shot `<id>-clean` container, backups are removed by the panel through `os.Root`.
+    Empty `games/<id>` folders left behind are swept from the host by `quickstart/sweep-empty-games.sh` (+ systemd timer).
+  - **Offsite copy.** A restic/rclone sidecar reading the same folder; CrowsNest itself should not hold the credentials.
+  - **Config-file games** (hand-written compose) still back up inside their own data; they would need the bind added by hand.
+  - **Backups-folder detail in the UI** (last backup per game, orphan folders): the dashboard shows a banner and
+    `GET /api/backups/health` has the detail, but there is no page for it yet.
+  - **First-use guard:** done, see `platform.backups_confirm_new`; a host-side mount check remains optional.
+  Also done 2026-11-11: a one-minute folder monitor (marker, 1 GiB free, per-game writability) with one alert per
+  change, a dashboard banner and metrics; refused scheduled backups are recorded and notified; a backup must leave a
+  new non-empty file or it counts as failed; permission errors carry a hint.
+- [x] **Crash-loop detection and Prometheus `/metrics` (done 2026-11-11).** `internal/crashwatch` reads each
+  container's last exit; non-zero exits other than a stop (0, 143, and 137 unless OOM-killed) are crashes,
+  and `crash_loop.crashes` within `window_minutes` raises one alert (activity log + Discord). `GET /metrics`
+  (bearer token from `server.metrics_token_env`) exposes game up/players/crashes and host memory, load and disk.
+  ntfy is not wired (Discord only). Untested against a real crashing container.
 - [ ] **Mod and config file editing**, files declared in the manifest.
 
 ### C. Verify and harden (against real servers)

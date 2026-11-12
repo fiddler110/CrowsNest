@@ -50,6 +50,8 @@ func TestRenderMatchesHandWrittenValheim(t *testing.T) {
 	eq("networks", s.Networks, []string{"crowsnest-games-net"})
 	eq("env", s.Environment, []string{
 		"TZ=${TZ:-UTC}",
+		"PUID=1000", // added on purpose: as root the image took the shared backups folder from the panel
+		"PGID=1000",
 		"SERVER_NAME=${VALHEIM_SERVER_NAME:-My Valheim Server}",
 		"WORLD_NAME=${VALHEIM_WORLD_NAME:-Midgard}",
 		"SERVER_PASS=${VALHEIM_SERVER_PASS:-}",
@@ -102,7 +104,7 @@ func TestRenderedFilesAreValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	scopes, err := dockerguard.LoadScopes(strings.ReplaceAll(string(js), "${USERDIR}", "/srv/games"))
-	if err != nil || len(scopes) != 2 {
+	if err != nil || len(scopes) != 4 { // each game and its data cleaner
 		t.Fatalf("guard rejected the scopes: %v\n%s", err, js)
 	}
 	cf, err := ComposeFile(rs, "")
@@ -216,7 +218,7 @@ func TestBundledBackupsMatchProduction(t *testing.T) {
 			t.Errorf("%s backup = %+v, want %v", id, m.Backup, cmd)
 		}
 	}
-	if m, _ := Bundled().Manifest("minecraft"); m.Backup == nil || m.Backup.ListDir != "/data/backups" {
+	if m, _ := Bundled().Manifest("minecraft"); m.Backup == nil || m.Backup.ExecListDir() != "/data/backups" {
 		t.Errorf("minecraft backup = %+v", m.Backup)
 	}
 }
@@ -260,5 +262,127 @@ exec: false
 	noBackup.Backup = nil
 	if err := admit(&noBackup); err != nil {
 		t.Errorf("a module with no backup was refused while exec is off: %v", err)
+	}
+}
+
+// Three servers of one game each get their own backup folder, named after the
+// game id, bound at the module's backup dir and nowhere else.
+func TestRenderBackupFolderPerGame(t *testing.T) {
+	p := Platform{GamesRoot: "/srv/games", BackupsRoot: "${BACKUPS_DIR}", HostBackupsRoot: "/mnt/usb/backups", HostIP: "10.0.0.2"}
+	m, _ := Bundled().Manifest("palworld")
+	seen := map[string]bool{}
+	for _, id := range []string{"palworld", "palworld-2", "palworld-friends"} {
+		r, err := m.Render(config.GameConfig{ID: id, ContainerName: id, Options: map[string]string{"data_dir": id}}, p)
+		if err != nil {
+			t.Fatal(err)
+		}
+		wantVol := "${BACKUPS_DIR}/" + id + ":/palworld/backups"
+		if !reflect.DeepEqual(r.Service.Volumes[len(r.Service.Volumes)-1:], []string{wantVol}) {
+			t.Errorf("%s volumes = %v, want a final %s", id, r.Service.Volumes, wantVol)
+		}
+		wantBind := "/mnt/usb/backups/" + id
+		if !containsStr(r.Scope.Binds, wantBind) || seen[wantBind] {
+			t.Errorf("%s scope binds = %v, want %s once across games", id, r.Scope.Binds, wantBind)
+		}
+		seen[wantBind] = true
+	}
+	// No backups_root: nothing is bound, as before.
+	r, _ := m.Render(config.GameConfig{ID: "palworld", ContainerName: "palworld"}, Platform{GamesRoot: "/srv/games"})
+	for _, v := range r.Service.Volumes {
+		if strings.Contains(v, "backups") {
+			t.Errorf("a backups bind appeared without backups_root: %v", r.Service.Volumes)
+		}
+	}
+	if got := p.BackupLocalDir("palworld-2"); got != "/game-backups/palworld-2" {
+		t.Errorf("BackupLocalDir = %q", got)
+	}
+}
+
+func containsStr(l []string, s string) bool {
+	for _, x := range l {
+		if x == s {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRenderRestoreContainer(t *testing.T) {
+	p := Platform{GamesRoot: "/srv/games", BackupsRoot: "/mnt/usb/backups", HostIP: "10.0.0.2"}
+	m, _ := Bundled().Manifest("minecraft")
+	r, err := m.Render(config.GameConfig{ID: "mc-2", ContainerName: "mc-2", Options: map[string]string{"data_dir": "mc-2"}}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The scope names <id>-restore with the game's image and folders, and no ports or exec.
+	rs := r.RestoreScope
+	if rs == nil || rs.Name != "mc-2-restore" || rs.Exec || len(rs.Ports) != 0 || !reflect.DeepEqual(rs.Binds, r.Scope.Binds) || !reflect.DeepEqual(rs.Images, r.Scope.Images) {
+		t.Fatalf("restore scope = %+v (game scope %+v)", rs, r.Scope)
+	}
+	spec, ok := r.RestoreSpec("manual-1.tgz")
+	if !ok || spec.Name != "mc-2-restore" || !spec.NoRestart || len(spec.Ports) != 0 || spec.Image != r.Service.Image {
+		t.Fatalf("spec = %+v, %v", spec, ok)
+	}
+	if !reflect.DeepEqual(spec.Env, []string{"CROWSNEST_RESTORE_FILE=/data/backups/manual-1.tgz"}) {
+		t.Errorf("env = %v", spec.Env)
+	}
+	if len(spec.Entrypoint) == 0 || spec.Entrypoint[0] != "/bin/sh" {
+		t.Errorf("entrypoint = %v", spec.Entrypoint)
+	}
+	// The backups folder is read-only for the helper; the data folder is not.
+	for _, b := range spec.Binds {
+		ro := strings.HasSuffix(b, ":ro")
+		if strings.Contains(b, "/mnt/usb/backups/") != ro {
+			t.Errorf("bind %s: backups must be :ro and data must not be", b)
+		}
+	}
+	if len(spec.Binds) != len(r.Scope.Binds) {
+		t.Errorf("binds = %v, scope binds = %v", spec.Binds, r.Scope.Binds)
+	}
+	// ScopesJSON carries both scopes.
+	b, _ := ScopesJSON([]*Rendered{r})
+	if !strings.Contains(string(b), `"mc-2-restore"`) {
+		t.Errorf("scopes JSON has no restore scope: %s", b)
+	}
+	// Without a shared folder, or for a module with no restore command, there is nothing.
+	r2, _ := m.Render(config.GameConfig{ID: "mc-3", ContainerName: "mc-3"}, Platform{GamesRoot: "/srv/games"})
+	if _, ok := r2.RestoreSpec("x.tgz"); ok || r2.RestoreScope != nil {
+		t.Error("a restore container without a backups folder")
+	}
+	pal, _ := Bundled().Manifest("palworld")
+	r3, _ := pal.Render(config.GameConfig{ID: "pal", ContainerName: "pal"}, p)
+	if _, ok := r3.RestoreSpec("x.tgz"); ok || r3.RestoreScope != nil {
+		t.Error("palworld has no verified restore command")
+	}
+}
+
+func TestRenderCleanContainer(t *testing.T) {
+	p := Platform{GamesRoot: "/srv/games", BackupsRoot: "/mnt/usb/backups", HostIP: "10.0.0.2"}
+	m, _ := Bundled().Manifest("minecraft")
+	r, err := m.Render(config.GameConfig{ID: "mc-2", ContainerName: "mc-2", Options: map[string]string{"data_dir": "mc-2"}}, p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cs := r.CleanScope
+	if cs == nil || cs.Name != "mc-2-clean" || cs.Exec || len(cs.Ports) != 0 || !reflect.DeepEqual(cs.Images, r.Scope.Images) {
+		t.Fatalf("clean scope = %+v", cs)
+	}
+	// Only the data folder: never the backups folder.
+	if !reflect.DeepEqual(cs.Binds, []string{"/srv/games/mc-2"}) {
+		t.Errorf("clean scope binds = %v", cs.Binds)
+	}
+	spec, ok := r.CleanSpec()
+	if !ok || spec.Name != "mc-2-clean" || !spec.NoRestart || len(spec.Ports) != 0 || spec.Image != r.Service.Image {
+		t.Fatalf("spec = %+v, %v", spec, ok)
+	}
+	if !reflect.DeepEqual(spec.Binds, []string{"/srv/games/mc-2:/data"}) {
+		t.Errorf("binds = %v", spec.Binds)
+	}
+	want := []string{"/bin/sh", "-c", cleanScript, "sh", "/data"}
+	if !reflect.DeepEqual(spec.Entrypoint, want) {
+		t.Errorf("entrypoint = %v, want %v", spec.Entrypoint, want)
+	}
+	if b, _ := ScopesJSON([]*Rendered{r}); !strings.Contains(string(b), `"mc-2-clean"`) {
+		t.Errorf("scopes JSON has no clean scope: %s", b)
 	}
 }

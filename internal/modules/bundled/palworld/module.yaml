@@ -44,7 +44,7 @@ runtime:
 
 backup:
   exec: ["backup"]                 # the image saves through the REST API and writes a dated tar.gz
-  list_dir: /palworld/backups
+  dir: /palworld/backups
   before_stop: true
 
 options:

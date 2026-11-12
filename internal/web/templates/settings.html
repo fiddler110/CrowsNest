@@ -13,7 +13,9 @@
     <p class="eyebrow">// settings</p>
     <a href="#general" data-pane="general"><svg class="icon"><use href="#i-gear"/></svg>General</a>
     <a href="#users" data-pane="users"><svg class="icon"><use href="#i-users"/></svg>Users</a>
+    <a href="#signin" data-pane="signin"><svg class="icon"><use href="#i-users"/></svg>Sign-in</a>
     <a href="#policy" data-pane="policy"><svg class="icon"><use href="#i-info"/></svg>Game policy</a>
+    <a href="#audit" data-pane="audit"><svg class="icon"><use href="#i-info"/></svg>Audit log</a>
     <a href="#modules" data-pane="modules"><svg class="icon"><use href="#i-play"/></svg>Game modules</a>
   </nav>
 
@@ -48,6 +50,13 @@
         <p id="settings-error" class="settings-error" role="alert" hidden></p>
         <div class="pane-actions"><button class="btn btn-primary" type="submit">Save</button></div>
       </form>
+      <form id="pergame-form" class="pane-form" hidden>
+        <h3>Per game</h3>
+        <p class="settings-help field-note">Leave a box empty to use the setting above (or the game's own default, shown as a hint).</p>
+        <div id="pergame-list"></div>
+        <p id="pergame-error" class="settings-error" role="alert" hidden></p>
+        <div class="pane-actions"><button class="btn btn-primary" type="submit">Save per-game settings</button></div>
+      </form>
     </section>
 
     <section class="settings-pane" data-pane="users" hidden>
@@ -64,10 +73,79 @@
           <input type="password" name="password" minlength="8" maxlength="72" autocomplete="new-password"></label>
         <label class="field">Role
           <select name="role"><option value="player">Player</option><option value="admin">Admin</option></select></label>
+        <label class="field" id="user-oidc-field" hidden>SSO email (lets them sign in through an OpenID Connect provider)
+          <input type="email" name="oidc_email" maxlength="254" autocapitalize="none" spellcheck="false"></label>
+        <fieldset class="field" id="user-games-field">
+          <legend>Games this player can see and control (none ticked = all games; admins always see all)</legend>
+          <div id="user-games" class="check-row"></div>
+        </fieldset>
         <p id="users-error" class="settings-error" role="alert" hidden></p>
         <div class="pane-actions">
           <button id="user-form-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
           <button class="btn btn-primary" type="submit" id="user-form-submit">Add user</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="settings-pane" data-pane="signin" hidden>
+      <h1>Sign-in</h1>
+      <p class="hero-sub">Let people sign in with their Google account. Which accounts may sign in, and as whom, is set per user under Users. Changes apply immediately.</p>
+      <p id="signin-off" class="banner" role="alert" hidden><svg class="icon"><use href="#i-alert"/></svg><span>Sign-in settings can't be edited here on this server.</span></p>
+      <p id="signin-source" class="hero-sub"></p>
+      <form id="signin-form" class="pane-form" autocomplete="off">
+        <label class="setting-check"><input type="checkbox" name="enabled"> Allow sign-in with Google</label>
+        <label class="field">Client ID
+          <input type="text" name="client_id" maxlength="512" spellcheck="false" autocapitalize="none"></label>
+        <label class="field">Client secret <small id="signin-secret-note">Stored encrypted and never shown again.</small>
+          <input type="password" name="client_secret" maxlength="512" autocomplete="new-password" spellcheck="false"></label>
+        <label class="field">Redirect URL <small>Add exactly this as an authorized redirect URI on the Google OAuth client.</small>
+          <input type="url" name="redirect_url" maxlength="300" spellcheck="false" autocapitalize="none"></label>
+        <label class="field">Your password <small>Asked again because this changes how everyone signs in.</small>
+          <input type="password" name="password" maxlength="72" autocomplete="current-password" required></label>
+        <p id="signin-error" class="settings-error" role="alert" hidden></p>
+        <div class="pane-actions">
+          <button id="signin-reset" class="btn btn-ghost btn-danger" type="button" hidden>Remove saved settings</button>
+          <button class="btn btn-primary" type="submit">Save</button>
+        </div>
+      </form>
+
+      <div id="oidc-section" hidden>
+        <h3>Other sign-in providers (OpenID Connect)</h3>
+        <p class="hero-sub">Authentik, Keycloak, Microsoft Entra, Okta, Auth0 and others. Link a user to a provider with their "SSO email" under Users: the first sign-in with a verified matching email binds that person to the provider's own account id.</p>
+        <ul id="oidc-list" class="users-list"></ul>
+        <form id="oidc-form" class="pane-form" autocomplete="off">
+          <h3 id="oidc-form-title">Add a provider</h3>
+          <label class="field">Short id <small>Letters, digits and '-'. Part of the redirect URL.</small>
+            <input type="text" name="id" maxlength="24" pattern="[a-z0-9][a-z0-9\-]*" autocapitalize="none" spellcheck="false" required></label>
+          <label class="field">Name <small>Shown on the sign-in button.</small>
+            <input type="text" name="name" maxlength="40" required></label>
+          <label class="field">Issuer URL <small>The address before /.well-known/openid-configuration.</small>
+            <input type="url" name="issuer" maxlength="300" spellcheck="false" autocapitalize="none" required></label>
+          <label class="field">Client ID
+            <input type="text" name="client_id" maxlength="512" spellcheck="false" autocapitalize="none" required></label>
+          <label class="field">Client secret <small id="oidc-secret-note">Stored encrypted and never shown again.</small>
+            <input type="password" name="client_secret" maxlength="512" autocomplete="new-password" spellcheck="false"></label>
+          <label class="field">Redirect URL <small>Register exactly this with the provider.</small>
+            <input type="url" name="redirect_url" maxlength="300" spellcheck="false" autocapitalize="none" required></label>
+          <label class="setting-check"><input type="checkbox" name="enabled" checked> Allow sign-in with this provider</label>
+          <label class="field">Your password <small>Asked again because this changes how everyone signs in.</small>
+            <input type="password" name="password" maxlength="72" autocomplete="current-password" required></label>
+          <p id="oidc-error" class="settings-error" role="alert" hidden></p>
+          <div class="pane-actions">
+            <button id="oidc-cancel" class="btn btn-ghost" type="button" hidden>Cancel edit</button>
+            <button class="btn btn-primary" type="submit" id="oidc-submit">Add provider</button>
+          </div>
+        </form>
+      </div>
+
+      <form id="pwlogin-form" class="pane-form" autocomplete="off" hidden>
+        <h3>Password sign-in</h3>
+        <p id="pwlogin-state" class="hero-sub"></p>
+        <label class="field">Your password <small>Asked again because this changes how everyone signs in.</small>
+          <input type="password" name="password" maxlength="72" autocomplete="current-password" required></label>
+        <p id="pwlogin-error" class="settings-error" role="alert" hidden></p>
+        <div class="pane-actions">
+          <button id="pwlogin-toggle" class="btn btn-ghost" type="submit"></button>
         </div>
       </form>
     </section>
@@ -110,6 +188,31 @@
         <p class="hero-sub">Games that may go beyond the limits above, each exactly as listed. They are written in policy.yaml on the host and can't be added or changed from here.</p>
         <ul id="policy-exceptions-list" class="users-list"></ul>
       </div>
+    </section>
+
+    <section class="settings-pane" data-pane="audit" hidden>
+      <h1>Audit log</h1>
+      <p class="hero-sub">Everything the panel recorded: starts, stops, joins, settings and user changes, console use. Kept for the retention period set in config.yaml.</p>
+      <form id="audit-form" class="pane-form" autocomplete="off">
+        <div class="setting-row audit-filters">
+          <label class="field">Game <select name="game"><option value="">All</option></select></label>
+          <label class="field">Kind <select name="kind"><option value="">All</option></select></label>
+          <label class="field">Who <input type="text" name="actor" spellcheck="false" autocapitalize="none"></label>
+        </div>
+        <div class="setting-row audit-filters">
+          <label class="field">Search <input type="text" name="q" spellcheck="false"></label>
+          <label class="field">From <input type="date" name="since"></label>
+          <label class="field">To (inclusive) <input type="date" name="until"></label>
+        </div>
+        <div class="pane-actions">
+          <button id="audit-reset" class="btn btn-ghost" type="button">Clear</button>
+          <button class="btn btn-primary" type="submit">Filter</button>
+        </div>
+      </form>
+      <table class="audit-table"><thead><tr><th>When</th><th>Kind</th><th>Game</th><th>Who</th><th>Detail</th></tr></thead>
+        <tbody id="audit-rows"></tbody></table>
+      <p id="audit-empty" class="settings-help field-note" hidden>No matching events.</p>
+      <div class="pane-actions"><button id="audit-more" class="btn btn-ghost" type="button" hidden>Load more</button></div>
     </section>
 
     <section class="settings-pane" data-pane="modules" hidden>

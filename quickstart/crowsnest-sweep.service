@@ -1,0 +1,11 @@
+# Removes empty folders under games_root. Install with the timer next to it; see
+# "Cleaning up empty game folders" in the README. Edit the two paths first.
+[Unit]
+Description=Remove empty CrowsNest game folders
+After=docker.service
+
+[Service]
+Type=oneshot
+# Run as the user that owns games_root and may use Docker.
+User=CHANGE_ME
+ExecStart=/path/to/crowsnest/quickstart/sweep-empty-games.sh /path/to/games_root

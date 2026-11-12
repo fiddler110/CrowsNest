@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path"
 	"regexp"
 	"strconv"
 	"strings"
@@ -40,6 +41,7 @@ type Config struct {
 	IdleShutdown  *IdleShutdownConfig  `yaml:"idle_shutdown"`
 	NightShutdown *NightShutdownConfig `yaml:"night_shutdown"`
 	Notifications *NotificationsConfig `yaml:"notifications"`
+	CrashLoop     *CrashLoopConfig     `yaml:"crash_loop"`
 	Auth          AuthConfig           `yaml:"auth"`
 	UsersFile     string               `yaml:"users_file"`
 	// ModulesDir is an optional directory of <id>/module.yaml game modules
@@ -82,11 +84,42 @@ type PlatformConfig struct {
 	// guard's scopes (the guard matches exact paths and cannot expand compose
 	// variables). Needed only when GamesRoot is a variable.
 	HostGamesRoot string `yaml:"host_games_root"`
+	// BackupsRoot is the host directory that holds every game's backups, one
+	// folder per game (<BackupsRoot>/<game id>, so three Palworld servers keep
+	// three separate sets). It may be a compose variable. It is bound
+	// read-write into the panel (at BackupsMount) and, per game, into each game
+	// container at the path its module's backup.dir names. Empty means backups
+	// stay wherever the game's own backup command puts them.
+	BackupsRoot string `yaml:"backups_root"`
+	// HostBackupsRoot is the literal host path of BackupsRoot for the guard's
+	// scopes, needed only when BackupsRoot is a variable (like HostGamesRoot).
+	HostBackupsRoot string `yaml:"host_backups_root"`
+	// BackupsMount is where the panel sees BackupsRoot (default /game-backups).
+	BackupsMount string `yaml:"backups_mount"`
+	// BackupsDirMode is the permission bits (octal, default 0775) of each
+	// game's backup folder, which the panel creates. A game whose user is not
+	// the panel's needs 0777, or the folder chowned to it on the host.
+	BackupsDirMode string `yaml:"backups_dir_mode"`
+	// BackupsConfirmNew lets CrowsNest start using a backups folder it has no
+	// record of and that carries no marker. Without it that case is refused,
+	// because an unmounted drive looks exactly like a new empty folder. Set it
+	// once you have checked the drive is mounted; it is needed again only if
+	// you reset the remembered folder.
+	BackupsConfirmNew bool `yaml:"backups_confirm_new"`
 	// HostIP is the host address game ports are published on (default 0.0.0.0).
 	HostIP string `yaml:"host_ip"`
 	// GamesNetwork is the existing docker network games join (default
 	// crowsnest-games-net).
 	GamesNetwork string `yaml:"games_network"`
+}
+
+// DirMode parses backups_dir_mode.
+func (p PlatformConfig) DirMode() (os.FileMode, error) {
+	n, err := strconv.ParseUint(strings.TrimSpace(p.BackupsDirMode), 8, 32)
+	if err != nil || n == 0 || n > 0o777 {
+		return 0, fmt.Errorf("platform.backups_dir_mode (%q): must be octal permission bits such as 0775", p.BackupsDirMode)
+	}
+	return os.FileMode(n), nil
 }
 
 // ServerConfig holds top-level HTTP server settings.
@@ -121,6 +154,12 @@ type ServerConfig struct {
 	// from that header when the request's RemoteAddr is in this list.
 	// Empty (the default) means never trust it.
 	TrustedProxies []string `yaml:"trusted_proxies"`
+
+	// MetricsTokenEnv names an environment variable holding a bearer token.
+	// When that variable is set, GET /metrics serves Prometheus metrics to a
+	// scraper sending `Authorization: Bearer <token>`. Empty (the default), or
+	// an unset variable, leaves /metrics off.
+	MetricsTokenEnv string `yaml:"metrics_token_env"`
 
 	// DockerHost, when set, points every docker/docker-compose CLI call at
 	// this daemon instead of the local /var/run/docker.sock — e.g.
@@ -186,10 +225,10 @@ type GoogleAuthConfig struct {
 	ClientIDEnv     string `yaml:"client_id_env"`
 	ClientSecretEnv string `yaml:"client_secret_env"`
 
-	// UsersEnv names the variable holding the allowlist: comma-separated
-	// name=email pairs, e.g. "alex=alex@example.com,friend=pal@gmail.com".
-	// Only these Google accounts may sign in, each as the CrowsNest
-	// username before the '='. Default: CROWSNEST_GOOGLE_USERS.
+	// UsersEnv names an optional variable of comma-separated name=email pairs,
+	// e.g. "alex=alex@example.com". It is imported into the users file once
+	// (see importLegacyGoogleUsers) and ignored afterwards: who may sign in is
+	// kept per user in the dashboard. Default: CROWSNEST_GOOGLE_USERS.
 	UsersEnv string `yaml:"users_env"`
 }
 
@@ -228,6 +267,15 @@ type NightShutdownConfig struct {
 	// MinUptimeMinutes protects a game started inside the window: it is not
 	// stopped until it has been up this long. Defaults to 30.
 	MinUptimeMinutes int `yaml:"min_uptime_minutes"`
+}
+
+// CrashLoopConfig tunes crash-loop alerts: a game that crashes Crashes times
+// within WindowMinutes is reported once (activity log, and Discord when a
+// webhook is set) until it has gone a full window without reaching that again.
+type CrashLoopConfig struct {
+	Enabled       *bool `yaml:"enabled"` // default true
+	Crashes       int   `yaml:"crashes"`
+	WindowMinutes int   `yaml:"window_minutes"`
 }
 
 // NotificationsConfig holds outbound-notification settings shared by
@@ -343,10 +391,64 @@ type BackupConfig struct {
 	// listed newest first on the dashboard. Optional; the container needs GNU
 	// find.
 	ListDir string `yaml:"list_dir"`
+	// Dir is the directory inside the container the backup command writes to.
+	// With platform.backups_root set, a dashboard-enabled game gets
+	// <backups_root>/<game id> bound there, and the panel lists and prunes that
+	// folder itself (no exec). Without backups_root it behaves like ListDir.
+	// Use Dir or ListDir, not both.
+	Dir string `yaml:"dir"`
+	// LocalDir is where the panel itself sees this game's backup folder
+	// (<backups_mount>/<id>). It is set by the wiring, never read from YAML.
+	LocalDir string `yaml:"-"`
 	// BeforeStop also takes a backup each time the game is stopped on purpose
 	// (manual, switch, idle or night), after the world is saved, so a fresh
 	// backup always exists before an update-on-start pull.
 	BeforeStop bool `yaml:"before_stop"`
+	// Keep, when above zero, deletes all but the newest Keep files in ListDir
+	// after each successful backup (it counts files, so a backup that writes
+	// two files per run keeps Keep/2 runs). Needs list_dir; the container needs
+	// sh, GNU find, sort, tail and cut.
+	Keep int `yaml:"keep"`
+	// Restore is the command that puts a backup back, run as the entrypoint of
+	// a one-shot container from the game's own image while the game is stopped.
+	// That container gets the game's data folders and its backup folder
+	// (read-only), and the chosen file's full path in $CROWSNEST_RESTORE_FILE.
+	// Only for dashboard-enabled games with Dir set and a shared backups folder.
+	Restore []string `yaml:"restore"`
+}
+
+// ExecListDir is the directory listed and pruned with docker exec: list_dir,
+// or dir when no list_dir is given.
+func (b *BackupConfig) ExecListDir() string {
+	if b.ListDir != "" {
+		return b.ListDir
+	}
+	return b.Dir
+}
+
+// CheckKeep rejects a retention count or folder setting that can't work.
+func (b *BackupConfig) CheckKeep() error {
+	if b.Dir != "" && b.ListDir != "" {
+		return fmt.Errorf("use dir or list_dir, not both")
+	}
+	if b.Dir != "" && !strings.HasPrefix(b.Dir, "/") {
+		return fmt.Errorf("dir (%s): must be an absolute path inside the container", b.Dir)
+	}
+	if b.Keep < 0 {
+		return fmt.Errorf("keep (%d): must not be negative", b.Keep)
+	}
+	if len(b.Restore) > 0 && b.Dir == "" {
+		return fmt.Errorf("restore needs dir (the folder its backups are mounted at)")
+	}
+	for _, a := range b.Restore {
+		if strings.TrimSpace(a) == "" {
+			return fmt.Errorf("restore: empty argument")
+		}
+	}
+	if b.Keep > 0 && b.ExecListDir() == "" {
+		return fmt.Errorf("keep needs dir or list_dir (the directory to prune)")
+	}
+	return nil
 }
 
 // Load reads, defaults, and validates the config.yaml at path.
@@ -471,6 +573,23 @@ func (c *Config) applyDefaults() {
 	if c.Notifications == nil {
 		c.Notifications = &NotificationsConfig{}
 	}
+	if c.Platform.BackupsRoot != "" {
+		if c.Platform.BackupsMount == "" {
+			c.Platform.BackupsMount = "/game-backups"
+		}
+		if c.Platform.BackupsDirMode == "" {
+			c.Platform.BackupsDirMode = "0775"
+		}
+	}
+	if c.CrashLoop == nil {
+		c.CrashLoop = &CrashLoopConfig{}
+	}
+	if c.CrashLoop.Crashes == 0 {
+		c.CrashLoop.Crashes = 3
+	}
+	if c.CrashLoop.WindowMinutes == 0 {
+		c.CrashLoop.WindowMinutes = 15
+	}
 
 	if g := c.Auth.Google; g != nil {
 		if g.ClientIDEnv == "" {
@@ -535,6 +654,9 @@ func (c *Config) validate() error {
 			if len(b.Exec) == 0 || strings.TrimSpace(b.Exec[0]) == "" {
 				return fmt.Errorf("games[%s].backup.exec: a command is required", g.ID)
 			}
+			if err := b.CheckKeep(); err != nil {
+				return fmt.Errorf("games[%s].backup: %w", g.ID, err)
+			}
 			if b.ListDir != "" && !strings.HasPrefix(b.ListDir, "/") {
 				return fmt.Errorf("games[%s].backup.list_dir (%s): must be an absolute path inside the container", g.ID, b.ListDir)
 			}
@@ -547,6 +669,20 @@ func (c *Config) validate() error {
 	}
 	if c.Server.MaxActiveGames < 1 {
 		return fmt.Errorf("max active games (%d): must be >= 1", c.Server.MaxActiveGames)
+	}
+	if pl := c.Platform; pl.BackupsRoot != "" {
+		if !strings.HasPrefix(pl.BackupsMount, "/") || path.Clean(pl.BackupsMount) != pl.BackupsMount || pl.BackupsMount == "/" {
+			return fmt.Errorf("platform.backups_mount (%s): must be an absolute, normalised path other than /", pl.BackupsMount)
+		}
+		if _, err := pl.DirMode(); err != nil {
+			return err
+		}
+		if strings.Contains(pl.BackupsRoot, "$") && pl.HostBackupsRoot == "" {
+			return fmt.Errorf("platform.backups_root is a variable, so platform.host_backups_root (the literal path) is required")
+		}
+	}
+	if c.CrashLoop.Crashes < 1 || c.CrashLoop.WindowMinutes < 1 {
+		return fmt.Errorf("crash_loop: crashes (%d) and window_minutes (%d) must be at least 1", c.CrashLoop.Crashes, c.CrashLoop.WindowMinutes)
 	}
 	if _, err := c.Server.Location(); err != nil {
 		return fmt.Errorf("server.tz (%s): %w", c.Server.TZ, err)

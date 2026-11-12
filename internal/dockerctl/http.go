@@ -191,10 +191,13 @@ type inspectResp struct {
 	ID    string `json:"Id"`
 	State struct {
 		Running    bool
+		OOMKilled  bool
+		ExitCode   int
 		StartedAt  string
 		FinishedAt string
 	}
-	Config struct {
+	RestartCount int
+	Config       struct {
 		Tty bool
 	}
 }

@@ -133,3 +133,47 @@ func TestPlaytimeCacheInvalidates(t *testing.T) {
 		t.Fatalf("after leave = %+v", got)
 	}
 }
+
+func TestQuery_FiltersAndPages(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "e.jsonl"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := time.Date(2026, 11, 1, 12, 0, 0, 0, time.UTC)
+	now := base
+	s.Now = func() time.Time { return now }
+	for i, e := range []struct{ kind, game, actor, detail string }{
+		{KindStart, "a", "ann", ""},
+		{KindStop, "a", "bob", "manual"},
+		{KindSettings, "", "ann", "idle_minutes 15→30"},
+		{KindStart, "b", "bob", ""},
+	} {
+		now = base.Add(time.Duration(i) * 24 * time.Hour)
+		s.Record(e.kind, e.game, e.actor, e.detail)
+	}
+	got := func(f Filter, off, lim int) (kinds []string, more bool) {
+		ev, more := s.Query(f, off, lim)
+		for _, e := range ev {
+			kinds = append(kinds, e.Kind+":"+e.Game)
+		}
+		return kinds, more
+	}
+	if k, _ := got(Filter{Actor: "bob"}, 0, 10); len(k) != 2 || k[0] != "start:b" {
+		t.Errorf("actor filter = %v", k)
+	}
+	if k, _ := got(Filter{Kinds: []string{KindStart, KindSettings}}, 0, 10); len(k) != 3 {
+		t.Errorf("kind filter = %v", k)
+	}
+	if k, _ := got(Filter{Text: "IDLE"}, 0, 10); len(k) != 1 || k[0] != "settings:" {
+		t.Errorf("text filter = %v", k)
+	}
+	if k, _ := got(Filter{Since: base.Add(24 * time.Hour), Until: base.Add(3 * 24 * time.Hour)}, 0, 10); len(k) != 2 {
+		t.Errorf("time range [day1, day3) = %v, want 2", k)
+	}
+	if k, more := got(Filter{}, 0, 3); len(k) != 3 || !more {
+		t.Errorf("page 1 = %v more=%v", k, more)
+	}
+	if k, more := got(Filter{}, 3, 3); len(k) != 1 || more || k[0] != "start:a" {
+		t.Errorf("page 2 = %v more=%v", k, more)
+	}
+}

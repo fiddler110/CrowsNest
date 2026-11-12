@@ -18,6 +18,12 @@ users_file: /app/data/users.env
 platform:
   games_root: /srv/games
   host_ip: 0.0.0.0
+  # Shared backups folder (optional). The host path, the same as BACKUPS_DIR in .env and backups_root in
+  # policy/policy.yaml. Each game backs up into <backups_root>/<game id>. Also uncomment the volume in compose.yaml.
+  # backups_root: /mnt/usb/crowsnest-backups
+  # backups_mount: /game-backups          # where the panel sees it (the compose volume's right-hand side)
+  # backups_confirm_new: true             # set once you have checked the drive is mounted: lets CrowsNest start using a folder it has not seen
+  # backups_dir_mode: "0775"              # use "0777" if a game runs as a different user than the panel (uid 1000)
 
 # Extra game modules (crowsnest module install ...) live here; restart after installing one.
 modules_dir: /app/data/modules

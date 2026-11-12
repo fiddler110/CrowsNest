@@ -206,6 +206,7 @@ Any signed-in user can change these from **Settings** on the dashboard, and the 
 | Stop a server when nobody is on it / minutes | the idle auto-stop and its timeout (1 to 1440 minutes) |
 | Stop empty servers overnight / from / until | the overnight window, in `server.tz` hours |
 | Servers allowed at once | how many games may run together |
+| Per game: idle minutes / restart wait / overnight shutdown | override the idle timeout, the pause required between stopping and restarting, and whether the game is included in the overnight stop, for one game; an empty box uses the global value or the module's default |
 | Update on start | run `docker compose pull` for the game each time it starts, so a restart picks up new server versions (a failed pull is logged and the old image is used) |
 
 `config.yaml` holds the defaults. Whatever is saved from the dashboard is written to `server.settings_file`
@@ -235,6 +236,20 @@ spent in each game. That comes from join and leave events, so it only covers gam
 read. Entries older than `server.history_retention_days` (default 180) are pruned. Keep the file on the same
 persistent mount as the settings file.
 
+Settings has an **Audit log** pane (admins) that filters the same log by game, kind, user, text and date.
+
+**Crash loops.** Every 30 seconds CrowsNest reads each game container's last exit from Docker. A run that ended with
+an exit code other than 0 or 143 (a normal stop) counts as a crash; 137 counts only when Docker says the kernel
+killed it for memory, because `docker stop` produces 137 too when a game outlasts its grace period. Each crash is
+logged. A game that crashes `crash_loop.crashes` times (default 3) within `crash_loop.window_minutes` (default 15) is
+reported once as a crash loop, in the log and in Discord when a webhook is set, and again only after it has gone a
+full window below the threshold. Crashes from before CrowsNest started are not counted.
+
+**Metrics.** Set `server.metrics_token_env` to the name of an environment variable holding a token, and
+`GET /metrics` serves Prometheus metrics (game up/players/crashes/crash-looping, host memory, load and disk) to a
+scraper sending `Authorization: Bearer <token>`. With no token the route does not exist. It is outside the login
+session, so if the panel is reachable from the internet, treat the token like a password.
+
 A strip under the fleet banner shows host memory, load and free disk space for the paths in
 `server.host_disk_paths`, and turns red when a disk is under 10% free or memory is nearly full. Mount the disk your
 game data and images live on (read-only is fine) and list its path to watch it.
@@ -259,6 +274,151 @@ dashboard).
 With `before_stop: true` CrowsNest also takes a backup each time it stops that game on purpose, after the world is
 saved, so an "update on start" pull always has a fresh backup behind it. A failed backup is logged and never stops
 the game from stopping.
+
+With `keep: N` (and `list_dir`) CrowsNest deletes all but the newest N files in `list_dir` after each successful
+backup, using one more exec command the guard allows. It counts files, and the container needs `sh`, GNU `find`,
+`sort`, `tail` and `cut`.
+
+#### A shared backups folder
+
+Set `platform.backups_root` (a host path, for example an external drive) and every dashboard-enabled game whose
+module declares `backup.dir` backs up into its own folder, `<backups_root>/<game id>`. The panel mounts the folder
+read-write at `platform.backups_mount` (default `/game-backups`), each game container gets only its own sub-folder,
+and the panel lists and prunes it directly, with no `docker exec` for either. Add `backups_root` to `policy.yaml`
+(the same path, separate from `games_root`) so the guard allows the bind. In the quickstart it is three commented
+lines: the volume in `compose.yaml`, `backups_root` in `config.yaml`, and `backups_root` in `policy/policy.yaml`.
+
+### Disabling a game and deleting its data
+
+**Games, Disable** removes the container and takes the game off the dashboard; its data folders and backups stay,
+so it can be enabled again. **Disable and delete…** (admin only, the game must be stopped) can also delete:
+
+- **its data folders:** the world, configs and everything else the game saved. The panel never gets write access to
+  game folders for this. It runs a one-shot `<game id>-clean` container from the game's own pinned image, with only
+  that game's data folders mounted, running one fixed command (`find <folder> -mindepth 1 -delete` on each) and then
+  removed. The empty folder itself stays, because the panel cannot remove a folder it has no access to.
+- **its backups:** the game's `<backups_root>/<id>` folder, removed by the panel itself, and only after the backups
+  folder passes the same drive check as a backup does (an unmounted drive deletes nothing).
+
+The two are separate ticks, both off by default. Deleting needs the game's id typed out and your password, like
+widening the guard, and is recorded in the activity log. Delete the data without the backups and you can still bring
+the world back with Restore after enabling the game again. If emptying the folders fails, nothing else is changed and
+the game stays listed. Each game now uses up to three guard scopes (the game, its restore helper and its clean
+helper), which count towards `max_scopes` in `policy.yaml` (default 64, so about 20 games with all three).
+
+Only dashboard-enabled games can do this; a game set up by hand in `config.yaml` has to be cleaned up by hand.
+
+### Cleaning up empty game folders
+
+"Disable and delete…" leaves the game's own folder behind, empty, and the panel cannot remove it (it has no access
+to `games_root` itself, on purpose). `quickstart/sweep-empty-games.sh` does that from the host:
+
+```
+quickstart/sweep-empty-games.sh -n /srv/games      # dry run: lists what it would remove
+quickstart/sweep-empty-games.sh /srv/games         # removes them
+```
+
+It runs `rmdir` on folders directly under `games_root` that are empty, so it cannot delete anything with a file in
+it, and it never follows links. It skips folders changed in the last hour (`-a MINUTES`), and any folder a Docker
+container mounts, so a game that is set up but has not run yet keeps its folder. If Docker cannot be asked, it
+removes nothing. To run it daily, edit the paths and user in `quickstart/crowsnest-sweep.service`, then:
+
+```
+sudo cp quickstart/crowsnest-sweep.{service,timer} /etc/systemd/system/
+sudo systemctl enable --now crowsnest-sweep.timer
+```
+
+This stays outside the panel on purpose: giving it write access to `games_root` would let it change every game's world.
+
+### Restoring a backup
+
+On a dashboard-enabled game whose module has a `restore:` command (Minecraft, Valheim and Windrose today; not
+Palworld, whose image's archive layout is not verified), each file in the **Backups** tab has a **Restore** button.
+It asks first, then:
+
+1. stops the game (when it keeps a backup before stopping, that backup is taken first, so the world as it was a
+   moment ago is the newest file in the list and is your way back);
+2. runs a one-shot container, `<game id>-restore`, from the game's own pinned image, with the game's data folders and
+   its backups folder (read-only), whose entrypoint is the module's `restore` command and which finds the chosen file in
+   `$CROWSNEST_RESTORE_FILE`; the container is removed afterwards;
+3. starts the game again if it was running.
+
+The result is in the activity log (kind `restore`) and in Discord. Things to watch:
+
+- **It replaces the current world.** The bundled commands delete the world folder and unpack the archive. If the
+  command fails half way, the game is left **stopped** with partly restored data and nothing is started; restore the
+  newest backup (the safety copy) or the file again.
+- **No safety copy when the game was stopped,** or when the module does not back up before stopping: there is nothing
+  to take one from. Back up first if the current world matters.
+- **A restore that would delete its own file is refused.** With `keep: N`, the safety backup pushes the oldest file
+  out; asking for that one is refused with a message, before anything is stopped.
+- **Only plain file names** inside the game's own folder are accepted, and only files that are listed there.
+- **The game may not restart by itself.** If the restart is refused (the active-game limit, or the restart cooldown),
+  the game stays stopped and you are told to start it.
+- **A new guard scope per game.** `<id>-restore` has the game's image and folders and nothing else (no ports, no
+  exec). The policy admits it by the game's own name, so no `names:` change is needed, and the id `<anything>-restore`
+  can no longer be used for a game. The panel rewrites the scopes at start, and the guard reloads them without a restart.
+- **File ownership.** The helper runs as root. The bundled commands chown the restored folder to the owner of the
+  data folder (Windrose: uid 1000), as the game expects.
+- **Older archives.** A restore command expects the layout its module's backup command writes (`world/`,
+  `worlds_local/`, `SaveProfiles/`). Archives made some other way are not understood.
+- **Config-file games** (a hand-written compose service) cannot restore from the dashboard; their backups stay where they are.
+
+### What CrowsNest checks for you
+
+- **Every minute** the panel re-checks the folder: it is the one used before (the marker), it has at least 1 GiB
+  free, and the panel can write to each game's folder. A problem is recorded in the activity log, sent to Discord
+  once (and again when it clears), shown as a banner on the dashboard, and exported as `crowsnest_backups_ok` and
+  `crowsnest_backups_free_bytes` on `/metrics`. While it lasts, backups are refused rather than written somewhere
+  wrong. `GET /api/backups/health` (admin) returns the details, including folders no game uses (left behind by
+  disabled or renamed games).
+- **A refused backup is never silent.** A scheduled or before-stop backup that cannot run is recorded and
+  notified. Stopping a game still goes ahead.
+- **Exit status 0 is not trusted.** After a backup the panel checks that a new, non-empty file appeared in the
+  game's folder; otherwise the backup is recorded as failed and old backups are not pruned.
+- **Permission errors say what to do.** A failure containing "permission denied" names the folder and the fix.
+- **First use needs your confirmation.** A folder with no marker that CrowsNest has never seen is refused, since
+  a missing drive looks exactly like that. After checking that the right drive is mounted at `backups_root`, set
+  `platform.backups_confirm_new: true` and restart; CrowsNest then marks the folder, and from then on a missing
+  drive is caught. A drive that already carries a marker (a reinstall, or a second panel) is adopted without the
+  flag. `crowsnest doctor` says which case you are in.
+
+### Things to watch with a shared backups folder
+
+- **A missing external drive looks like an empty folder.** If the host path does not exist when Docker starts the
+  panel, Docker creates an empty directory there, and backups would quietly land on the system disk. CrowsNest
+  puts a marker file (`.crowsnest-backups`, a random token) in the folder and remembers the same token in
+  `backups-root` next to `settings.json`. A folder that no longer carries the remembered token is refused: no
+  game's backup folder is created in it, and backing up, listing and pruning stop, with a message saying why.
+  To accept a different drive on purpose, delete `backups-root` and restart. `crowsnest doctor` reports it. Bind
+  the drive's mount point rather than a folder on it, and start Docker after the drive is mounted
+  (`RequiresMountsFor=` in the Docker unit, or an fstab `x-systemd.before=docker.service` style ordering).
+- **Permissions.** The panel (uid 1000) creates each game's folder with `backups_dir_mode` (default `0775`). A
+  game whose own user is someone else gets "permission denied" from its backup command. Either chown the folder to
+  that user on the host, run the game as the panel's uid, or set `backups_dir_mode: "0777"`. `doctor` says which mode
+  is in use. Many images take `PUID`/`PGID`; matching the panel's uid is the cleanest fix.
+- **The panel can delete backups.** The folder is mounted read-write into the panel so it can list and prune. A
+  compromised panel could therefore delete every backup. The guard still limits what it can do to containers, but
+  not to this folder. For protection against that, copy the folder offsite or to a snapshotting filesystem
+  (immutable or append-only), which CrowsNest never has to touch. Pruning only deletes regular files directly inside
+  a game's folder and never follows a link, so a game cannot aim it elsewhere.
+- **Games can see only their own folder.** Each game binds `<backups_root>/<id>` and nothing else, so three Palworld
+  servers (`palworld`, `palworld-2`, `palworld-friends`) keep three separate sets, and one game cannot read or
+  overwrite another's. The folder is named after the game's **id**, which cannot be changed later: renaming means
+  moving the folder yourself.
+- **Disabling a game keeps its backups unless you say otherwise.** The folder stays in `backups_root`. To remove
+  it with the game, use **Disable and delete…** (below), or delete it by hand when you are sure.
+- **`backups_root` and `games_root` must be separate** folders, neither inside the other (the policy refuses
+  otherwise), and `backups_root` must be the same host path in `config.yaml`, `policy.yaml` and the compose volume.
+- **Retention counts files.** `keep: N` keeps the N newest files in a game's folder, so a backup that writes two
+  files per run keeps N/2 runs. Files the game wrote by hand count too.
+- **Only dashboard-enabled games get a folder.** Games in `config.yaml` with their own compose file keep backing up
+  where they do today (inside their own data, listed over `docker exec`); give them a bind to a folder under
+  `backups_root` yourself if you want them in the same place.
+- **A big backup volume needs space checks.** `doctor` warns under 5 GiB free. Backups of several worlds add up
+  quickly, so set `keep`.
+- **Restore is by button** for the modules that have a restore command (see "Restoring a backup"). For any other,
+  stop the game and unpack the file from `<backups_root>/<id>` into its data folder by hand.
 
 ### Admin console
 
@@ -287,8 +447,7 @@ If someone now signs in only with Google, run `crowsnest clear-password <usernam
 hash. It refuses unless Google sign-in is set up for that user, keeps their role, and revokes their sessions.
 `crowsnest doctor` lists users who still have a hash while password login is off.
 
-To remove someone entirely, take them off the Google allowlist (restart to apply) or delete their password entry
-(applies within seconds). A session only stays valid while its username still has a way to sign in. Rotating or
+To remove someone entirely, delete them under Settings, Users (applies within seconds). A session only stays valid while its username still has a way to sign in. Rotating or
 deleting the session-secret file logs everyone out at once.
 
 ### Signing in with Google
@@ -299,18 +458,62 @@ need a separate auth proxy and a Google account only gets in if you listed it.
 1. In Google Cloud Console, go to APIs & Services, then Credentials, and create an OAuth client ID of type **Web
    application** with the authorized redirect URI `https://<your host>/auth/google/callback`. On the consent
    screen, `openid` and `email` are the only scopes CrowsNest asks for.
-2. In `.env`, set `CROWSNEST_GOOGLE_CLIENT_ID`, `CROWSNEST_GOOGLE_CLIENT_SECRET` and the allowlist, for example
-   `CROWSNEST_GOOGLE_USERS=alice=alice@gmail.com,bob=bob@example.org`. The name before each `=` is the CrowsNest
-   username that account signs in as (in the audit log, and for `revoke-sessions`).
+2. In `.env`, set `CROWSNEST_GOOGLE_CLIENT_ID` and `CROWSNEST_GOOGLE_CLIENT_SECRET` (or enter them in the dashboard,
+   below). Who may sign in is set per user under Settings, Users: give each person a Google email. A Google account
+   that isn't listed there is refused, even though Google signed it in.
 3. In `config.yaml`, add `auth.google.redirect_url` with the same URL, and `auth.password_login: false` if Google
    should be the only way in. An https redirect URL also needs `server.secure_cookies: true`.
 
-CrowsNest refuses to start if a value is missing or malformed. Addresses must be plain ASCII and match the Google
+**From the dashboard instead:** an admin can do steps 2 and 3 under Settings, Sign-in: the client ID, the client
+secret, the redirect URL and an on/off switch, applied at once with no restart. Saving asks for the admin's own
+password again. The secret is stored encrypted in `auth.json` (next to `settings.json`), under a key in `auth-key`
+(next to the session secret); it is never sent back to the browser. What is saved there wins over `config.yaml` and
+the environment, and "Remove saved settings" puts those back. Which Google accounts may sign in is set per user
+under Users, which is the only place the list is kept. An old `CROWSNEST_GOOGLE_USERS` (`name=email` pairs) is
+copied into the users file once at the first start after the first admin exists, then ignored (a
+`google-users-imported` marker file stops it coming back); remove the variable afterwards. Turning Google off is refused while
+`auth.password_login: false`, since nobody could then sign in. Back up `auth-key` with the data folder: without it
+the saved secret can't be read and has to be entered again.
+
+Addresses must be plain ASCII and match the Google
 account's exactly (case aside), so `j.doe@gmail.com` and `jdoe@gmail.com` are different entries.
 
 The flow uses a signed 10 minute state cookie (state, nonce and PKCE) and exchanges the code with Google's token
 endpoint directly over TLS. Once signed in, it's the same 3 hour session as a password login. Requests to Google
 need outbound HTTPS from the container.
+
+### Sign-in options, and protecting what CrowsNest stores
+
+Everything below is managed from the dashboard (Settings, Sign-in, Users; Account for each person).
+
+**Methods.** Password, Google, and any number of other OpenID Connect providers (Authentik, Keycloak, Entra, Okta,
+Auth0…). Add a provider with its issuer URL, client ID and secret; CrowsNest reads the provider's discovery document,
+refuses one that names a different issuer or lacks PKCE (S256), and always uses state, nonce and PKCE. Link a person
+with their **SSO email** under Users. The first sign-in with a *verified* matching email binds them to the provider's
+own subject id; after that the subject decides, so a changed or reused email can't take the account over, and a second
+provider account with the same email is refused.
+
+**Password sign-in switch.** Turning it off asks for your password, shows who would be locked out (you included) and
+needs a second confirmation. It is refused outright if no admin could still sign in. If you are ever shut out, run
+`crowsnest enable-password-login` on the host and restart.
+
+**Authenticator app (TOTP, RFC 6238).** Each person sets it up on their Account page (password again, scan the QR
+code, enter a code, get 10 one-time recovery codes shown once). It is asked after the password at sign-in. A code can't
+be reused, five wrong codes lock that account for 15 minutes, and turning it off or making new recovery codes needs the
+password plus a code. An admin can reset someone's app from Users (a lost phone), which signs them out. It applies to
+password sign-in only: Google and OIDC sign-ins rely on the provider's own protections. It stays optional for each
+person. Not built: forcing people to enrol, and WebAuthn/passkeys.
+
+**What is encrypted on disk.** The Google and OIDC client secrets, TOTP secrets, game secrets (`secrets.json`) and the
+session-signing key are sealed with AES-256-GCM, each bound to its own field so a copied value won't open elsewhere.
+Recovery codes and passwords are stored only as bcrypt hashes. Older plain-text files are encrypted on first start.
+The key is `CROWSNEST_MASTER_KEY` (24+ characters, e.g. `openssl rand -base64 32`) when set; keep it **outside** the
+data volume (the host's `.env`, a Docker secret). Otherwise a key file `master.key` is created beside the session
+secret and the server warns: that still protects a copied single file or backup, but not a copy of the whole volume.
+Lose the key and the sealed secrets can't be read: re-enter the client secrets and game secrets, and everyone re-enrols
+their authenticator app. Secrets are never sent back to the browser (fields show "set"), and recovery codes and QR
+codes are served uncacheable. Not encrypted: the users file (bcrypt hashes and emails), the settings, and the activity
+log. Game join passwords shown on a card are shown on purpose.
 
 ### Showing join details on the cards
 
@@ -366,6 +569,8 @@ CSRF token. The dashboard itself uses `GET /api/events`, one stream of state cha
 | `POST` | `/api/games/{id}/switch` | Stop whichever game is running, then start this one |
 | `POST` | `/api/games/{id}/stop` | Stop the game (accepted, runs in the background; status shows `stopping`) |
 | `GET` | `/api/activity` | Recent activity and playtime per player (`?limit=`, `?game=`) |
+| `GET` | `/api/audit` | The full activity log, filtered and paged (**admin only**; `?game=`, `?kind=`, `?actor=`, `?q=`, `?since=`, `?until=`, `?offset=`, `?limit=`) |
+| `GET` | `/metrics` | Prometheus metrics, only when `server.metrics_token_env` is set; bearer token, no session |
 | `GET` | `/api/host` | Host memory, load and disk space |
 | `GET` | `/api/health` | Whether CrowsNest can reach Docker |
 | `GET` | `/api/games/{id}/logs` | SSE stream of `docker logs -f` (**admin only**) |

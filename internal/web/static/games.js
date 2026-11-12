@@ -129,7 +129,7 @@ function renderFleet(configured) {
       const ok = await confirmAction({
         eyebrow: "// decommission",
         title: `Disable ${name}?`,
-        message: "The container is removed and the game leaves the dashboard. Its data folder is kept, so it can be enabled again later.",
+        message: "The container is removed and the game leaves the dashboard. Its data folders and backups are kept, so it can be enabled again later. To delete them too, use \u201cDisable and delete…\u201d.",
         confirmLabel: "Disable",
         danger: true,
       });
@@ -140,12 +140,18 @@ function renderFleet(configured) {
       toast(`${name} disabled.`, "ok");
       await loadGames();
     });
-    row.append(edit, upd, back, del);
-    c.append(row);
+    const wipe = el("button", "btn btn-danger", "Disable and delete…");
+    wipe.type = "button"; wipe.disabled = busy;
+    const form = el("div", "wipe-form");
+    form.hidden = true;
+    wipe.addEventListener("click", () => { form.hidden = !form.hidden; });
+    buildWipeForm(form, g, wipe);
+    row.append(edit, upd, back, del, wipe);
+    c.append(row, form);
     root.append(c);
   });
   configured.forEach((g) => {
-    const c = fleetCard(g.display_name || g.id, [g.container, g.connect_address].filter(Boolean).join(" · "),
+    const c = fleetCard(g.display_name || g.id, [g.container, g.connect || g.connect_address].filter(Boolean).join(" · "),
       el("span", "tag", "set in files"));
     root.append(c);
   });
@@ -296,6 +302,7 @@ function buildForm(values = {}) {
   const m = moduleById(selected);
   $("image-field").hidden = !(m && m.needs_image);
   form.elements.image.required = !!(m && m.needs_image);
+  buildVersion(m, values.tag || "");
   $("options").replaceChildren();
   $("options-more").replaceChildren();
   if (!m) return;
@@ -339,11 +346,74 @@ function buildForm(values = {}) {
     const f = form.elements["opt:" + key];
     if (f) f.placeholder = hint;
   });
-  const connect = form.elements.connect_address;
-  connect.placeholder = m.connect_hint ? `e.g. ${m.connect_hint}` : "e.g. 10.0.0.2:25565";
-  if (!editing && m.connect_hint && !connect.value) connect.value = m.connect_hint;
+  const first = firstPort(m);
+  $("port-field").hidden = !first; // a game on its own LAN address (Windrose) publishes no host port
+  form.elements.game_port.placeholder = first ? `${first.port} (the standard port)` : "";
   $("more").hidden = false;
   $("options").hidden = !main.length;
+}
+
+// buildVersion fills the Image version choice: the default tag (latest), the image's stable release when the
+// module knows one, or a specific tag typed in to hold the game on one version.
+function buildVersion(m, tag) {
+  const sel = form.elements.version;
+  sel.replaceChildren();
+  if (!m) return;
+  const def = m.default_tag || "latest";
+  const add = (value, text) => { const o = document.createElement("option"); o.value = value; o.textContent = text; sel.append(o); };
+  add("default", def === "latest" ? "Latest (follows the newest release)" : `${def} (the module's default)`);
+  if (m.stable_tag && m.stable_tag !== def) add("stable", `Stable (${m.stable_tag})`);
+  add("custom", "Pin to a specific version…");
+  const known = tag === "" || tag === def ? "default" : (tag === m.stable_tag ? "stable" : "custom");
+  sel.value = known;
+  form.elements.version_tag.value = known === "custom" ? tag : "";
+  syncVersion();
+}
+
+function syncVersion() {
+  const custom = form.elements.version.value === "custom";
+  form.elements.version_tag.hidden = !custom;
+  form.elements.version_tag.required = custom;
+  $("version-help").textContent = custom
+    ? "Any tag the image publishes. The game stays on it until you change it here."
+    : "The container runs the exact image the tag pointed to when it was set up. Update image on the card moves it on.";
+}
+
+// chosenTag is the image tag the form asks for, or "" for the module's default.
+function chosenTag(m) {
+  const v = form.elements.version.value;
+  if (v === "stable") return m.stable_tag || "";
+  if (v === "custom") return form.elements.version_tag.value.trim();
+  return "";
+}
+
+// firstPort is the module's main game port (the first it publishes), from "8211/udp" style entries.
+function firstPort(m) {
+  const list = portsOf(m);
+  return list.length ? list[0] : null;
+}
+
+function portsOf(m) {
+  return (m.ports || []).map((p) => {
+    const [num, proto] = String(p).split("/");
+    return { port: parseInt(num, 10), proto: proto || "udp" };
+  }).filter((p) => p.port > 0);
+}
+
+// publishedPorts turns the one "Game port" the person chose into the full host:container/proto list. The
+// module's other ports keep their distance from the first, so a pair like Valheim's 2456 and 2457 stays a pair.
+function publishedPorts(m, chosen) {
+  const list = portsOf(m);
+  if (!list.length || !chosen || chosen === list[0].port) return "";
+  return list.map((p) => `${chosen + (p.port - list[0].port)}:${p.port}/${p.proto}`).join(",");
+}
+
+// chosenPort reads the host port back out of a saved ports option, for the edit form.
+function chosenPort(m, spec) {
+  const list = portsOf(m);
+  if (!spec || !list.length) return "";
+  const host = parseInt(String(spec).split(",")[0].split(":").slice(-2, -1)[0] || String(spec).split(":")[0], 10);
+  return host > 0 && host !== list[0].port && publishedPorts(m, host) === spec ? String(host) : "";
 }
 
 function collect() {
@@ -356,17 +426,27 @@ function collect() {
     options: {}, secrets: {},
   };
   if (m.needs_image && form.elements.image.value.trim()) req.options.image = form.elements.image.value.trim();
+  const tag = chosenTag(m);
+  if (tag) req.options.tag = tag;
   [...(m.options || []), { key: "data_dir" }, { key: "ports" }, { key: "ram" }].forEach((o) => {
     const f = form.elements["opt:" + o.key];
     if (!f) return;
     const v = f.value.trim();
     if (o.secret) { if (v) req.secrets[o.key] = v; } else if (v !== "") req.options[o.key] = v;
   });
+  // The "Game port" box fills the ports option, unless the ports were typed under More settings.
+  if (!req.options.ports) {
+    const chosen = parseInt(form.elements.game_port.value, 10);
+    const spec = publishedPorts(m, chosen);
+    if (spec) req.options.ports = spec;
+  }
   return req;
 }
 
 form.addEventListener("input", (e) => {
+  if (e.target === form.elements.version) syncVersion();
   if (e.target === form.elements.id) idTouched = true;
+  if (e.target === form.elements.game_port && form.elements["opt:ports"]) form.elements["opt:ports"].value = ""; // the simple box takes over
   if (e.target === form.elements.display_name && !idTouched && !editing) form.elements.id.value = slug(e.target.value);
   schedulePreview();
 });
@@ -414,6 +494,7 @@ async function runPreview() {
   $("sum-status").textContent = p.fits ? "✓ Allowed by the operator's policy" : "✗ Outside the policy: " + (p.reason || "not allowed");
   sumRow(dl, "Container", [p.container]);
   sumRow(dl, "Image", [p.image, p.pinning ? "pinned by digest when installed" : ""].filter(Boolean));
+  sumRow(dl, "Players connect to", p.connect ? [p.connect] : []);
   sumRow(dl, "Ports", p.ports);
   sumRow(dl, "Data folder", p.folders);
   sumRow(dl, "Memory limit", p.memory ? [p.memory] : []);
@@ -516,6 +597,13 @@ function startEdit(g) {
   form.elements.id.value = g.id;
   form.elements.id.readOnly = true;
   form.elements.connect_address.value = g.connect_address || "";
+  // A ports option that is just a different first port shows in the simple "Game port" box, not twice.
+  const gp = chosenPort(moduleById(g.module), (g.options || {}).ports);
+  if (gp) {
+    form.elements.game_port.value = gp;
+    const adv = form.elements["opt:ports"];
+    if (adv) adv.value = "";
+  }
   if (g.options && g.options.image) form.elements.image.value = g.options.image;
   $("basics-title").textContent = `Settings for ${g.display_name || g.id}`;
   $("enable").textContent = "Save and recreate";
@@ -562,3 +650,48 @@ function selectFromHash() {
   if (card) card.scrollIntoView({ behavior: "smooth", block: "start" });
 }
 window.addEventListener("hashchange", selectFromHash);
+
+// buildWipeForm fills the inline "Disable and delete" form of one game: two
+// separate ticks (data folders, backups), the game's id typed out, and the
+// admin's password. Nothing is deleted without all of them.
+function buildWipeForm(form, g, toggle) {
+  const name = g.display_name || g.id;
+  const tick = (label) => {
+    const l = el("label", "wipe-tick");
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    l.append(cb, document.createTextNode(" " + label));
+    return [l, cb];
+  };
+  const [dataL, dataCB] = tick("Delete its data folders (the world, configs and everything else the game saved)");
+  const [bakL, bakCB] = tick("Delete its backups too (without them a deleted world cannot be restored)");
+  const id = document.createElement("input");
+  id.type = "text"; id.placeholder = `Type ${g.id} to confirm`; id.autocomplete = "off";
+  const pw = document.createElement("input");
+  pw.type = "password"; pw.placeholder = "Your password"; pw.autocomplete = "current-password";
+  const go = el("button", "btn btn-danger", "Disable and delete");
+  go.type = "button";
+  const no = el("button", "btn btn-ghost", "Cancel");
+  no.type = "button";
+  const err = el("p", "settings-error");
+  err.hidden = true;
+  no.addEventListener("click", () => { form.hidden = true; });
+  go.addEventListener("click", async () => {
+    err.hidden = true;
+    if (!dataCB.checked && !bakCB.checked) { err.textContent = "Tick what to delete, or use plain Disable."; err.hidden = false; return; }
+    go.disabled = true;
+    const res = await callAPI(`/api/managed/games/${encodeURIComponent(g.id)}`, {
+      method: "DELETE",
+      body: JSON.stringify({ delete_data: dataCB.checked, delete_backups: bakCB.checked, confirm_id: id.value.trim(), password: pw.value }),
+    });
+    go.disabled = false;
+    pw.value = "";
+    if (!res.ok) { err.textContent = await errorText(res, "Disable"); err.hidden = false; return; }
+    toast(`${name} disabled and its data deleted.`, "ok");
+    await loadGames();
+  });
+  form.append(
+    el("p", "allow-note", "The game must be stopped. This cannot be undone."),
+    dataL, bakL, id, pw, go, no, err);
+  toggle.setAttribute("aria-expanded", "false");
+}

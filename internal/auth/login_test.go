@@ -5,8 +5,11 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/fiddler110/crowsnest/internal/mfa"
 )
 
 func newTestService(t *testing.T) *Service {
@@ -116,5 +119,79 @@ func TestServeLogout_ClearsCookie(t *testing.T) {
 	}
 	if cookies[0].MaxAge >= 0 {
 		t.Fatalf("logout cookie MaxAge = %d, want negative (delete)", cookies[0].MaxAge)
+	}
+}
+
+type fakeMFA struct {
+	code     string
+	enabled  bool
+	attempts int
+}
+
+func (f *fakeMFA) Enabled(string) bool     { return f.enabled }
+func (f *fakeMFA) RecoveryLeft(string) int { return 3 }
+func (f *fakeMFA) Verify(_, code string) (bool, error) {
+	f.attempts++
+	if code == f.code {
+		return false, nil
+	}
+	return false, mfa.ErrBadCode
+}
+
+func TestLoginWithSecondFactor(t *testing.T) {
+	hash, _ := HashPassword("correct horse")
+	svc := &Service{Users: Users{"ann": {Hash: hash}}, Sessions: NewSessionManager([]byte("0123456789abcdef0123456789abcdef"), time.Hour)}
+	svc.Sessions.Users = svc.Users
+	f := &fakeMFA{code: "123456", enabled: true}
+	svc.MFA = f
+
+	post := func(h http.HandlerFunc, body string, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/login", strings.NewReader(body))
+		for _, c := range cookies {
+			req.AddCookie(c)
+		}
+		rec := httptest.NewRecorder()
+		h(rec, req)
+		return rec
+	}
+	rec := post(svc.ServeLogin, `{"username":"ann","password":"correct horse"}`)
+	if rec.Code != 200 || !strings.Contains(rec.Body.String(), "mfa_required") {
+		t.Fatalf("password step = %d %s", rec.Code, rec.Body.String())
+	}
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == SessionCookieName {
+			t.Fatal("a session was issued before the second factor")
+		}
+	}
+	var pending *http.Cookie
+	for _, c := range rec.Result().Cookies() {
+		if c.Name == mfaCookieName {
+			pending = c
+		}
+	}
+	if pending == nil {
+		t.Fatal("no pending cookie")
+	}
+	if rec := post(svc.ServeLoginMFA, `{"code":"123456"}`); rec.Code != 401 {
+		t.Errorf("code without the pending cookie = %d, want 401", rec.Code)
+	}
+	if rec := post(svc.ServeLoginMFA, `{"code":"000000"}`, pending); rec.Code != 401 {
+		t.Errorf("wrong code = %d, want 401", rec.Code)
+	}
+	rec = post(svc.ServeLoginMFA, `{"code":"123456"}`, pending)
+	if rec.Code != 200 {
+		t.Fatalf("right code = %d %s", rec.Code, rec.Body.String())
+	}
+	var got bool
+	for _, c := range rec.Result().Cookies() {
+		got = got || (c.Name == SessionCookieName && c.Value != "")
+	}
+	if !got {
+		t.Error("no session after the second factor")
+	}
+	// A user without a second factor signs in in one step.
+	f.enabled = false
+	if rec := post(svc.ServeLogin, `{"username":"ann","password":"correct horse"}`); !strings.Contains(rec.Body.String(), "csrf_token") {
+		t.Errorf("no-MFA login = %s", rec.Body.String())
 	}
 }

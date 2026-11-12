@@ -514,6 +514,8 @@ setInterval(() => document.querySelectorAll(".game-card").forEach(renderIdleTime
 // every 30s, and straight away whenever the game list fails to load.
 function applyHealth(health) {
   document.getElementById("docker-banner").hidden = health.docker !== false;
+  const bb = document.getElementById("backups-banner");
+  if (bb) bb.hidden = health.backups !== false;
 }
 
 async function refreshHealth() {
@@ -772,6 +774,8 @@ window.addEventListener("beforeunload", () => {
       case "stop_failed": return [`${game} failed to stop${note}`, true];
       case "join": return [`${who} joined ${game}`, false];
       case "leave": return [`${who} left ${game}`, false];
+      case "crash": return [`${game} crashed (${e.detail})`, true];
+      case "crash_loop": return [`${game} is crash-looping (${e.detail})`, true];
       case "settings": return [`${who} changed settings${note}`, false];
       case "users": return [`${who} ${e.detail || "changed users"}`, false];
       case "backup": return [`${who} backed up ${game}${note}`, false];
@@ -887,7 +891,7 @@ async function fetchBackups(id) {
   }
   const note = card.querySelector(".backups-note");
   const list = card.querySelector(".backups-list");
-  note.textContent = data.running ? "Backing up…" : data.unavailable ? "Start the game to list or take backups." : "";
+  note.textContent = data.restoring ? "Restoring…" : data.running ? "Backing up…" : data.unavailable ? "Start the game to list or take backups." : "";
   card.querySelector(".backup-now-btn").disabled = !!data.running || !!data.unavailable;
   list.replaceChildren();
   const mb = (n) => (n >= 1024 ** 3 ? `${(n / 1024 ** 3).toFixed(1)} GB` : `${(n / 1024 ** 2).toFixed(1)} MB`);
@@ -898,8 +902,39 @@ async function fetchBackups(id) {
     const meta = document.createElement("span");
     meta.textContent = `${mb(f.size)} · ${new Date(f.time).toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" })}`;
     li.append(name, meta);
+    if (data.restorable) {
+      const btn = document.createElement("button");
+      btn.type = "button";
+      btn.className = "btn btn-ghost restore-btn";
+      btn.textContent = "Restore";
+      btn.disabled = !!data.running;
+      btn.addEventListener("click", () => restoreGame(id, f.name, btn));
+      li.appendChild(btn);
+    }
     list.appendChild(li);
   });
+}
+
+async function restoreGame(id, file, btn) {
+  const name = cardFor(id).dataset.name;
+  const ok = await confirmAction({
+    title: `Restore ${name}?`,
+    message: `This stops ${name}, replaces its current world with ${file}, and starts it again if it was running. ` +
+      "A fresh backup of the current world is taken first when the game keeps backups before stopping. Players will be disconnected.",
+    confirmLabel: "Restore",
+    danger: true,
+    eyebrow: "// restore",
+  });
+  if (!ok) return;
+  btn.disabled = true;
+  const res = await callAPI(`/api/games/${encodeURIComponent(id)}/restore`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file }),
+  });
+  if (res.status === 409 || res.status === 400) toast(await errorText(res), "info");
+  else if (await checkOK(res, "Restore")) toast(`${name}: restoring ${file}.`, "ok");
+  fetchBackups(id);
 }
 
 async function backupGame(id, btn) {

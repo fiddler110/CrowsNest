@@ -15,6 +15,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/dockerguard"
 	"github.com/fiddler110/crowsnest/internal/modules"
+	"github.com/fiddler110/crowsnest/internal/vault"
 	"gopkg.in/yaml.v3"
 )
 
@@ -318,7 +319,7 @@ func TestPinnedCreateThroughRealGuard(t *testing.T) {
 		t.Fatal(err)
 	}
 	res, err := dockerguard.Sources{ManagedFile: scopesFile, PolicyFile: m.PolicyFile}.Load()
-	if err != nil || res.Managed != 1 {
+	if err != nil || res.Managed != 2 { // the game and its data cleaner
 		t.Fatalf("load: %+v %v", res, err)
 	}
 	guard := dockerguard.New(sock, res.Scopes)
@@ -344,5 +345,70 @@ func TestPinnedCreateThroughRealGuard(t *testing.T) {
 	byDigest, _ := rd.Spec(func(string) (string, bool) { return "", false })
 	if err := client.Create(ctx, byDigest); err != nil {
 		t.Errorf("create by digest: %v", err)
+	}
+}
+
+func TestSecretsSealRoundTrip(t *testing.T) {
+	v, err := vault.New("", filepath.Join(t.TempDir(), "k"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := &Manager{Vault: v}
+	in := map[string]map[string]string{"mc": {"RCON": "hunter2"}}
+	sealed, err := m.sealSecrets(in)
+	if err != nil || strings.Contains(sealed["mc"]["RCON"], "hunter2") || !vault.IsSealed(sealed["mc"]["RCON"]) {
+		t.Fatalf("sealed = %v, %v", sealed, err)
+	}
+	out, legacy, err := m.unsealSecrets(sealed)
+	if err != nil || legacy || out["mc"]["RCON"] != "hunter2" {
+		t.Fatalf("unsealed = %v %v %v", out, legacy, err)
+	}
+	if _, legacy, _ := m.unsealSecrets(in); !legacy {
+		t.Error("plain values should be reported as legacy")
+	}
+	// A value moved to another game doesn't open.
+	moved := map[string]map[string]string{"other": sealed["mc"]}
+	if _, _, err := m.unsealSecrets(moved); err == nil {
+		t.Error("opened a secret moved to another game")
+	}
+}
+
+// The image version a game follows is its tag option: the catalogue offers the module's stable tag, a
+// chosen tag is what gets pulled and pinned, and a malformed one is refused.
+func TestImageVersionChoice(t *testing.T) {
+	m, fd := newManager(t)
+	var mc ModuleInfo
+	for _, mi := range m.Catalogue() {
+		if mi.ID == "minecraft" {
+			mc = mi
+		}
+	}
+	if mc.DefaultTag != "latest" || mc.StableTag != "stable" {
+		t.Fatalf("catalogue tags: %+v", mc)
+	}
+	bad := mcReq
+	bad.Options = map[string]string{"eula": "TRUE", "tag": "latest@sha256:abc"}
+	if err := m.Enable(bad); err == nil {
+		t.Error("accepted a tag with an @")
+	}
+	req := mcReq
+	req.Options = map[string]string{"eula": "TRUE", "tag": "stable"}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	if in := info(t, m, "minecraft"); in.Image != "itzg/minecraft-server:stable" {
+		t.Errorf("followed %q, want the stable tag", in.Image)
+	}
+	if img, _ := fd.lastCreate(); !strings.HasPrefix(img, "itzg/minecraft-server@sha256:") {
+		t.Errorf("created %q: want the digest of the stable tag", img)
+	}
+	// switching the version re-pulls and re-pins
+	if err := m.Update(Request{ID: "minecraft", Options: map[string]string{"eula": "TRUE", "tag": "java21"}}); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	if in := info(t, m, "minecraft"); in.Image != "itzg/minecraft-server:java21" {
+		t.Errorf("after switching: %q", in.Image)
 	}
 }

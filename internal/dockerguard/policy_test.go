@@ -219,3 +219,52 @@ func TestSourcesLoadAndWatch(t *testing.T) {
 		t.Fatal("the operator's own scope was dropped")
 	}
 }
+
+func TestPolicyBackupsRoot(t *testing.T) {
+	p, err := ParsePolicy([]byte(testPolicy + "backups_root: /mnt/usb/backups\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	two := func(bind string) *Scope {
+		return mustScope(t, `{"name":"valheim","images":["lloesche/valheim-server"],"binds":["/srv/games/valheim","`+bind+`"],`+
+			`"networks":["crowsnest-games-net"],"ports":[{"host_ip":"10.0.0.2","host_port":"27015","container_port":"27015","proto":"udp"}]}`)
+	}
+	if err := p.Admit(two("/mnt/usb/backups/valheim")); err != nil {
+		t.Errorf("a bind inside backups_root was refused: %v", err)
+	}
+	for _, bad := range []string{"/mnt/usb/other/valheim", "/mnt/usb/backups", "/mnt/usb/backupsx/valheim"} {
+		if err := p.Admit(two(bad)); err == nil {
+			t.Errorf("bind %s was admitted", bad)
+		}
+	}
+	// Without backups_root only games_root is bindable.
+	plain, _ := ParsePolicy([]byte(testPolicy))
+	if err := plain.Admit(two("/mnt/usb/backups/valheim")); err == nil {
+		t.Error("a backups bind was admitted by a policy with no backups_root")
+	}
+	for _, root := range []string{"/srv/games", "/srv/games/backups", "/srv", "relative", "/", "/mnt/../x"} {
+		if _, err := ParsePolicy([]byte(testPolicy + "backups_root: " + root + "\n")); err == nil {
+			t.Errorf("backups_root %q was accepted", root)
+		}
+	}
+}
+
+func TestPolicyAdmitsRestoreContainerByTheGamesName(t *testing.T) {
+	p, _ := ParsePolicy([]byte(testPolicy))
+	if err := p.Admit(mustScope(t, scopeJSON("valheim-restore", "lloesche/valheim-server", ""))); err != nil {
+		t.Errorf("<game>-restore of a listed game was refused: %v", err)
+	}
+	if err := p.Admit(mustScope(t, scopeJSON("other-restore", "lloesche/valheim-server", ""))); err == nil {
+		t.Error("a restore container of an unlisted game was admitted")
+	}
+}
+
+func TestPolicyAdmitsCleanContainerByTheGamesName(t *testing.T) {
+	p, _ := ParsePolicy([]byte(testPolicy))
+	if err := p.Admit(mustScope(t, scopeJSON("valheim-clean", "lloesche/valheim-server", ""))); err != nil {
+		t.Errorf("<game>-clean of a listed game was refused: %v", err)
+	}
+	if err := p.Admit(mustScope(t, scopeJSON("other-clean", "lloesche/valheim-server", ""))); err == nil {
+		t.Error("a clean container of an unlisted game was admitted")
+	}
+}

@@ -470,7 +470,8 @@ h1, h2, h3, p { margin: 0; }
 .backups-note { font: 0.72rem var(--mono); color: var(--muted); }
 .backups-list { list-style: none; margin: 0; padding: 0; font: 0.78rem var(--mono); }
 .backups-list li { display: flex; justify-content: space-between; gap: 1rem; padding: 0.3rem 0; border-bottom: 1px solid var(--border); }
-.backups-list li span:last-child { color: var(--muted); flex: none; }
+.backups-list li span:nth-child(2) { color: var(--muted); flex: none; margin-left: auto; }
+.backups-list .restore-btn { flex: none; padding: 0.1rem 0.6rem; font-size: 0.75rem; }
 
 /* ---------- console ---------- */
 .console-actions { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.6rem; }
@@ -640,3 +641,27 @@ a.btn { text-decoration: none; }
 .host-choice { border: 0; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 0.35rem; }
 .host-choice legend { padding: 0; margin-bottom: 0.3rem; }
 .host-choice input[type="text"] { margin-left: 0.5rem; max-width: 12rem; }
+.pergame-row { margin: 0.8rem 0 0; padding: 0.2rem 0.9rem 0.9rem; border: 1px solid var(--border-strong); border-radius: 10px; }
+.pergame-row legend { padding: 0 0.4rem; font-weight: 600; }
+.pergame-row .setting-row { flex-wrap: wrap; }
+.audit-filters > .field { flex: 1; min-width: 8rem; }
+.audit-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.85rem; }
+.audit-table th, .audit-table td { text-align: left; padding: 0.35rem 0.5rem; border-bottom: 1px solid var(--border-strong); vertical-align: top; }
+.audit-table td:last-child { overflow-wrap: anywhere; }
+
+.wipe-form { display: flex; flex-direction: column; gap: 0.5rem; margin-top: 0.6rem; padding: 0.7rem; border: 1px solid var(--border); border-radius: 8px; }
+.wipe-form[hidden] { display: none; }
+.wipe-tick { display: flex; align-items: flex-start; gap: 0.4rem; font-size: 0.85rem; }
+.wipe-form input[type="text"], .wipe-form input[type="password"] { max-width: 22rem; }
+
+/* Per-user game allowlist (Settings, Users) */
+fieldset.field { border: 0; padding: 0; min-inline-size: 0; }
+fieldset.field legend { padding: 0; margin-bottom: 0.3rem; }
+.check-row { display: flex; flex-wrap: wrap; gap: 0.4rem 1.1rem; }
+.check-row label { display: inline-flex; align-items: center; gap: 0.35rem; }
+.check-row input { padding: 0; }
+
+/* Account page: authenticator app */
+.totp-qr { display: block; margin: 0.8rem 0; background: #fff; padding: 8px; border-radius: 8px; }
+.totp-secret { font-family: var(--mono); letter-spacing: 0.08em; word-break: break-all; }
+.totp-codes { font-family: var(--mono); font-size: 1.05rem; line-height: 1.7; padding: 0.8rem 1rem; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px; width: max-content; max-width: 100%; user-select: all; }

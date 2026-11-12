@@ -11,7 +11,9 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -27,6 +29,8 @@ import (
 	"github.com/fiddler110/crowsnest/internal/hoststats"
 	"github.com/fiddler110/crowsnest/internal/memadmit"
 	"github.com/fiddler110/crowsnest/internal/memo"
+	"github.com/fiddler110/crowsnest/internal/mfa"
+	"github.com/fiddler110/crowsnest/internal/restore"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
 )
@@ -41,6 +45,16 @@ type App struct {
 	// Setup, when set, offers first-run setup while there are no users.
 	Setup  *auth.Setup
 	Google *auth.GoogleLogin
+	// GoogleConf holds the Google sign-in settings saved from the dashboard;
+	// nil means they can't be edited there.
+	GoogleConf *auth.GoogleConfStore
+	// AuthPrefs holds the sign-in choices saved from the dashboard (password
+	// sign-in on or off); nil means they can't be changed there.
+	AuthPrefs *auth.PrefsStore
+	// MFA is the TOTP second-factor store; nil turns the feature off.
+	MFA *mfa.Store
+	// OIDC serves sign-in through other OpenID Connect providers; nil turns it off.
+	OIDC *auth.OIDCLogin
 	// Settings backs the dashboard's settings dialog (/api/settings).
 	Settings *settings.Store
 	// TimeZone is the server's time zone name (server.tz), shown beside the
@@ -53,8 +67,15 @@ type App struct {
 	History *history.Store
 	// Backups runs and lists per-game backups (admin only). Optional.
 	Backups *backup.Manager
+	// Restore puts a chosen backup back (admin only). Optional.
+	Restore *restore.Manager
 	// Managed backs the Games API (enable games from the dashboard). Optional.
 	Managed ManagedGames
+	// MetricsToken, when set, serves GET /metrics (Prometheus) to a scraper
+	// presenting it as a bearer token. Empty leaves the route out.
+	MetricsToken string
+	// Crashes adds crash counts to /metrics. Optional.
+	Crashes CrashStats
 	// HostPaths are the mounted paths whose free space /api/host reports.
 	HostPaths []string
 	Templates *Templates
@@ -162,14 +183,25 @@ const maxSwitchBodyBytes = 4096
 // Routes registers the dashboard, login/logout, and game-control API on
 // mux.
 func (a *App) Routes(mux *http.ServeMux) {
+	if a.MetricsToken != "" {
+		mux.HandleFunc("GET /metrics", a.handleMetrics)
+	}
 	mux.HandleFunc("GET /setup", a.handleSetupPage)
 	mux.HandleFunc("POST /setup", a.handleSetup)
 	mux.HandleFunc("GET /login", a.handleLoginPage)
 	mux.HandleFunc("POST /login", a.Auth.ServeLogin)
+	mux.HandleFunc("POST /login/mfa", a.Auth.ServeLoginMFA)
+	mux.HandleFunc("GET "+"/auth/oidc/{id}/start", a.whenOIDC((*auth.OIDCLogin).ServeStart))
+	mux.HandleFunc("GET "+"/auth/oidc/{id}/callback", getOnly(a.whenOIDC((*auth.OIDCLogin).ServeCallback)))
 	mux.HandleFunc("POST /logout", a.Auth.ServeLogout)
-	if a.Google != nil {
-		mux.HandleFunc("GET "+auth.GoogleStartPath, a.Google.ServeStart)
-		mux.HandleFunc("GET "+auth.GoogleCallbackPath, getOnly(a.Google.ServeCallback))
+	// Registered always, so the dashboard can turn Google sign-in on and off
+	// while the server runs; both answer 404 while it is off.
+	if a.Google != nil && a.OIDC != nil {
+		google := func(serve func(*auth.OIDCLogin, http.ResponseWriter, *http.Request, string)) http.HandlerFunc {
+			return a.whenGoogleActive(func(w http.ResponseWriter, r *http.Request) { serve(a.OIDC, w, r, auth.GoogleProviderID) })
+		}
+		mux.HandleFunc("GET "+auth.GoogleStartPath, google((*auth.OIDCLogin).ServeStart))
+		mux.HandleFunc("GET "+auth.GoogleCallbackPath, getOnly(google((*auth.OIDCLogin).ServeCallback)))
 	}
 
 	mux.Handle("GET /{$}", a.requireSessionHTML(http.HandlerFunc(a.handleDashboard)))
@@ -184,10 +216,13 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/games/{id}/players", a.requireSession(http.HandlerFunc(a.handlePlayers)))
 	mux.Handle("GET /api/games/{id}/info", a.requireSession(http.HandlerFunc(a.handleInfo)))
 	mux.Handle("GET /api/activity", a.requireSession(http.HandlerFunc(a.handleActivity)))
+	mux.Handle("GET /api/audit", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleAudit))))
 	mux.Handle("GET /api/games/{id}/console", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleConsole))))
 	mux.Handle("POST /api/games/{id}/console/action", a.requireAdmin(http.HandlerFunc(a.handleConsoleAction)))
 	mux.Handle("POST /api/games/{id}/console/raw", a.requireAdmin(http.HandlerFunc(a.handleConsoleRaw)))
 	mux.Handle("POST /api/games/{id}/backup", a.requireAdmin(http.HandlerFunc(a.handleBackup)))
+	mux.Handle("POST /api/games/{id}/restore", a.requireAdmin(http.HandlerFunc(a.handleRestore)))
+	mux.Handle("GET /api/backups/health", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackupsHealth))))
 	mux.Handle("GET /api/games/{id}/backups", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackups))))
 	mux.Handle("GET /api/host", a.requireSession(http.HandlerFunc(a.handleHost)))
 	mux.Handle("GET /api/health", a.requireSession(http.HandlerFunc(a.handleHealth)))
@@ -205,6 +240,21 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("POST /api/managed/games/{id}/refresh", a.requireAdmin(http.HandlerFunc(a.handleManagedRefresh)))
 	mux.Handle("POST /api/managed/games/{id}/rollback", a.requireAdmin(http.HandlerFunc(a.handleManagedRollback)))
 	mux.Handle("DELETE /api/managed/games/{id}", a.requireAdmin(http.HandlerFunc(a.handleManagedDisable)))
+	mux.Handle("GET /account", a.requireSessionHTML(http.HandlerFunc(a.handleAccountPage)))
+	mux.Handle("GET /api/account/security", a.requireSession(http.HandlerFunc(a.handleGetSecurity)))
+	mux.Handle("POST /api/account/totp/begin", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPBegin)))
+	mux.Handle("GET /api/account/totp/qr", a.requireSession(http.HandlerFunc(a.handleTOTPQR)))
+	mux.Handle("POST /api/account/totp/confirm", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPConfirm)))
+	mux.Handle("POST /api/account/totp/disable", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPDisable)))
+	mux.Handle("POST /api/account/totp/recovery", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPRecovery)))
+	mux.Handle("GET /api/auth/oidc", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleListOIDC))))
+	mux.Handle("PUT /api/auth/oidc/{id}", a.requireAdmin(http.HandlerFunc(a.handlePutOIDC)))
+	mux.Handle("DELETE /api/auth/oidc/{id}", a.requireAdmin(http.HandlerFunc(a.handleDeleteOIDC)))
+	mux.Handle("GET /api/auth/google", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleGetGoogle))))
+	mux.Handle("PUT /api/auth/google", a.requireAdmin(http.HandlerFunc(a.handlePutGoogle)))
+	mux.Handle("DELETE /api/auth/google", a.requireAdmin(http.HandlerFunc(a.handleDeleteGoogle)))
+	mux.Handle("GET /api/auth/password-login", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleGetPasswordLogin))))
+	mux.Handle("PUT /api/auth/password-login", a.requireAdmin(http.HandlerFunc(a.handlePutPasswordLogin)))
 	mux.Handle("GET /api/users", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleListUsers))))
 	mux.Handle("POST /api/users", a.requireAdmin(http.HandlerFunc(a.handleCreateUser)))
 	mux.Handle("PUT /api/users/{name}", a.requireAdmin(http.HandlerFunc(a.handleUpdateUser)))
@@ -217,6 +267,16 @@ func (a *App) Routes(mux *http.ServeMux) {
 		log.Printf("web: static assets unavailable: %v", err)
 	} else {
 		mux.Handle("GET /static/", http.StripPrefix("/static/", static))
+	}
+}
+
+func (a *App) whenGoogleActive(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !a.Google.Active() {
+			http.NotFound(w, r)
+			return
+		}
+		next(w, r)
 	}
 }
 
@@ -294,14 +354,15 @@ func (a *App) gameStatus(d games.GameDef, observed games.Status) games.Status {
 type loginPage struct {
 	PasswordLogin  bool
 	GoogleStartURL string
+	OIDC           []oidcButton
 	Error          string
 }
 
 var loginErrors = map[string]string{
-	auth.LoginErrorDenied:     "Google sign-in was cancelled.",
+	auth.LoginErrorDenied:     "Sign-in was cancelled.",
 	auth.LoginErrorExpired:    "That sign-in attempt expired. Please try again.",
-	auth.LoginErrorNotAllowed: "That Google account isn't on this ship's crew list.",
-	auth.LoginErrorFailed:     "Google sign-in failed. Please try again.",
+	auth.LoginErrorNotAllowed: "That account isn't on this ship's crew list.",
+	auth.LoginErrorFailed:     "Sign-in failed. Please try again.",
 	auth.LoginErrorRateLimit:  "Too many sign-in attempts. Try again in a few minutes.",
 }
 
@@ -310,8 +371,9 @@ func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	page := loginPage{PasswordLogin: !a.Auth.DisablePasswordLogin, Error: loginErrors[r.URL.Query().Get("error")]}
-	if a.Google != nil {
+	page := loginPage{PasswordLogin: !a.Auth.PasswordLoginDisabled(), Error: loginErrors[r.URL.Query().Get("error")]}
+	page.OIDC = a.oidcButtons()
+	if a.Google.Active() {
 		page.GoogleStartURL = a.Google.StartURL()
 	}
 	render(w, a.Templates.Login, page, "login page")
@@ -359,7 +421,7 @@ type dashboardData struct {
 
 func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	session, _ := auth.FromContext(r.Context())
-	defs := a.Registry.All()
+	defs := a.visibleGames(r)
 	data := dashboardData{
 		Page:          "dashboard",
 		Username:      session.Username,
@@ -402,7 +464,7 @@ func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
 // listGames builds the /api/games body for r's user (admins see raw error
 // detail); /api/events sends the same.
 func (a *App) listGames(r *http.Request) []gameSummary {
-	defs := a.Registry.All()
+	defs := a.visibleGames(r)
 	out := make([]gameSummary, len(defs))
 	snaps := a.observeAll(r.Context(), defs)
 	admin := a.Auth.Sessions.RoleFor(actor(r)) == auth.RoleAdmin
@@ -493,9 +555,64 @@ func (a *App) handleActivity(w http.ResponseWriter, r *http.Request) {
 		hide = []string{history.KindUsers, history.KindConsole, history.KindSettings, history.KindGames}
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
-		"events":   a.History.RecentExcluding(limit, r.URL.Query().Get("game"), hide...),
-		"playtime": a.History.Playtime(),
+		"events":   a.History.RecentAllowed(limit, r.URL.Query().Get("game"), func(id string) bool { return a.canSee(r, id) }, hide...),
+		"playtime": a.visiblePlaytime(r),
 	})
+}
+
+// visiblePlaytime is the playtime totals for the games r's user may see.
+func (a *App) visiblePlaytime(r *http.Request) []history.Playtime {
+	all := a.History.Playtime()
+	out := make([]history.Playtime, 0, len(all))
+	for _, p := range all {
+		if a.canSee(r, p.Game) {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// handleAudit is the admin audit view's feed: every kind of event, filtered
+// by game, kind(s), actor, free text and time range, one page at a time.
+// Query: game, kind (comma list), actor, q, since, until (RFC 3339 or
+// YYYY-MM-DD), offset, limit.
+func (a *App) handleAudit(w http.ResponseWriter, r *http.Request) {
+	if a.History == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []history.Event{}, "more": false})
+		return
+	}
+	q := r.URL.Query()
+	f := history.Filter{Game: q.Get("game"), Actor: q.Get("actor"), Text: q.Get("q")}
+	if k := q.Get("kind"); k != "" {
+		f.Kinds = strings.Split(k, ",")
+	}
+	parse := func(name string) (time.Time, bool) {
+		v := q.Get(name)
+		if v == "" {
+			return time.Time{}, true
+		}
+		for _, layout := range []string{time.RFC3339, "2006-01-02"} {
+			if t, err := time.Parse(layout, v); err == nil {
+				return t, true
+			}
+		}
+		http.Error(w, name+": want an RFC 3339 time or YYYY-MM-DD", http.StatusBadRequest)
+		return time.Time{}, false
+	}
+	var ok bool
+	if f.Since, ok = parse("since"); !ok {
+		return
+	}
+	if f.Until, ok = parse("until"); !ok {
+		return
+	}
+	limit := defaultActivityLimit
+	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
+		limit = min(n, maxActivityLimit)
+	}
+	offset, _ := strconv.Atoi(q.Get("offset"))
+	events, more := a.History.Query(f, max(offset, 0), limit)
+	writeJSON(w, http.StatusOK, map[string]any{"events": events, "more": more})
 }
 
 // handleBackup starts a backup of one game in the background.
@@ -514,12 +631,56 @@ func (a *App) handleBackup(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusAccepted)
 	case errors.Is(err, backup.ErrNotConfigured):
 		http.Error(w, "this game has no backup configured", http.StatusNotFound)
-	case errors.Is(err, backup.ErrNotRunning), errors.Is(err, backup.ErrBusy):
+	case errors.Is(err, backup.ErrNotRunning), errors.Is(err, backup.ErrBusy), errors.Is(err, backup.ErrRootUnavailable):
 		http.Error(w, strings.TrimPrefix(err.Error(), "backup: "), http.StatusConflict)
 	default:
 		log.Printf("audit: %s backup %s failed: %v", actor(r), d.ID, err)
 		http.Error(w, publicError(err), http.StatusBadGateway)
 	}
+}
+
+// handleRestore starts restoring one backup file of a game in the background.
+// The body names the file: {"file": "<name>"}. The game is stopped (and started
+// again if it was running), so the caller has already confirmed it.
+func (a *App) handleRestore(w http.ResponseWriter, r *http.Request) {
+	d, ok := a.gameOr404(w, r)
+	if !ok {
+		return
+	}
+	if a.Restore == nil {
+		http.Error(w, "restoring is not configured", http.StatusNotFound)
+		return
+	}
+	var body struct {
+		File string `json:"file"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		http.Error(w, "bad request", http.StatusBadRequest)
+		return
+	}
+	switch err := a.Restore.Request(r.Context(), d, body.File, actor(r)); {
+	case err == nil:
+		w.WriteHeader(http.StatusAccepted)
+	case errors.Is(err, restore.ErrNotConfigured):
+		http.Error(w, err.Error(), http.StatusNotFound)
+	case errors.Is(err, restore.ErrBadFile):
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	case errors.Is(err, restore.ErrBusy), errors.Is(err, restore.ErrWouldPrune), errors.Is(err, backup.ErrRootUnavailable):
+		http.Error(w, err.Error(), http.StatusConflict)
+	default:
+		log.Printf("web: restore %s: %v", d.ID, err)
+		http.Error(w, publicError(err), http.StatusBadGateway)
+	}
+}
+
+// handleBackupsHealth reports the shared backups folder's latest check: whether
+// it is usable, free space, problems, and folders no game uses (admin only).
+func (a *App) handleBackupsHealth(w http.ResponseWriter, r *http.Request) {
+	if a.Backups == nil || a.Backups.Root == nil {
+		http.Error(w, "no shared backups folder is configured", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, a.Backups.Health())
 }
 
 // handleBackups lists a game's backup files, newest first.
@@ -532,15 +693,18 @@ func (a *App) handleBackups(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "backups are not configured", http.StatusNotFound)
 		return
 	}
+	canRestore := a.Restore != nil && d.Backup != nil && d.Backup.CanRestore
+	busy := a.Backups.Running(d.ID) || (a.Restore != nil && a.Restore.Running(d.ID))
 	files, err := a.Backups.List(r.Context(), d)
 	switch {
 	case errors.Is(err, backup.ErrNotConfigured):
-		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": a.Backups.Running(d.ID)})
+		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": busy})
 	case err != nil:
 		// Usually just "the container isn't running".
-		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": a.Backups.Running(d.ID), "unavailable": true})
+		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": busy, "unavailable": true})
 	default:
-		writeJSON(w, http.StatusOK, map[string]any{"files": files, "running": a.Backups.Running(d.ID)})
+		writeJSON(w, http.StatusOK, map[string]any{"files": files, "running": busy, "restorable": canRestore,
+			"restoring": a.Restore != nil && a.Restore.Running(d.ID)})
 	}
 }
 
@@ -576,7 +740,11 @@ func (a *App) health(ctx context.Context) map[string]bool {
 		}
 		return true
 	})
-	return map[string]bool{"docker": err == nil && ok}
+	h := map[string]bool{"docker": err == nil && ok}
+	if a.Backups != nil && a.Backups.Root != nil {
+		h["backups"] = a.Backups.Healthy()
+	}
+	return h
 }
 
 type infoResult struct {
@@ -618,10 +786,31 @@ func (a *App) handleInfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, out)
 }
 
+// canSee reports whether r's user may see and control game id (see
+// auth.UserRecord.Games).
+func (a *App) canSee(r *http.Request, id string) bool {
+	return a.Auth.Sessions.CanAccessGame(actor(r), id)
+}
+
+// visibleGames is the registry's games r's user may see, in registry order.
+func (a *App) visibleGames(r *http.Request) []games.GameDef {
+	defs := a.Registry.All()
+	out := make([]games.GameDef, 0, len(defs))
+	for _, d := range defs {
+		if a.canSee(r, d.ID) {
+			out = append(out, d)
+		}
+	}
+	return out
+}
+
+// gameOr404 is the game named in the path, or a 404. A game the user is not
+// allowed gets the same 404 as one that does not exist, so its id does not
+// leak.
 func (a *App) gameOr404(w http.ResponseWriter, r *http.Request) (games.GameDef, bool) {
 	id := r.PathValue("id")
 	d, ok := a.Registry.Get(id)
-	if !ok {
+	if !ok || !a.canSee(r, d.ID) {
 		http.Error(w, "game not found", http.StatusNotFound)
 		return games.GameDef{}, false
 	}
@@ -712,6 +901,14 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 	}
 	var conflict *exclusivity.ConflictError
 	if errors.As(err, &conflict) {
+		// A game this user may not see is running: do not name it or offer
+		// to stop it.
+		for _, id := range conflict.All {
+			if !a.canSee(r, id) {
+				writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": "Another server is running right now, so this one can't start."})
+				return
+			}
+		}
 		writeJSON(w, http.StatusConflict, map[string]any{"conflict": true, "active_game": conflict.Active, "active_games": conflict.All})
 		return
 	}
@@ -771,7 +968,7 @@ func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
 	// From here on use the registry's own ID, never the client-supplied
 	// string, so nothing a caller typed reaches the log.
 	fromDef, ok := a.Registry.Get(req.From)
-	if !ok {
+	if !ok || !a.canSee(r, fromDef.ID) {
 		http.Error(w, "unknown source game", http.StatusBadRequest)
 		return
 	}
@@ -812,7 +1009,23 @@ func (a *App) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	// tz rides along for display only; PUT decodes settings.Values alone (and
 	// refuses unknown fields), so the page must not send it back.
-	writeJSON(w, http.StatusOK, settingsResponse{Values: a.Settings.Get(), TZ: a.TimeZone})
+	resp := settingsResponse{Values: a.Settings.Get(), TZ: a.TimeZone}
+	for _, d := range a.Registry.All() {
+		resp.Games = append(resp.Games, gameSettingsInfo{
+			ID: d.ID, Name: d.DisplayName,
+			NightShutdown:          d.NightShutdown,
+			RestartCooldownSeconds: int(d.RestartCooldown / time.Second),
+		})
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+// gameSettingsInfo is one game's own defaults, shown beside its overrides.
+type gameSettingsInfo struct {
+	ID                     string `json:"id"`
+	Name                   string `json:"name"`
+	NightShutdown          bool   `json:"night_shutdown"`
+	RestartCooldownSeconds int    `json:"restart_cooldown_seconds"`
 }
 
 // settingsResponse is GET /api/settings: the values plus the server's time
@@ -820,6 +1033,9 @@ func (a *App) handleGetSettings(w http.ResponseWriter, r *http.Request) {
 type settingsResponse struct {
 	settings.Values
 	TZ string `json:"tz,omitempty"`
+	// Games lists the registered games with their defaults, for the
+	// per-game overrides in per_game.
+	Games []gameSettingsInfo `json:"games,omitempty"`
 }
 
 func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request) {
@@ -894,10 +1110,38 @@ func settingsChanges(before, after settings.Values) string {
 	add("max_active_games", before.MaxActiveGames, after.MaxActiveGames)
 	add("auto_update", before.AutoUpdate, after.AutoUpdate)
 	add("raw_console", before.RawConsole, after.RawConsole)
+	ids := map[string]bool{}
+	for id := range before.PerGame {
+		ids[id] = true
+	}
+	for id := range after.PerGame {
+		ids[id] = true
+	}
+	for _, id := range slices.Sorted(maps.Keys(ids)) {
+		add(id, describeGameValues(before.PerGame[id]), describeGameValues(after.PerGame[id]))
+	}
 	if len(parts) == 0 {
 		return "no changes"
 	}
 	return strings.Join(parts, ", ")
+}
+
+// describeGameValues renders one game's overrides, "default" when it has none.
+func describeGameValues(g settings.GameValues) string {
+	var parts []string
+	if g.IdleMinutes != nil {
+		parts = append(parts, fmt.Sprintf("idle %dm", *g.IdleMinutes))
+	}
+	if g.NightShutdown != nil {
+		parts = append(parts, fmt.Sprintf("night %t", *g.NightShutdown))
+	}
+	if g.RestartCooldownSeconds != nil {
+		parts = append(parts, fmt.Sprintf("cooldown %ds", *g.RestartCooldownSeconds))
+	}
+	if len(parts) == 0 {
+		return "default"
+	}
+	return strings.Join(parts, " ")
 }
 
 func writeJSON(w http.ResponseWriter, code int, v any) {

@@ -22,6 +22,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/managed"
+	"github.com/fiddler110/crowsnest/internal/restore"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
 )
@@ -813,7 +814,12 @@ func (c *chanNotifier) Notify(_ context.Context, m string) { c.ch <- m }
 func TestLoginPage_GoogleOnly(t *testing.T) {
 	h := newHarness(t, psOnlyRunning, "palworld")
 	h.App.Auth.DisablePasswordLogin = true
-	h.App.Google = &auth.GoogleLogin{RedirectURL: "https://crowsnest.example.com/auth/google/callback", Service: h.App.Auth}
+	h.App.Google = &auth.GoogleLogin{RedirectURL: "https://crowsnest.example.com/auth/google/callback"}
+	if h.App.OIDC == nil {
+		ostore, _ := auth.NewOIDCStore(filepath.Join(t.TempDir(), "oidc.json"), nil)
+		h.App.OIDC = &auth.OIDCLogin{Service: h.App.Auth, Store: ostore}
+	}
+	h.App.OIDC.Google = h.App.Google
 
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login?error="+auth.LoginErrorNotAllowed, nil))
@@ -1071,6 +1077,58 @@ func TestBackup_AdminOnlyAndPreconditions(t *testing.T) {
 	}
 }
 
+func TestBackupsHealth_EndpointAndBanner(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	h := newHarnessFromDefs(t, docker, nil)
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("GET", path, nil))
+		return rec
+	}
+	if got := get("/api/backups/health").Code; got != http.StatusNotFound {
+		t.Fatalf("no shared folder = %d, want 404", got)
+	}
+	if _, has := h.App.health(context.Background())["backups"]; has {
+		t.Fatal("health reports backups with no shared folder")
+	}
+	mount := t.TempDir()
+	root := &backup.Root{Mount: mount, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state"), ConfirmNew: true}
+	h.App.Backups = &backup.Manager{Docker: docker, Root: root}
+	if got := get("/api/backups/health").Code; got != http.StatusOK {
+		t.Fatalf("health = %d, want 200", got)
+	}
+	if ok, has := h.App.health(context.Background())["backups"]; !has || !ok {
+		t.Fatalf("health backups = %v, %v; want present and true", ok, has)
+	}
+}
+
+func TestRestore_AdminOnlyAndPreconditions(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	h := newHarnessFromDefs(t, docker, []games.GameDef{
+		{ID: "g", DisplayName: "g", ContainerName: "g", Status: &games.DockerStatusChecker{Docker: docker},
+			Backup: &games.BackupSpec{Exec: []string{"backup"}}},
+	})
+	post := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("POST", "/api/games/g/restore", []byte(body)))
+		return rec.Code
+	}
+	if got := post(`{"file":"a.tgz"}`); got != http.StatusNotFound {
+		t.Errorf("restore not configured = %d, want 404", got)
+	}
+	h.App.Restore = &restore.Manager{Docker: docker}
+	if got := post(`not json`); got != http.StatusBadRequest {
+		t.Errorf("bad body = %d, want 400", got)
+	}
+	if got := post(`{"file":"a.tgz"}`); got != http.StatusNotFound { // the game has no restore command
+		t.Errorf("game without a restore command = %d, want 404", got)
+	}
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	if got := post(`{"file":"a.tgz"}`); got != http.StatusForbidden {
+		t.Errorf("player restore = %d, want 403", got)
+	}
+}
+
 type fakeConsole struct{ ran []string }
 
 func (f *fakeConsole) Actions() []games.ConsoleAction {
@@ -1164,8 +1222,9 @@ func TestConsole_ActionsRawToggleAndAudit(t *testing.T) {
 }
 
 type fakeManaged struct {
-	enabled []managed.Request
-	allowed []string
+	enabled  []managed.Request
+	allowed  []string
+	disabled []string
 }
 
 func (f *fakeManaged) Catalogue() []managed.ModuleInfo {
@@ -1176,9 +1235,12 @@ func (f *fakeManaged) Preview(managed.Request) (*managed.Plan, error) {
 	return &managed.Plan{Fits: true}, nil
 }
 func (f *fakeManaged) Enable(r managed.Request) error { f.enabled = append(f.enabled, r); return nil }
-func (f *fakeManaged) Disable(string) error           { return nil }
-func (f *fakeManaged) Update(managed.Request) error   { return nil }
-func (f *fakeManaged) Refresh(string) error           { return nil }
+func (f *fakeManaged) Disable(id string, o managed.DisableOptions) error {
+	f.disabled = append(f.disabled, fmt.Sprintf("%s data=%v backups=%v", id, o.Data, o.Backups))
+	return nil
+}
+func (f *fakeManaged) Update(managed.Request) error { return nil }
+func (f *fakeManaged) Refresh(string) error         { return nil }
 func (f *fakeManaged) Policy() (managed.PolicyState, error) {
 	return managed.PolicyState{Policy: managed.PolicyDoc{Names: []string{"x"}}}, nil
 }
@@ -1368,5 +1430,81 @@ func TestHandleSwitch_CooldownIs429(t *testing.T) {
 	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPost, "/api/games/windrose/switch", body))
 	if rec.Code != http.StatusTooManyRequests || rec.Header().Get("Retry-After") == "" {
 		t.Fatalf("switch = %d (Retry-After %q), want 429", rec.Code, rec.Header().Get("Retry-After"))
+	}
+}
+
+func TestAudit_AdminFilteredFeed(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	store, err := history.Open(filepath.Join(t.TempDir(), "events.jsonl"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.History = store
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
+	store.Record(history.KindUsers, "", "tester", "added ann")
+	store.Record(history.KindJoin, "windrose", "ann", "")
+	store.Record(history.KindJoin, "windrose", "bob", "")
+
+	get := func(query string) (int, []history.Event, bool) {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.req("GET", "/api/audit"+query, nil))
+		var out struct {
+			Events []history.Event `json:"events"`
+			More   bool            `json:"more"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &out)
+		return rec.Code, out.Events, out.More
+	}
+	// Admin kinds that the dashboard logbook hides for players are visible here.
+	if code, ev, _ := get("?kind=users"); code != 200 || len(ev) != 1 || ev[0].Detail != "added ann" {
+		t.Fatalf("kind=users = %d %+v", code, ev)
+	}
+	if _, ev, more := get("?kind=join&limit=1"); len(ev) != 1 || ev[0].Actor != "bob" || !more {
+		t.Fatalf("paged = %+v more=%v", ev, more)
+	}
+	if _, ev, _ := get("?actor=ann&since=2000-01-01"); len(ev) != 1 {
+		t.Fatalf("actor+since = %+v", ev)
+	}
+	if code, _, _ := get("?since=yesterday"); code != http.StatusBadRequest {
+		t.Fatalf("bad since = %d, want 400", code)
+	}
+
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	if code, _, _ := get(""); code != http.StatusForbidden {
+		t.Fatalf("player = %d, want 403", code)
+	}
+}
+
+// Deleting a game's data is irreversible: it needs the id typed and the password.
+func TestDisableDeletingDataAsksForIdAndPassword(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	hash, _ := auth.HashPassword("s3cret-pw")
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin, Hash: hash}}
+	h.App.Auth.Users = h.App.Auth.Sessions.Users
+	fm := &fakeManaged{}
+	h.App.Managed = fm
+	do := func(body string) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("DELETE", "/api/managed/games/minecraft", []byte(body)))
+		return rec.Code
+	}
+	for name, body := range map[string]string{
+		"no id":          `{"delete_data":true,"password":"s3cret-pw"}`,
+		"wrong id":       `{"delete_data":true,"confirm_id":"other","password":"s3cret-pw"}`,
+		"no password":    `{"delete_data":true,"confirm_id":"minecraft"}`,
+		"wrong password": `{"delete_backups":true,"confirm_id":"minecraft","password":"nope-nope"}`,
+		"unknown field":  `{"delete_everything":true}`,
+	} {
+		if c := do(body); c == http.StatusNoContent || len(fm.disabled) != 0 {
+			t.Errorf("%s: %d, disabled = %v", name, c, fm.disabled)
+		}
+	}
+	if c := do(`{"delete_data":true,"delete_backups":true,"confirm_id":"minecraft","password":"s3cret-pw"}`); c != http.StatusNoContent ||
+		len(fm.disabled) != 1 || fm.disabled[0] != "minecraft data=true backups=true" {
+		t.Errorf("confirmed: %d %v", c, fm.disabled)
+	}
+	// A plain disable needs neither, and deletes nothing.
+	if c := do(""); c != http.StatusNoContent || fm.disabled[1] != "minecraft data=false backups=false" {
+		t.Errorf("plain disable: %d %v", c, fm.disabled)
 	}
 }

@@ -38,18 +38,26 @@
       <label class="field">Short id
         <input type="text" name="id" maxlength="31" pattern="[a-z][a-z0-9\-]{1,30}" autocapitalize="none" spellcheck="false" required>
         <small>Lowercase letters, digits and dashes. Becomes the container name and cannot be changed later.</small></label>
-      <label class="field">Address players connect to <span class="optional">optional</span>
-        <input type="text" name="connect_address" maxlength="128" spellcheck="false" placeholder="e.g. 10.0.0.2:25565">
-        <small>Shown on the game's card with a copy button. It is only a label for players: it does not change any other setting.</small></label>
+      <label class="field" id="port-field">Game port <span class="optional">optional</span>
+        <input type="number" name="game_port" min="1" max="65535" inputmode="numeric" placeholder="the game's standard port">
+        <small id="port-help">Leave it empty for the game's standard port. Choose another to run a second server of the same game, or to avoid a clash. Players connect to the host's address and this port, which the summary shows.</small></label>
       <label class="field" id="image-field" hidden>Image
         <input type="text" name="image" spellcheck="false" autocapitalize="none" placeholder="e.g. docker.io/itzg/minecraft-server">
         <small>This module has no image of its own, so say which one to run.</small></label>
+
+      <label class="field" id="version-field">Image version
+        <select name="version"></select>
+        <input type="text" name="version_tag" spellcheck="false" autocapitalize="none" placeholder="e.g. 1.21.4 or java21" hidden>
+        <small id="version-help"></small></label>
 
       <h3 class="step-title"><span class="step-num">3</span> Settings</h3>
       <div id="options" class="options"></div>
       <details id="more" class="more">
         <summary>More settings <small>(wiring such as the API address is filled in automatically)</small></summary>
         <div id="options-more" class="options"></div>
+        <label class="field">A different address for players <span class="optional">optional</span>
+          <input type="text" name="connect_address" maxlength="128" spellcheck="false" placeholder="e.g. play.example.com:8211">
+          <small>Leave empty: players are shown the host's address and the game port. Fill it in only if they reach the server by another name or address, such as a DNS name or a Tailscale address. It is only a label on the card.</small></label>
       </details>
     </div>
 

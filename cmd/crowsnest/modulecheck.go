@@ -38,10 +38,10 @@ func runModuleCheck(args []string, out io.Writer) int {
 		fmt.Fprintln(out, "usage: crowsnest module check <module.yaml|dir> [--log container.log]")
 		return 2
 	}
-	if fi, err := os.Stat(path); err == nil && fi.IsDir() {
+	if fi, err := os.Stat(path); err == nil && fi.IsDir() { // #nosec G703 -- the operator names the module on their own command line
 		path = filepath.Join(path, "module.yaml")
 	}
-	f, err := os.Open(path)
+	f, err := os.Open(path) // #nosec G304 G703 -- the operator names the module on their own command line
 	if err != nil {
 		fmt.Fprintln(out, "FAIL ", err)
 		return 1
@@ -81,7 +81,7 @@ func runModuleCheck(args []string, out io.Writer) int {
 		fmt.Fprintln(out, "info  pass --log <captured container log> to see how it would be read")
 		return 0
 	}
-	lf, err := os.Open(logFile)
+	lf, err := os.Open(logFile) // #nosec G304 G703 -- the operator names the log on their own command line
 	if err != nil {
 		fmt.Fprintln(out, "FAIL ", err)
 		return 1

@@ -21,6 +21,8 @@ runtime:
     - {sub: config, path: /config}
     - {sub: data, path: /opt/valheim}
   env:
+    - PUID=1000               # the image runs as root otherwise and takes the backups folder from the panel (uid 1000)
+    - PGID=1000
     - SERVER_NAME=${server_name}
     - WORLD_NAME=${world_name}
     - SERVER_PASS=${server_pass}      # the image needs 5+ characters
@@ -29,8 +31,9 @@ runtime:
 
 backup:
   exec: ["/bin/sh", "-c", "mkdir -p /config/backups && tar czf /config/backups/manual-$(date +%Y%m%d-%H%M%S).tar.gz -C /config worlds_local"]
-  list_dir: /config/backups
+  dir: /config/backups
   before_stop: true
+  restore: ["/bin/sh", "-c", "set -e; rm -rf /config/worlds_local; tar xzf \"$CROWSNEST_RESTORE_FILE\" -C /config; chown -R \"$(stat -c %u:%g /config)\" /config/worlds_local"]
 
 options:
   - {key: server_name, label: Server name, default: My Valheim Server}
