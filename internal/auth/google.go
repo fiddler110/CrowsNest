@@ -8,12 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode"
 )
@@ -245,9 +247,30 @@ func emailVerified(raw json.RawMessage) bool {
 
 // tokenClient never follows redirects: a 307/308 would re-send the POST body, client secret included,
 // to wherever the Location header points.
+//
+// It also refuses to connect to link-local (cloud metadata at 169.254.169.254), unspecified and multicast
+// addresses, which an identity provider is never at. The check runs on the address actually dialled, so a DNS
+// name that points there is caught too. LAN and loopback addresses stay allowed: an internal provider is fine.
 var tokenClient = &http.Client{
 	Timeout:       10 * time.Second,
 	CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	Transport: &http.Transport{
+		Proxy:               http.ProxyFromEnvironment,
+		DialContext:         (&net.Dialer{Timeout: 10 * time.Second, Control: refuseOddAddress}).DialContext,
+		TLSHandshakeTimeout: 10 * time.Second,
+	},
+}
+
+func refuseOddAddress(_, address string, _ syscall.RawConn) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return err
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || ip.IsLinkLocalUnicast() || ip.IsLinkLocalMulticast() || ip.IsUnspecified() || ip.IsMulticast() {
+		return fmt.Errorf("refusing to connect to %s: not an address a sign-in provider is at", address)
+	}
+	return nil
 }
 
 func randomToken() string {

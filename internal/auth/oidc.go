@@ -25,10 +25,13 @@ func Discover(ctx context.Context, client *http.Client, issuer string) (authURL,
 		client = tokenClient
 	}
 	issuer = strings.TrimRight(issuer, "/")
-	if _, err := httpsOrLocal(issuer); err != nil {
+	base, err := httpsOrLocal(issuer)
+	if err != nil {
 		return "", "", fmt.Errorf("the issuer %s", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, issuer+"/.well-known/openid-configuration", nil)
+	// Rebuilt from the parsed parts: only the scheme, host and path survive, never a query or userinfo.
+	target := url.URL{Scheme: base.Scheme, Host: base.Host, Path: strings.TrimRight(base.Path, "/") + "/.well-known/openid-configuration"}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target.String(), nil)
 	if err != nil {
 		return "", "", err
 	}

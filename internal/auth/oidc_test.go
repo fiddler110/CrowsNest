@@ -183,3 +183,21 @@ func TestOIDCProviderIDGoogleReserved(t *testing.T) {
 		t.Fatalf("Validate() = %v, want the google id refused as reserved", err)
 	}
 }
+
+// Discovery must not be pointed at the cloud metadata address (or other link-local, unspecified or multicast
+// ones), by IP; loopback and LAN addresses stay allowed for an internal provider.
+func TestSignInClientRefusesOddAddresses(t *testing.T) {
+	for _, a := range []string{"169.254.169.254:80", "[fe80::1]:443", "0.0.0.0:80", "224.0.0.1:80", "[ff02::1]:80", "not-an-ip:80"} {
+		if err := refuseOddAddress("tcp", a, nil); err == nil {
+			t.Errorf("%s was allowed", a)
+		}
+	}
+	for _, a := range []string{"127.0.0.1:8080", "192.168.1.10:443", "10.0.0.5:443", "93.184.216.34:443", "[::1]:80"} {
+		if err := refuseOddAddress("tcp", a, nil); err != nil {
+			t.Errorf("%s refused: %v", a, err)
+		}
+	}
+	if _, _, err := Discover(context.Background(), nil, "https://169.254.169.254"); err == nil {
+		t.Error("discovery reached the metadata address")
+	}
+}
