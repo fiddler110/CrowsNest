@@ -353,6 +353,37 @@ Installing grants nothing: a game from the
 module still has to fit `policy.yaml`. The panel only fetches https from public addresses (a private, loopback,
 link-local or Tailscale address is refused, even through a redirect). See docs/modules.md, "Signed modules". Modules to try this with: [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules).
 
+#### Pulling in a module, step by step
+
+Example: the 7 Days to Die module from [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules).
+
+1. **Trust the publisher** (once). Add the key to `config.yaml`, then restart CrowsNest. The key for that repository is
+   in its README; check it there, not in the same place you got the module from.
+   ```yaml
+   modules_dir: /app/data/modules          # must be set, and writable by the panel
+   managed:
+     trusted_keys:
+       - {name: publisher, public_key: OzuKyYzMpWBZrFtKy9MMumlEY5isVbJI/MVrL4sJCyk=}
+   ```
+2. **Install it.** On the Games page, under **Game modules from a source**, paste the address and press **Look at
+   it**:
+   `https://raw.githubusercontent.com/fiddler110/crowsnest-modules/main/sevendtd/module.yaml`
+   Read the list of what the module would run (image, ports, environment, backup command), type your password and press
+   **Install this exact file**. Use the `main` address (or a branch or tag you follow) if you want updates later; an
+   address with a commit hash in it is pinned for good and **Check for update** will never find anything new.
+   The same from a terminal: `docker compose exec crowsnest crowsnest module install <address>` (restart CrowsNest to
+   load it).
+3. **Let the policy allow it.** Add the module's image and ports to `policy.yaml` on the host (the module's own README
+   lists them; for 7 Days to Die: image `docker.io/didstopia/7dtd-server`, ports `26900/tcp` and `26900-26903/udp`).
+   Keep `@modules` in `images:` so the bundled games stay allowed, and set `exec: true` if the module has a backup.
+4. **Switch it on.** A module from a source is off until you turn it on under **Games** (your password is asked).
+5. **Add a game from it.** Games, pick the module, give it an id, fill in the options, **Preview** (it says which policy
+   rule a game fails, if any), then **Enable**.
+
+Prefer files? Clone the repository and copy the folder: `scripts/install.sh <modules_dir> sevendtd` (or copy
+`sevendtd/module.yaml` to `<modules_dir>/sevendtd/module.yaml`), then restart. That copy is not pinned or
+signature-checked, so only do it for a file you have read.
+
 ### Disabling a game and deleting its data
 
 **Games, Disable** removes the container and takes the game off the dashboard; its data folders and backups stay,
