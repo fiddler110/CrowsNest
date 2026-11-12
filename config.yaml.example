@@ -64,7 +64,7 @@ users_file: /app/users.env     # <NAME>_PASSWORD_HASH entries; managed by `crows
 # How people sign in. With no auth section, only username/password (users_file) is used.
 # auth:
 #   password_login: false         # default true; false makes Google the only way in
-#   google:                       # "Sign in with Google"; see README "Signing in with Google"
+#   google:                       # "Sign in with Google"; see docs/accounts.md, "Signing in with Google"
 #     # Must also be an authorized redirect URI on the Google OAuth client.
 #     # An https URL requires server.secure_cookies: true.
 #     redirect_url: https://crowsnest.example.com/auth/google/callback
@@ -141,9 +141,9 @@ games:
 #   games_root: /srv/games
 #   host_ip: 10.0.0.2
 #   offsite_status_file: /offsite-status/offsite.json   # written by quickstart/offsite; shown in the dashboard
-#   backups_root: /mnt/usb/backups   # optional shared backups folder: <backups_root>/<game id> per game (see README, Backups)
+#   backups_root: /mnt/usb/backups   # optional shared backups folder: <backups_root>/<game id> per game (see docs/backups.md)
 #   backups_mount: /game-backups     # where the panel sees it; mount the host folder there, read-write
-#   backups_confirm_new: true        # required on first use: confirms the drive is really mounted (see README, Backups)
+#   backups_confirm_new: true        # required on first use: confirms the drive is really mounted (see docs/backups.md)
 #   backups_dir_mode: "0775"         # "0777" if a game runs as a different user than the panel
 # managed:
 #   dir: /app/data/managed

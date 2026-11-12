@@ -33,10 +33,10 @@ then pick the admin username and passphrase. Then open **Games**, choose a game,
 - **`/srv/games` appears in two places** (`config.yaml` and `policy/policy.yaml`). Change both together if you
   keep game data elsewhere, and create the folder.
 - **Backups on another drive**: three commented lines switch on a shared backups folder, one sub-folder per game
-  (uncomment `backups_confirm_new: true` too, once you have checked the drive is mounted; see "A shared backups folder" in the [README](../README.md#a-shared-backups-folder), including what to watch:
+  (uncomment `backups_confirm_new: true` too, once you have checked the drive is mounted; see "A shared backups folder" in the [backups guide](../docs/backups.md#a-shared-backups-folder), including what to watch:
   an unmounted drive, folder permissions, and that the panel can delete what it can write).
 - **Serving it beyond this machine**: put HTTPS in front (Caddy, nginx, Cloudflare Tunnel), set
   `server.secure_cookies: true`, list the proxy under `trusted_proxies`, and set `CROWSNEST_BIND`.
-- **Sign in with Google, Discord notices, backups, memory limits**: see the main
-  [README](../README.md) and [docs/modules.md](../docs/modules.md).
+- **Sign in with Google, Discord notices, backups, memory limits**: see
+  [accounts](../docs/accounts.md), [backups](../docs/backups.md), [operating](../docs/operating.md) and [modules](../docs/modules.md).
 - **Something is off?** `docker compose exec crowsnest crowsnest doctor`.

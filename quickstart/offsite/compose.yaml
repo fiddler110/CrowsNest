@@ -1,4 +1,4 @@
-# Offsite copy of CrowsNest's shared backups folder (see "Offsite copy" in the README). Merge it into your
+# Offsite copy of CrowsNest's shared backups folder (see "Offsite copy" in docs/backups.md). Merge it into your
 # compose project or run it on its own:  docker compose -f quickstart/offsite/compose.yaml up -d
 #
 # It reads the backups folder read-only and holds the remote's credentials in its own rclone.conf, so a

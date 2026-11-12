@@ -84,7 +84,7 @@ It applies to games enabled from the dashboard only; games in `config.yaml` keep
 `platform.backups_root` set, each dashboard game gets `<backups_root>/<game id>` bound there (so two servers of one
 module never share a folder), and the panel lists and prunes it itself: no listing or prune `docker exec`, so the
 exec guard allows only the backup command. Without `backups_root`, `dir` behaves exactly like `list_dir`. Give
-`dir` or `list_dir`, not both. See the README's "A shared backups folder" for what to watch.
+`dir` or `list_dir`, not both. See docs/backups.md, "A shared backups folder" for what to watch.
 
 `restore: [argv...]` (inside `backup:`, needs `dir`) makes each backup restorable from the dashboard: the argv is the
 entrypoint of a one-shot container, `<game id>-restore`, created from the game's pinned image with the game's data
@@ -92,7 +92,7 @@ folders and its backup folder read-only, run while the game is stopped. The chos
 `$CROWSNEST_RESTORE_FILE` (quote it in scripts; it is not substituted into the command). The command must replace
 the game's saves with the archive's contents and fix ownership; write it to match exactly what `exec` archives. Exit
 status 0 is success. The scope for that container is generated from the game's own, so it adds no ports, exec,
-folders or image. It is shown in the approval summary. See the README's "Restoring a backup".
+folders or image. It is shown in the approval summary. See docs/backups.md, "Restoring a backup".
 
 An optional `accent: "#rrggbb"` sets the colour of the game's dashboard card. Without one the card uses the
 default theme colour.
@@ -124,7 +124,7 @@ platform:
   games_root: ${USERDIR}        # where each game's data folder lives; written as-is
   host_ip: 10.0.0.2             # address game ports are published on (default 0.0.0.0)
   host_games_root: /srv/games   # games_root as a literal path, for the guard (only if games_root is a variable)
-  backups_root: /mnt/usb/backups  # optional: each game's backups go to <backups_root>/<game id> (see the README)
+  backups_root: /mnt/usb/backups  # optional: each game's backups go to <backups_root>/<game id> (see backups.md)
   games_network: crowsnest-games-net
 games:
   - id: minecraft
@@ -475,7 +475,7 @@ The list lives in `config.yaml`, which the dashboard cannot edit. With it set:
   the key's name in the lock file (`crowsnest module list` shows it). An unsigned module still installs by hash as
   before. **An update is refused if the module was installed under a signature and the new version is not signed by a
   trusted key** (pass `--sha256` if you checked it by hand), so a compromised source cannot quietly drop the signature.
-- The dashboard's **Game modules from a source** can install a module and update one, but only from a signed source (see the README).
+- The dashboard's **Game modules from a source** can install a module and update one, but only from a signed source (see managing-games.md).
 
 The signature is ed25519 over `crowsnest-module-v1\n` plus the file's exact bytes, base64, one line. What a signature
 means: the key's holder published this file. It does not review the file, so the install summary is still the thing
