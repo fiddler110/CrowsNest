@@ -19,6 +19,8 @@ async function load() {
   const v = await res.json();
   $("password").hidden = !v.has_password;
   $("mfa-required").hidden = !v.mfa_required;
+  $("passkeys").hidden = !(v.passkeys_available && window.PublicKeyCredential);
+  if (v.passkeys_available) loadPasskeys();
   if (!v.totp_available) return;
   $("totp").hidden = false;
   $("totp-nopw").hidden = v.has_password;
@@ -211,3 +213,46 @@ $("mentions-form").addEventListener("submit", async (e) => {
   loadMentions();
 });
 loadMentions();
+
+// Passkeys.
+const pkError = $("passkey-error");
+const pkShow = (m) => { pkError.textContent = m; pkError.hidden = !m; };
+
+function renderPasskeys(list) {
+  const ul = $("passkey-list");
+  ul.replaceChildren();
+  list.forEach((k) => {
+    const li = document.createElement("li");
+    const used = k.last_used ? `last used ${new Date(k.last_used).toLocaleDateString()}` : "never used";
+    li.textContent = `${k.name} — added ${new Date(k.created).toLocaleDateString()}, ${used} `;
+    const rm = document.createElement("button");
+    rm.type = "button"; rm.className = "btn"; rm.textContent = "Remove";
+    rm.addEventListener("click", async () => {
+      const password = $("passkey-add").elements.password.value;
+      if (!password) { pkShow("Type your password in the box below first, then press Remove."); return; }
+      const res = await callAPI("/api/account/passkeys/remove", { method: "POST", body: JSON.stringify({ id: k.id, password }) });
+      if (!res.ok) { pkShow(await errorText(res)); return; }
+      pkShow(""); renderPasskeys((await res.json()).passkeys);
+    });
+    li.appendChild(rm);
+    ul.appendChild(li);
+  });
+}
+
+async function loadPasskeys() {
+  const res = await callAPI("/api/account/passkeys");
+  if (res.ok) renderPasskeys((await res.json()).passkeys);
+}
+
+$("passkey-add").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target.elements;
+  const begin = await callAPI("/api/account/passkeys/begin", { method: "POST", body: JSON.stringify({ password: f.password.value }) });
+  if (!begin.ok) { pkShow(await errorText(begin)); return; }
+  let body;
+  try { body = await passkeyCreate(await begin.json()); }
+  catch (err) { pkShow(err && err.name === "NotAllowedError" ? "Cancelled." : "This device could not make a passkey."); return; }
+  const fin = await callAPI("/api/account/passkeys/finish?name=" + encodeURIComponent(f.name.value), { method: "POST", body });
+  if (!fin.ok) { pkShow(await errorText(fin)); return; }
+  pkShow(""); e.target.reset(); renderPasskeys((await fin.json()).passkeys); load();
+});

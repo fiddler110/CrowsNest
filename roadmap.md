@@ -34,6 +34,8 @@ inside a tier, top to bottom. Items that already live in track A, B or C are nam
 
 #### P1: next (security design and data safety)
 
+- [ ] **Try the signed-module Allow switch on a real guard** (mount the modules folder, add a key to `policy.yaml`, install a signed module, switch it on, start it).
+- [ ] **Try passkeys in a real browser** (Windows Hello, a phone, a security key): the server side is tested with a software authenticator only.
 - [ ] **Track C checks against real servers:** idle and night auto-stop with Discord notices, the Windrose
   invite-code join, crash-loop detection against a container that really crashes, and each restore command on a
   real world (track B, Backups).
@@ -44,8 +46,7 @@ Done (R15 to R23); see `CHANGELOG.md`.
 
 #### P3: features, in build order
 
-1. [ ] **WebAuthn/passkeys** (track B, Sign-in methods); admin MFA is required via a setting now.
-2. [ ] **An Allow switch for URL-installed modules** (needs the guard to read the lock file; track A, Phase 5).
+Done (passkeys, the Allow switch); see `CHANGELOG.md`. What is left of them is the two real-world checks in P1.
 
 #### P4: larger design work
 
@@ -58,8 +59,7 @@ Done (R15 to R23); see `CHANGELOG.md`.
 
 - [ ] **Phase 2 leftovers:** verify the Windrose log markers on a graceful quit; the Tier 2 adapter-sidecar
   contract is deferred until a module needs it.
-- [ ] **Phase 5 leftovers:** an Allow switch
-  for URL-installed modules (needs the guard to read the lock file), and installing a module whose image the
+- [ ] **Phase 5 leftovers:** installing a module whose image the
   policy does not list (shown as "needs policy lines"). The extra port range is edited in `policy.yaml`.
 - [ ] **Phase 6 (optional):** drop the docker CLI and compose from the image (create containers through the Engine
   API behind the guard); also removes the compose-from-source Dockerfile stage and its x/net CVE churn.
@@ -70,7 +70,7 @@ Done (R15 to R23); see `CHANGELOG.md`.
 - [ ] **Profile page:** email/avatar, naming a device, an admin view of other people's sessions, and showing the
   new sign-in notice beyond the Account page (dashboard banner, Discord; see R19).
 - [ ] **Sign-in:** editing the `name=email`
-  env allowlist, requiring MFA for players, WebAuthn/passkeys,
+  env allowlist, requiring MFA for players,
   encrypting the users file.
 - [ ] **Backups:** a restore for config-file games; try each restore command on a real world; config-file games still back up
   inside their own data and would need the bind added by hand; an optional host-side mount check.

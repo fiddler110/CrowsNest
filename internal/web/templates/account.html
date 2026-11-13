@@ -61,6 +61,19 @@
     <p id="password-error" class="settings-error" role="alert" hidden></p>
   </section>
 
+  <section id="passkeys" class="pane-form" hidden>
+    <h2 class="section-title">// passkeys</h2>
+    <p class="hero-sub">Sign in with your fingerprint, face, PIN or a security key instead of a password. A passkey counts as both steps, so it skips the authenticator-app code.</p>
+    <ul id="passkey-list" class="plain-list"></ul>
+    <form id="passkey-add" autocomplete="off">
+      <label class="field">A name for this passkey <input name="name" maxlength="40" placeholder="Laptop" autocomplete="off"></label>
+      <label class="field">Your password <small>Asked again before changing how you sign in.</small>
+        <input type="password" name="password" maxlength="72" autocomplete="current-password" required></label>
+      <div class="pane-actions"><button class="btn btn-primary" type="submit">Add a passkey</button></div>
+    </form>
+    <p id="passkey-error" class="settings-error" role="alert" hidden></p>
+  </section>
+
   <section id="totp" class="pane-form" hidden>
     <h2 class="section-title">// authenticator app</h2>
     <p id="totp-state" class="hero-sub"></p>
@@ -108,6 +121,7 @@
 </main>
 
 {{template "chrome"}}
+<script src="{{asset "webauthn.js"}}"></script>
 <script src="{{asset "account.js"}}"></script>
 </body>
 </html>

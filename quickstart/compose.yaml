@@ -54,6 +54,7 @@ services:
     environment:
       - GUARD_SCOPES_FILE=/etc/crowsnest/managed/scopes.json
       - GUARD_POLICY=/etc/crowsnest/policy/policy.yaml
+      - GUARD_MODULES_DIR=/app/data/modules      # read-only: lets the guard check signed URL-installed modules
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:2375/_ping"]
       interval: 60s
@@ -65,6 +66,7 @@ services:
       - ./data/managed:/etc/crowsnest/managed:ro
       - ./data/managed:/app/data/managed:ro      # the same folder where config.yaml says it is
       - ./policy:/etc/crowsnest/policy:ro
+      - ./data/modules:/app/data/modules:ro
     networks: [crowsnest-docker]
 
 networks:

@@ -39,8 +39,15 @@
     </a>
     {{end}}
 
+    {{if .Passkeys}}
+    <button type="button" class="google" id="passkey-signin" hidden>
+      <svg class="icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="9" cy="8" r="4"/><path d="M2 21v-1a6 6 0 0 1 9-5.2M17 13v8m0-8a2.5 2.5 0 1 0 0-5 2.5 2.5 0 0 0 0 5zm0 4h3m-3 3h2"/></svg>
+      <span>Sign in with a passkey</span>
+    </button>
+    {{end}}
+
     {{if .PasswordLogin}}
-    {{if or .GoogleStartURL .OIDC}}<p class="divider"><span>or</span></p>{{end}}
+    {{if or .GoogleStartURL .OIDC .Passkeys}}<p class="divider"><span>or</span></p>{{end}}
     <form id="login-form" autocomplete="on" novalidate>
       <label class="field">
         <span class="label">// Username</span>
@@ -83,6 +90,7 @@
 
   <p class="prompt" aria-hidden="true"><span class="ps">$</span> crowsnest --watch <span class="ok">horizon</span><span class="caret"></span></p>
 </main>
+{{if .Passkeys}}<script src="{{asset "webauthn.js"}}"></script><script src="{{asset "login-passkey.js"}}"></script>{{end}}
 {{if .PasswordLogin}}<script src="{{asset "login.js"}}"></script>{{end}}
 </body>
 </html>

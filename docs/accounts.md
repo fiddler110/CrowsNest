@@ -77,6 +77,28 @@ endpoint directly over TLS. The ID token's signature is also checked against the
 (RS256 or ES256; other algorithms are refused). Once signed in, it's the same 3 hour session as a password login. Requests to Google
 need outbound HTTPS from the container.
 
+## Passkeys
+
+A passkey signs someone in with a fingerprint, face, PIN or security key, no password. It counts as both steps, so the
+authenticator-app code is skipped, and "require admins to use an authenticator app" is met by having one.
+
+Turn it on in `config.yaml`. Both values are fixed by you and never taken from a request, because a passkey is bound
+to them: changing either later makes existing passkeys stop working.
+
+```yaml
+auth:
+  passkeys:
+    rp_id: crowsnest.example.com            # the host in the address bar, or its parent domain
+    origins: ["https://crowsnest.example.com"]   # https only (http://localhost for trying it out)
+```
+
+People add them on the **Account** page (up to 10 each; asks for the password again, as removing one does). The
+login page then shows "Sign in with a passkey", which needs no username. A passkey must verify the person (PIN or
+biometric) or it is refused, a response can be used once, and a passkey whose account was deleted cannot sign in.
+Passkeys are kept in `passkeys.json` beside `settings.json`: public keys and credential ids only, nothing that can
+sign anyone in. An account needs a password to add or remove one (the same re-check as the authenticator app), so a
+Google-only account sets a password first. Deleting a user deletes their passkeys.
+
 ## Sign-in options, and protecting what CrowsNest stores
 
 Everything below is managed from the dashboard (Settings, Sign-in, Users; Account for each person).

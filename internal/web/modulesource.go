@@ -124,24 +124,24 @@ func readRemoteBody(w http.ResponseWriter, r *http.Request) (remoteBody, bool) {
 }
 
 // fetchSignedModule downloads, verifies and parses the module at rawURL. The error text is safe to show.
-func (a *App) fetchSignedModule(ctx context.Context, rawURL string) ([]byte, *modules.Manifest, string, error) {
+func (a *App) fetchSignedModule(ctx context.Context, rawURL string) (body, sig []byte, m *modules.Manifest, by string, err error) {
 	if u, err := url.Parse(rawURL); err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" {
-		return nil, nil, "", errors.New("give a plain https:// address of a module.yaml (no password, query or fragment in it)")
+		return nil, nil, nil, "", errors.New("give a plain https:// address of a module.yaml (no password, query or fragment in it)")
 	}
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	body, by, err := modules.FetchSigned(ctx, rawURL, a.moduleClient(), a.TrustedKeys)
+	body, sig, by, err = modules.FetchSignedSig(ctx, rawURL, a.moduleClient(), a.TrustedKeys)
 	if err != nil {
 		if errors.Is(err, modules.ErrNotSigned) {
-			return nil, nil, "", errors.New("this module is not signed by a key you trust (" + err.Error() + "). From the dashboard only signed modules can be installed; the command line can install one by its hash")
+			return nil, nil, nil, "", errors.New("this module is not signed by a key you trust (" + err.Error() + "). From the dashboard only signed modules can be installed; the command line can install one by its hash")
 		}
-		return nil, nil, "", err
+		return nil, nil, nil, "", err
 	}
-	m, err := modules.Parse(bytes.NewReader(body))
+	m, err = modules.Parse(bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, "", errors.New("the file is not a valid module: " + err.Error())
+		return nil, nil, nil, "", errors.New("the file is not a valid module: " + err.Error())
 	}
-	return body, m, by, nil
+	return body, sig, m, by, nil
 }
 
 func (a *App) handleRemotePreview(w http.ResponseWriter, r *http.Request) {
@@ -152,7 +152,7 @@ func (a *App) handleRemotePreview(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	body, m, by, err := a.fetchSignedModule(r.Context(), b.URL)
+	body, _, m, by, err := a.fetchSignedModule(r.Context(), b.URL)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -200,7 +200,7 @@ func (a *App) handleRemoteInstall(w http.ResponseWriter, r *http.Request) {
 	if !a.stepUp(w, r, b.Password, "install a module") {
 		return
 	}
-	body, m, by, err := a.fetchSignedModule(r.Context(), b.URL)
+	body, sig, m, by, err := a.fetchSignedModule(r.Context(), b.URL)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -214,6 +214,9 @@ func (a *App) handleRemoteInstall(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	installed, err := modules.Install(a.ModulesDir, b.URL, body, b.SHA256, false, by)
+	if err == nil {
+		err = modules.SaveSignature(a.ModulesDir, installed.ID, sig)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -258,7 +261,7 @@ func (a *App) handleRemoteRemove(w http.ResponseWriter, r *http.Request) {
 
 // updateTarget finds the lock entry for id and fetches its newer signed version from the source recorded when it was
 // installed. The address never comes from the browser: an update can only come from where the install did.
-func (a *App) updateTarget(w http.ResponseWriter, r *http.Request) (e modules.LockEntry, body []byte, m *modules.Manifest, by string, ok bool) {
+func (a *App) updateTarget(w http.ResponseWriter, r *http.Request) (e modules.LockEntry, body, sig []byte, m *modules.Manifest, by string, ok bool) {
 	id := r.PathValue("id")
 	lock, err := modules.ReadLock(a.ModulesDir)
 	if err != nil {
@@ -270,7 +273,7 @@ func (a *App) updateTarget(w http.ResponseWriter, r *http.Request) (e modules.Lo
 		http.Error(w, id+" was not installed from a source (it is bundled or hand-placed)", http.StatusNotFound)
 		return
 	}
-	body, m, by, err = a.fetchSignedModule(r.Context(), e.Source)
+	body, sig, m, by, err = a.fetchSignedModule(r.Context(), e.Source)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -283,14 +286,14 @@ func (a *App) updateTarget(w http.ResponseWriter, r *http.Request) (e modules.Lo
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	return e, body, m, by, true
+	return e, body, sig, m, by, true
 }
 
 func (a *App) handleRemoteUpdatePreview(w http.ResponseWriter, r *http.Request) {
 	if !a.remoteOn(w) {
 		return
 	}
-	e, body, m, by, ok := a.updateTarget(w, r)
+	e, body, _, m, by, ok := a.updateTarget(w, r)
 	if !ok {
 		return
 	}
@@ -326,7 +329,7 @@ func (a *App) handleRemoteUpdate(w http.ResponseWriter, r *http.Request) {
 	if !a.stepUp(w, r, b.Password, "update a module") {
 		return
 	}
-	e, body, m, by, ok := a.updateTarget(w, r)
+	e, body, sig, m, by, ok := a.updateTarget(w, r)
 	if !ok {
 		return
 	}
@@ -335,6 +338,9 @@ func (a *App) handleRemoteUpdate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	installed, err := modules.InstallRekeying(a.ModulesDir, e.Source, body, b.SHA256, by, a.TrustedKeys)
+	if err == nil {
+		err = modules.SaveSignature(a.ModulesDir, installed.ID, sig)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return

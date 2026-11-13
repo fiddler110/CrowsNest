@@ -12,6 +12,7 @@ import (
 // messages chosen by code, never text taken from the request.
 type loginPage struct {
 	PasswordLogin  bool
+	Passkeys       bool
 	GoogleStartURL string
 	OIDC           []oidcButton
 	Error          string
@@ -30,7 +31,7 @@ func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/setup", http.StatusSeeOther)
 		return
 	}
-	page := loginPage{PasswordLogin: !a.Auth.PasswordLoginDisabled(), Error: loginErrors[r.URL.Query().Get("error")]}
+	page := loginPage{PasswordLogin: !a.Auth.PasswordLoginDisabled(), Passkeys: a.Auth.Passkeys != nil, Error: loginErrors[r.URL.Query().Get("error")]}
 	page.OIDC = a.oidcButtons()
 	if a.Google.Active() {
 		page.GoogleStartURL = a.Google.StartURL()

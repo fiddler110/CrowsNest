@@ -1096,6 +1096,69 @@ func TestInstalledModuleNeedsItsSwitchAndThePolicy(t *testing.T) {
 	}
 }
 
+// The same module, signed by a key the operator listed in policy.yaml, needs no policy lines: the guard checks the
+// signature itself. Without that key in the policy, or after the file is edited, it is back to the gated case.
+func TestSignedInstalledModuleIsAdmittedByTheGuard(t *testing.T) {
+	m, _ := newManager(t)
+	dir := t.TempDir()
+	b, err := os.ReadFile("../../docs/examples/mygame/module.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(dir, "mygame"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "mygame", "module.yaml"), b, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	seed, pub, _ := modules.GenerateKey()
+	sig, _ := modules.Sign(seed, b)
+	if err := modules.SaveSignature(dir, "mygame", sig); err != nil {
+		t.Fatal(err)
+	}
+	m.ModulesDir = dir
+	if err := m.Modules.LoadDir(dir); err != nil {
+		t.Fatal(err)
+	}
+	gated := func() bool {
+		for _, mi := range m.Catalogue() {
+			if mi.ID == "mygame" {
+				return mi.Gated
+			}
+		}
+		t.Fatal("mygame is not in the catalogue")
+		return false
+	}
+	if !gated() {
+		t.Fatal("signed, but the policy trusts no key: it must stay gated")
+	}
+	pol, _ := os.ReadFile(m.PolicyFile)
+	pol = []byte(strings.Replace(string(pol), "names: [", "names: [mygame, ", 1)) // the name is the operator's to allow
+	if err := os.WriteFile(m.PolicyFile, append(pol, []byte("\ntrusted_keys:\n  - {name: me, public_key: "+pub+"}\n")...), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if gated() {
+		t.Fatal("signed by a trusted key: the guard can vouch for it")
+	}
+	if err := m.SetAllowed("mygame", true); err != nil {
+		t.Fatal(err)
+	}
+	plan, err := m.Preview(Request{ID: "mygame", Module: "mygame", Options: map[string]string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !plan.Fits {
+		t.Errorf("the policy should now admit the signed module's image and ports: %+v", plan)
+	}
+	// Editing the installed file breaks the signature: back to gated, and the plan no longer fits.
+	if err := os.WriteFile(filepath.Join(dir, "mygame", "module.yaml"), append(b, []byte("\n# edited\n")...), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !gated() {
+		t.Error("an edited module kept the guard's trust")
+	}
+}
+
 // With a shared backups folder, an enabled game gets its own folder in it
 // (made by the panel, not Docker), the panel lists it itself, and the exec
 // guard is not asked to allow a listing or prune command for it.

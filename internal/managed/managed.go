@@ -45,6 +45,9 @@ type Manager struct {
 	// Vault encrypts secrets.json; nil leaves values as they are (tests).
 	Vault      *vault.Vault
 	PolicyFile string // operator's policy.yaml
+	// ModulesDir is where installed modules live (modules_dir); a module installed from a URL and signed by a key in
+	// the policy's trusted_keys can then be admitted by the guard on its own.
+	ModulesDir string
 	// PolicyEditable lets SetPolicy rewrite PolicyFile (the operator mounted it writable and opted in).
 	PolicyEditable bool
 	Platform       modules.Platform

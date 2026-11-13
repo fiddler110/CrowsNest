@@ -230,6 +230,17 @@ type AuthConfig struct {
 
 	// Google enables "Sign in with Google" when set.
 	Google *GoogleAuthConfig `yaml:"google"`
+
+	// Passkeys turns on sign-in with passkeys (WebAuthn) when set.
+	Passkeys *PasskeyConfig `yaml:"passkeys"`
+}
+
+// PasskeyConfig fixes what a passkey is bound to. Both come from the operator, never from a request: RPID is the
+// host name people see in the address bar (or its registrable parent), Origins the exact https origins that serve
+// the dashboard. Changing either later makes existing passkeys stop working.
+type PasskeyConfig struct {
+	RPID    string   `yaml:"rp_id"`
+	Origins []string `yaml:"origins"`
 }
 
 // PasswordLoginEnabled reports the effective password_login setting.

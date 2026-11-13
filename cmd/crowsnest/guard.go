@@ -29,6 +29,9 @@ func runGuard(args []string) error {
 
 	src := dockerguard.Sources{Base: os.Getenv("GUARD_SCOPES"), ManagedFile: os.Getenv("GUARD_SCOPES_FILE"), PolicyFile: os.Getenv("GUARD_POLICY"), Defaults: policyDefaults()}
 	src.AllowedFile = dockerguard.AllowedPath(src.ManagedFile)
+	if dir := os.Getenv("GUARD_MODULES_DIR"); dir != "" {
+		src.ModulesDir, src.Signed = dir, modules.SignedFunc(dir)
+	}
 	res, err := src.Load()
 	if err != nil {
 		return fmt.Errorf("crowsnest guard: refusing to start, bad scope configuration: %w", err)
