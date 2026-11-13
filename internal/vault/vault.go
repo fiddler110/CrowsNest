@@ -1,8 +1,12 @@
 // Package vault encrypts the secrets CrowsNest keeps on disk (OAuth client
 // secrets, game passwords, TOTP seeds, the session-signing key) with
-// AES-256-GCM. A sealed value reads "enc:v1:<base64>"; a value without that
-// prefix is legacy plaintext, which Unseal returns unchanged so old files can
-// be read once and rewritten sealed.
+// AES-256-GCM. A sealed value reads "enc:v2:<base64>" (new values) or
+// "enc:v1:<base64>" (written by older versions, still readable); a value
+// without either prefix is legacy plaintext, which Unseal returns unchanged so
+// old files can be read once and rewritten sealed. v2 derives the AES key from
+// the master key with Argon2id (a typed passphrase) or HKDF (a random key
+// file); v1 was one plain SHA-256. `crowsnest rekey` moves every file to v2 or
+// to a new master key.
 //
 // The key comes from the CROWSNEST_MASTER_KEY environment variable when set
 // (supply it from outside the data volume: a Docker secret, the host's .env,
@@ -20,8 +24,12 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
+
+	"golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/hkdf"
 )
 
 // EnvKey names the environment variable that holds the master key.
@@ -30,7 +38,10 @@ const EnvKey = "CROWSNEST_MASTER_KEY"
 // MinEnvKeyLen is the shortest master key accepted from the environment.
 const MinEnvKeyLen = 24
 
-const prefix = "enc:v1:"
+const (
+	prefixV1 = "enc:v1:"
+	prefixV2 = "enc:v2:"
+)
 
 // Source says where the master key came from.
 const (
@@ -41,8 +52,31 @@ const (
 // Vault seals and unseals values. The zero value and nil do nothing: they
 // pass values through, which tests use; the server always builds a real one.
 type Vault struct {
-	aead   cipher.AEAD
+	aead   cipher.AEAD // v2: what new values are sealed with
+	legacy cipher.AEAD // v1: only to open values an older version wrote
 	Source string
+}
+
+func newGCM(key []byte) (cipher.AEAD, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, err
+	}
+	return cipher.NewGCM(block)
+}
+
+// deriveV2 turns the master key into the v2 AES key. A passphrase is low-entropy, so it goes through Argon2id (one
+// run at start-up, about a tenth of a second); a key file is 32 random bytes, which HKDF only needs to separate
+// from other uses.
+func deriveV2(material []byte, passphrase bool) ([]byte, error) {
+	if passphrase {
+		return argon2.IDKey(material, []byte("crowsnest vault v2 salt"), 3, 64*1024, 1, 32), nil
+	}
+	key := make([]byte, 32)
+	if _, err := io.ReadFull(hkdf.New(sha256.New, material, nil, []byte("crowsnest vault v2 key")), key); err != nil {
+		return nil, err
+	}
+	return key, nil
 }
 
 // New builds a vault from envValue (the master key from the environment, may
@@ -77,19 +111,23 @@ func New(envValue, keyFile string) (*Vault, error) {
 		}
 	}
 	sum := sha256.Sum256(append([]byte("crowsnest vault key v1:"), material...))
-	block, err := aes.NewCipher(sum[:])
+	legacy, err := newGCM(sum[:])
 	if err != nil {
 		return nil, err
 	}
-	aead, err := cipher.NewGCM(block)
+	key, err := deriveV2(material, source == SourceEnv)
 	if err != nil {
 		return nil, err
 	}
-	return &Vault{aead: aead, Source: source}, nil
+	aead, err := newGCM(key)
+	if err != nil {
+		return nil, err
+	}
+	return &Vault{aead: aead, legacy: legacy, Source: source}, nil
 }
 
 // IsSealed reports whether s is a sealed value.
-func IsSealed(s string) bool { return strings.HasPrefix(s, prefix) }
+func IsSealed(s string) bool { return strings.HasPrefix(s, prefixV1) || strings.HasPrefix(s, prefixV2) }
 
 // Seal encrypts plain, binding it to purpose (for example
 // "managed:minecraft:RCON_PASSWORD"), so a sealed value copied into another
@@ -102,11 +140,11 @@ func (v *Vault) Seal(purpose, plain string) (string, error) {
 	if _, err := rand.Read(nonce); err != nil {
 		return "", err
 	}
-	return prefix + base64.StdEncoding.EncodeToString(v.aead.Seal(nonce, nonce, []byte(plain), []byte(purpose))), nil
+	return prefixV2 + base64.StdEncoding.EncodeToString(v.aead.Seal(nonce, nonce, []byte(plain), []byte(purpose))), nil
 }
 
-// Unseal reverses Seal. A value that is not sealed is returned as it is, with
-// legacy true, so the caller can rewrite it sealed.
+// Unseal reverses Seal. A value that is not sealed with the current scheme comes back with legacy true so the
+// caller can rewrite it: plain text from an early version, or an "enc:v1:" value.
 func (v *Vault) Unseal(purpose, s string) (plain string, legacy bool, err error) {
 	if !IsSealed(s) {
 		return s, s != "", nil
@@ -114,14 +152,41 @@ func (v *Vault) Unseal(purpose, s string) (plain string, legacy bool, err error)
 	if v == nil || v.aead == nil {
 		return "", false, errors.New("vault: a sealed value but no key")
 	}
-	raw, err := base64.StdEncoding.DecodeString(strings.TrimPrefix(s, prefix))
-	if err != nil || len(raw) < v.aead.NonceSize() {
+	aead, body := v.aead, strings.TrimPrefix(s, prefixV2)
+	if strings.HasPrefix(s, prefixV1) {
+		aead, body, legacy = v.legacy, strings.TrimPrefix(s, prefixV1), true
+	}
+	raw, err := base64.StdEncoding.DecodeString(body)
+	if err != nil || len(raw) < aead.NonceSize() {
 		return "", false, errors.New("vault: malformed sealed value")
 	}
-	n := v.aead.NonceSize()
-	out, err := v.aead.Open(nil, raw[:n], raw[n:], []byte(purpose))
+	n := aead.NonceSize()
+	out, err := aead.Open(nil, raw[:n], raw[n:], []byte(purpose))
 	if err != nil {
 		return "", false, errors.New("vault: cannot decrypt (wrong master key, or the value was moved)")
 	}
-	return string(out), false, nil
+	return string(out), legacy, nil
+}
+
+// Reseal reads s with v and seals it again with to (a vault made from another master key, or the same one to move
+// a v1 value to v2). A value that v cannot open but to can is already done and comes back unchanged, so an
+// interrupted rekey can be run again. changed says the returned text differs from s.
+func (v *Vault) Reseal(to *Vault, purpose, s string) (out string, changed bool, err error) {
+	if s == "" {
+		return s, false, nil
+	}
+	plain, legacy, err := v.Unseal(purpose, s)
+	if err == nil && !legacy && IsSealed(s) {
+		if _, _, err2 := to.Unseal(purpose, s); err2 == nil {
+			return s, false, nil // v and to are the same key and the value is already current
+		}
+	}
+	if err != nil {
+		if _, legacy, err2 := to.Unseal(purpose, s); err2 == nil && !legacy && IsSealed(s) {
+			return s, false, nil
+		}
+		return "", false, err
+	}
+	out, err = to.Seal(purpose, plain)
+	return out, out != s, err
 }

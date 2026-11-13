@@ -3,6 +3,7 @@ package web
 import (
 	"crypto/tls"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,6 +21,7 @@ type sourceEnv struct {
 	body   []byte
 	dir    string
 	signed *bool
+	seed   *string // the key the test server signs with
 }
 
 func newSourceEnv(t *testing.T) *sourceEnv {
@@ -31,6 +33,7 @@ func newSourceEnv(t *testing.T) *sourceEnv {
 	h.App.Managed = &fakeManaged{}
 
 	seed, pub, _ := modules.GenerateKey()
+	_ = seed
 	keys, err := modules.ParseTrustedKeys([]modules.TrustedKey{{Name: "publisher", Key: pub}})
 	if err != nil {
 		t.Fatal(err)
@@ -40,12 +43,14 @@ func newSourceEnv(t *testing.T) *sourceEnv {
 		t.Fatal(err)
 	}
 	signed := true
-	e := &sourceEnv{signed: &signed}
+	e := &sourceEnv{signed: &signed, seed: &seed}
 	e.body = body
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/mygame/module.yaml":
 			w.Write(e.body)
+		case "/index.json":
+			fmt.Fprintf(w, `{"modules":[{"id":"mygame","name":"My game","url":"https://%s/mygame/module.yaml","version":1},{"id":"other","url":"https://%s/other/module.yaml"},{"id":"palworld","url":"https://%s/p.yaml"}]}`, r.Host, r.Host, r.Host)
 		case "/mygame/module.yaml.sig":
 			if signed {
 				sig, _ := modules.Sign(seed, e.body) // always signs what is served now
@@ -62,6 +67,7 @@ func newSourceEnv(t *testing.T) *sourceEnv {
 	h.App.Modules = modules.Bundled()
 	h.App.ModulesDir = e.dir
 	h.App.TrustedKeys = keys
+	h.App.CatalogueURL = srv.URL + "/index.json"
 	h.App.ModuleClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}} // #nosec G402 -- test server
 	return e
 }
@@ -121,7 +127,7 @@ func TestRemoteModule_PreviewInstallAndRemove(t *testing.T) {
 	e.h.mux().ServeHTTP(rec, e.h.req("GET", "/api/managed/modules/sources", nil))
 	var sv sourceView
 	_ = json.Unmarshal(rec.Body.Bytes(), &sv)
-	if !sv.Enabled || len(sv.Installed) != 1 || sv.Installed[0].SignedBy != "publisher" || sv.Keys[0] != "publisher" {
+	if !sv.Enabled || len(sv.Installed) != 1 || sv.Installed[0].SignedBy != "publisher" || sv.Keys[0].Name != "publisher" || len(sv.Keys[0].Modules) != 1 || len(sv.Keys[0].Fingerprint) != 16 {
 		t.Fatalf("sources = %s", rec.Body)
 	}
 
@@ -262,5 +268,90 @@ func TestRemoteModule_UpdateRefusesAnotherModuleID(t *testing.T) {
 	rec = e.post("/api/managed/modules/remote/"+id+"/update/preview", `{}`)
 	if rec.Code != http.StatusConflict {
 		t.Fatalf("a source that now serves another id = %d %s", rec.Code, rec.Body)
+	}
+}
+
+func TestModuleCatalogue(t *testing.T) {
+	e := newSourceEnv(t)
+	get := func() map[string]string {
+		rec := httptest.NewRecorder()
+		e.h.mux().ServeHTTP(rec, e.h.authedReq("GET", "/api/managed/modules/catalogue", nil))
+		if rec.Code != 200 {
+			t.Fatalf("catalogue = %d %s", rec.Code, rec.Body)
+		}
+		var v struct {
+			Modules []struct{ ID, State string }
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &v)
+		out := map[string]string{}
+		for _, m := range v.Modules {
+			out[m.ID] = m.State
+		}
+		return out
+	}
+	st := get()
+	if st["mygame"] != "available" || st["other"] != "available" || st["palworld"] != "loaded" {
+		t.Fatalf("states = %v", st)
+	}
+	rec := e.post("/api/managed/modules/remote/preview", `{"url":"`+e.url()+`"}`)
+	var raw map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &raw)
+	if rec := e.post("/api/managed/modules/remote/install", `{"url":"`+e.url()+`","sha256":"`+raw["sha256"].(string)+`","password":"s3cret-pw"}`); rec.Code != 200 {
+		t.Fatalf("install = %d %s", rec.Code, rec.Body)
+	}
+	if st := get(); st["mygame"] != "installed" && st["mygame"] != "update" {
+		t.Errorf("after install = %v", st)
+	}
+	// Not an admin, or no catalogue set.
+	e.h.App.CatalogueURL = ""
+	rec = httptest.NewRecorder()
+	e.h.mux().ServeHTTP(rec, e.h.authedReq("GET", "/api/managed/modules/catalogue", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("no catalogue = %d", rec.Code)
+	}
+}
+
+// A module whose signing key was removed from trusted_keys is flagged, and a trusted key may take it over.
+func TestRemoteModule_KeyRotation(t *testing.T) {
+	e := newSourceEnv(t)
+	rec := e.post("/api/managed/modules/remote/preview", `{"url":"`+e.url()+`"}`)
+	var raw map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &raw)
+	if rec := e.post("/api/managed/modules/remote/install", `{"url":"`+e.url()+`","sha256":"`+raw["sha256"].(string)+`","password":"s3cret-pw"}`); rec.Code != 200 {
+		t.Fatalf("install = %d %s", rec.Code, rec.Body)
+	}
+	id := raw["id"].(string)
+
+	// The publisher moves to a new key; the operator trusts it and keeps the old one for now.
+	seed2, pub2, _ := modules.GenerateKey()
+	old := e.h.App.TrustedKeys
+	both, _ := modules.ParseTrustedKeys([]modules.TrustedKey{{Name: "publisher", Key: old[0].Key}, {Name: "publisher-2", Key: pub2}})
+	e.h.App.TrustedKeys = both
+	*e.seed = seed2
+	if rec := e.post("/api/managed/modules/remote/"+id+"/update/preview", `{}`); rec.Code != http.StatusConflict {
+		t.Fatalf("new signer while the old key is trusted = %d %s", rec.Code, rec.Body)
+	}
+
+	// The operator drops the old key: the module is flagged and the new key may take over.
+	e.h.App.TrustedKeys, _ = modules.ParseTrustedKeys([]modules.TrustedKey{{Name: "publisher-2", Key: pub2}})
+	rec = httptest.NewRecorder()
+	e.h.mux().ServeHTTP(rec, e.h.req("GET", "/api/managed/modules/sources", nil))
+	var sv sourceView
+	_ = json.Unmarshal(rec.Body.Bytes(), &sv)
+	if len(sv.Installed) != 1 || !sv.Installed[0].SignerRetired {
+		t.Fatalf("sources = %s", rec.Body)
+	}
+	e.body = append(e.body, []byte("\n# re-signed\n")...)
+	rec = e.post("/api/managed/modules/remote/"+id+"/update/preview", `{}`)
+	var pv map[string]any
+	_ = json.Unmarshal(rec.Body.Bytes(), &pv)
+	if rec.Code != 200 || pv["rekeyed"] != true || pv["signed_by"] != "publisher-2" {
+		t.Fatalf("preview = %d %s", rec.Code, rec.Body)
+	}
+	if rec := e.post("/api/managed/modules/remote/"+id+"/update", `{"sha256":"`+pv["sha256"].(string)+`","password":"s3cret-pw"}`); rec.Code != 200 {
+		t.Fatalf("update = %d %s", rec.Code, rec.Body)
+	}
+	if l, _ := modules.ReadLock(e.dir); l.Modules[0].SignedBy != "publisher-2" {
+		t.Errorf("lock = %+v", l)
 	}
 }

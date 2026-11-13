@@ -4,17 +4,13 @@
 package web
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
+	"github.com/fiddler110/crowsnest/internal/gamefiles"
+	"github.com/fiddler110/crowsnest/internal/notify"
 	"log"
-	"maps"
 	"net/http"
-	"slices"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -32,6 +28,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/mfa"
 	"github.com/fiddler110/crowsnest/internal/modules"
 	"github.com/fiddler110/crowsnest/internal/restore"
+	"github.com/fiddler110/crowsnest/internal/schedule"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
 )
@@ -56,16 +53,26 @@ type App struct {
 	MFA *mfa.Store
 	// Modules, ModulesDir and TrustedKeys let an admin install a signed module from a URL; all three are needed
 	// (and Managed), or the feature is off. ModuleClient fetches; nil means modules.PublicClient().
-	Modules      *modules.Set
-	ModulesDir   string
-	TrustedKeys  []modules.TrustedKey
+	Modules     *modules.Set
+	ModulesDir  string
+	TrustedKeys []modules.TrustedKey
+	// CatalogueURL is the optional module index (managed.catalogue_url).
+	CatalogueURL string
 	ModuleClient *http.Client
 	// Profiles holds display names; nil means everyone is shown by sign-in name.
 	Profiles *auth.ProfileStore
+
+	// Mentions is who asked to be pinged about which game; DiscordOn says a Discord webhook is set up.
+	Mentions  *notify.Mentions
+	DiscordOn bool
 	// OIDC serves sign-in through other OpenID Connect providers; nil turns it off.
 	OIDC *auth.OIDCLogin
 	// Settings backs the dashboard's settings dialog (/api/settings).
 	Settings *settings.Store
+
+	// Schedules holds the timed starts and stops (nil: none); their times are
+	// in TimeZone.
+	Schedules *schedule.Store
 	// TimeZone is the server's time zone name (server.tz), shown beside the
 	// overnight-shutdown hours, which are local to it. Optional.
 	TimeZone string
@@ -76,8 +83,16 @@ type App struct {
 	History *history.Store
 	// Backups runs and lists per-game backups (admin only). Optional.
 	Backups *backup.Manager
+	// Files reads and edits the config files modules declare (admin only). Optional.
+	Files *gamefiles.Service
 	// Restore puts a chosen backup back (admin only). Optional.
 	Restore *restore.Manager
+	// Notify reports whether the latest message on each notification channel was delivered; NotifyConfigured
+	// says whether any channel is set up. Optional.
+	Notify *notify.Status
+	// AuditFile is the tamper-evident audit file the export endpoint serves. Optional.
+	AuditFile        string
+	NotifyConfigured bool
 	// Managed backs the Games API (enable games from the dashboard). Optional.
 	Managed ManagedGames
 	// MetricsToken, when set, serves GET /metrics (Prometheus) to a scraper
@@ -100,7 +115,9 @@ type App struct {
 	// production callers should leave it unset (falls back to
 	// defaultMaxConcurrentStreams).
 	MaxConcurrentStreams int
-	streamCount          atomic.Int32
+	// MaxStreamsPerUser caps one user's share of those streams. Zero means defaultMaxStreamsPerUser.
+	MaxStreamsPerUser int
+	streamCount       atomic.Int32
 
 	// MaxEventStreams caps concurrent /api/events connections. Zero means
 	// defaultMaxEventStreams.
@@ -110,6 +127,7 @@ type App struct {
 	// connections. Zero means defaultMaxEventStreamsPerUser.
 	MaxEventStreamsPerUser int
 	userEventStreams       userStreams
+	userLogStreams         userStreams
 
 	// EventsMinGap overrides the minimum spacing of /api/events sends
 	// (tests). Zero means defaultEventsMinGap.
@@ -184,11 +202,6 @@ type IdleTimer interface {
 	IdleRemaining(id string) (time.Duration, bool)
 }
 
-// maxSwitchBodyBytes caps the /api/games/{id}/switch request body — it's a
-// tiny fixed shape ({"from": "<id>"}), so there's no reason to let an
-// authenticated client force a large json.Decode allocation.
-const maxSwitchBodyBytes = 4096
-
 // Routes registers the dashboard, login/logout, and game-control API on
 // mux.
 func (a *App) Routes(mux *http.ServeMux) {
@@ -225,21 +238,32 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /api/games/{id}/players", a.requireSession(http.HandlerFunc(a.handlePlayers)))
 	mux.Handle("GET /api/games/{id}/info", a.requireSession(http.HandlerFunc(a.handleInfo)))
 	mux.Handle("GET /api/activity", a.requireSession(http.HandlerFunc(a.handleActivity)))
+	mux.Handle("GET /api/audit/export", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleAuditExport))))
 	mux.Handle("GET /api/audit", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleAudit))))
 	mux.Handle("GET /api/games/{id}/console", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleConsole))))
 	mux.Handle("POST /api/games/{id}/console/action", a.requireAdmin(http.HandlerFunc(a.handleConsoleAction)))
 	mux.Handle("POST /api/games/{id}/console/raw", a.requireAdmin(http.HandlerFunc(a.handleConsoleRaw)))
 	mux.Handle("POST /api/games/{id}/backup", a.requireAdmin(http.HandlerFunc(a.handleBackup)))
 	mux.Handle("POST /api/games/{id}/restore", a.requireAdmin(http.HandlerFunc(a.handleRestore)))
+	mux.Handle("GET /api/notify/status", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleNotifyStatus))))
+	mux.Handle("GET /api/games/{id}/files", a.requireAdminRead(http.HandlerFunc(a.handleFiles)))
+	mux.Handle("GET /api/games/{id}/files/{file}", a.requireAdminRead(http.HandlerFunc(a.handleFileGet)))
+	mux.Handle("PUT /api/games/{id}/files/{file}", a.requireAdmin(http.HandlerFunc(a.handleFilePut)))
+	mux.Handle("GET /api/games/{id}/files/{file}/history", a.requireAdminRead(http.HandlerFunc(a.handleFileHistory)))
+	mux.Handle("GET /api/games/{id}/files/{file}/history/{version}", a.requireAdminRead(http.HandlerFunc(a.handleFileVersion)))
 	mux.Handle("GET /api/backups/health", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackupsHealth))))
+	mux.Handle("GET /api/backups/overview", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackupsOverview))))
 	mux.Handle("GET /api/games/{id}/backups", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleBackups))))
 	mux.Handle("GET /api/host", a.requireSession(http.HandlerFunc(a.handleHost)))
 	mux.Handle("GET /api/health", a.requireSession(http.HandlerFunc(a.handleHealth)))
 	mux.Handle("GET /api/settings", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleGetSettings))))
+	mux.Handle("GET /api/schedules", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleGetSchedules))))
+	mux.Handle("PUT /api/schedules", a.requireAdmin(http.HandlerFunc(a.handlePutSchedules)))
 	mux.Handle("PUT /api/settings", a.requireAdmin(http.HandlerFunc(a.handlePutSettings)))
 	mux.Handle("GET /api/managed/modules", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedModules))))
 	mux.Handle("GET /api/managed/configured", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleManagedConfigured))))
 	mux.Handle("GET /api/managed/modules/sources", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleModuleSources))))
+	mux.Handle("GET /api/managed/modules/catalogue", a.requireAdmin(http.HandlerFunc(a.handleModuleCatalogue)))
 	mux.Handle("POST /api/managed/modules/remote/preview", a.requireAdmin(http.HandlerFunc(a.handleRemotePreview)))
 	mux.Handle("POST /api/managed/modules/remote/install", a.requireAdmin(http.HandlerFunc(a.handleRemoteInstall)))
 	mux.Handle("POST /api/managed/modules/remote/{id}/update/preview", a.requireAdmin(http.HandlerFunc(a.handleRemoteUpdatePreview)))
@@ -258,11 +282,15 @@ func (a *App) Routes(mux *http.ServeMux) {
 	mux.Handle("GET /account", a.requireSessionHTML(http.HandlerFunc(a.handleAccountPage)))
 	mux.Handle("GET /api/account/profile", a.requireSession(http.HandlerFunc(a.handleGetProfile)))
 	mux.Handle("POST /api/account/profile", a.requireSessionAndCSRF(http.HandlerFunc(a.handleSetProfile)))
+	mux.Handle("POST /api/account/sign-in-notice/dismiss", a.requireSessionAndCSRF(http.HandlerFunc(a.handleDismissSignIn)))
 	mux.Handle("POST /api/account/sessions/revoke", a.requireSessionAndCSRF(http.HandlerFunc(a.handleRevokeSession)))
 	mux.Handle("GET /api/account/security", a.requireSession(http.HandlerFunc(a.handleGetSecurity)))
 	mux.Handle("POST /api/account/totp/begin", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPBegin)))
 	mux.Handle("GET /api/account/totp/qr", a.requireSession(http.HandlerFunc(a.handleTOTPQR)))
 	mux.Handle("POST /api/account/totp/confirm", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPConfirm)))
+	mux.Handle("GET /api/account/mentions", a.requireSession(http.HandlerFunc(a.handleGetMentions)))
+	mux.Handle("PUT /api/account/mentions", a.requireSessionAndCSRF(http.HandlerFunc(a.handlePutMentions)))
+	mux.Handle("POST /api/account/password", a.requireSessionAndCSRF(http.HandlerFunc(a.handleChangePassword)))
 	mux.Handle("POST /api/account/totp/disable", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPDisable)))
 	mux.Handle("POST /api/account/totp/recovery", a.requireSessionAndCSRF(http.HandlerFunc(a.handleTOTPRecovery)))
 	mux.Handle("GET /api/auth/oidc", auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, http.HandlerFunc(a.handleListOIDC))))
@@ -307,6 +335,11 @@ func (a *App) requireAdmin(next http.Handler) http.Handler {
 	return auth.RequireSession(a.Auth.Sessions, auth.RequireCSRF(auth.RequireAdmin(a.Auth.Sessions, next)))
 }
 
+// requireAdminRead is requireAdmin for GET routes, which carry no CSRF token.
+func (a *App) requireAdminRead(next http.Handler) http.Handler {
+	return auth.RequireSession(a.Auth.Sessions, auth.RequireAdmin(a.Auth.Sessions, next))
+}
+
 func (a *App) requireSessionAndCSRF(next http.Handler) http.Handler {
 	return auth.RequireSession(a.Auth.Sessions, auth.RequireCSRF(next))
 }
@@ -321,6 +354,7 @@ func (a *App) requireSessionHTML(next http.Handler) http.Handler {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
+		session = a.Auth.Sessions.Renew(w, session)
 		next.ServeHTTP(w, r.WithContext(auth.WithSession(r.Context(), session)))
 	})
 }
@@ -346,8 +380,12 @@ type gameSummary struct {
 	// StartError is the error from this game's most recent background
 	// start, if it failed; StartErrorAt is when (unix seconds), so the UI
 	// can tell a new failure from one it has already shown.
-	StartError   string `json:"start_error,omitempty"`
-	StartErrorAt int64  `json:"start_error_at,omitempty"`
+	StartError string `json:"start_error,omitempty"`
+
+	// JoinCodes are values the running server printed (a crossplay join
+	// code); only sent while the game is online.
+	JoinCodes    []games.ConnectSecret `json:"join_codes,omitempty"`
+	StartErrorAt int64                 `json:"start_error_at,omitempty"`
 }
 
 // gameStatus overlays the exclusivity manager's in-memory view on an
@@ -365,117 +403,6 @@ func (a *App) gameStatus(d games.GameDef, observed games.Status) games.Status {
 		}
 	}
 	return observed
-}
-
-// loginPage is the login template's data. Error is one of a fixed set of
-// messages chosen by code, never text taken from the request.
-type loginPage struct {
-	PasswordLogin  bool
-	GoogleStartURL string
-	OIDC           []oidcButton
-	Error          string
-}
-
-var loginErrors = map[string]string{
-	auth.LoginErrorDenied:     "Sign-in was cancelled.",
-	auth.LoginErrorExpired:    "That sign-in attempt expired. Please try again.",
-	auth.LoginErrorNotAllowed: "That account isn't on this ship's crew list.",
-	auth.LoginErrorFailed:     "Sign-in failed. Please try again.",
-	auth.LoginErrorRateLimit:  "Too many sign-in attempts. Try again in a few minutes.",
-}
-
-func (a *App) handleLoginPage(w http.ResponseWriter, r *http.Request) {
-	if a.setupNeeded() {
-		http.Redirect(w, r, "/setup", http.StatusSeeOther)
-		return
-	}
-	page := loginPage{PasswordLogin: !a.Auth.PasswordLoginDisabled(), Error: loginErrors[r.URL.Query().Get("error")]}
-	page.OIDC = a.oidcButtons()
-	if a.Google.Active() {
-		page.GoogleStartURL = a.Google.StartURL()
-	}
-	render(w, a.Templates.Login, page, "login page")
-}
-
-type dashboardGame struct {
-	ID          string
-	DisplayName string
-	Initial     string // first letter, for the card's emblem
-	Status      string
-
-	// ConnectAddress/ConnectNote are the optional display-only connection
-	// details; the template renders nothing when both are empty.
-	ConnectAddress string
-	ConnectNote    string
-	ConnectSecrets []games.ConnectSecret
-
-	// HasBackup is true when a backup is configured and the viewer is an
-	// admin, which is the only role that sees the Backups panel.
-	HasBackup bool
-
-	// HasConsole is true for admins on games that offer console actions.
-	HasConsole bool
-
-	// HasInfo is true when the game has an info provider; otherwise the card
-	// has no Info tab.
-	HasInfo bool
-
-	// Accent is the card's "#rrggbb" accent from the game's module, or empty.
-	Accent string
-}
-
-// dashboardData is the data of every signed-in page. Page names the page
-// ("dashboard", "games", "settings") so the shared top bar can mark it.
-type dashboardData struct {
-	Page     string
-	Username string
-	// DisplayName is what the user chose to be called, "" to show Username.
-	DisplayName string
-	IsAdmin     bool
-	CSRFToken   string
-	Games       []dashboardGame
-	// NeedsPassword: an admin with no stored password sees a banner, because
-	// widening the guard asks for one.
-	NeedsPassword bool
-}
-
-func (a *App) handleDashboard(w http.ResponseWriter, r *http.Request) {
-	session, _ := auth.FromContext(r.Context())
-	defs := a.visibleGames(r)
-	data := dashboardData{
-		Page:          "dashboard",
-		Username:      session.Username,
-		DisplayName:   a.Profiles.DisplayName(session.Username),
-		IsAdmin:       a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin,
-		NeedsPassword: a.Auth.Sessions.RoleFor(session.Username) == auth.RoleAdmin && !a.Auth.HasPassword(session.Username),
-		CSRFToken:     session.CSRFToken,
-	}
-	// First paint must not wait on game probes (a booting game's API can
-	// take seconds to time out): use the hub's latest observation if any,
-	// else "unknown"; the page's JS refreshes statuses immediately on load.
-	for _, d := range defs {
-		snap := statehub.Observation{Status: games.StatusUnknown}
-		if a.Hub != nil {
-			if o, ok := a.Hub.Get(d.ID); ok {
-				snap = o
-			}
-		}
-		data.Games = append(data.Games, dashboardGame{
-			ID:          d.ID,
-			DisplayName: d.DisplayName,
-			Initial:     initialOf(d.DisplayName),
-			Status:      a.gameStatus(d, snap.Status).String(),
-
-			ConnectAddress: d.ConnectAddress,
-			ConnectNote:    d.ConnectNote,
-			ConnectSecrets: d.ConnectSecrets,
-			HasBackup:      data.IsAdmin && d.Backup != nil && a.Backups != nil,
-			HasConsole:     data.IsAdmin && d.Console != nil,
-			HasInfo:        d.Info != nil,
-			Accent:         d.Accent,
-		})
-	}
-	render(w, a.Templates.Dashboard, data, "dashboard")
 }
 
 func (a *App) handleListGames(w http.ResponseWriter, r *http.Request) {
@@ -499,6 +426,9 @@ func (a *App) listGames(r *http.Request) []gameSummary {
 		if snaps[i].PlayersOK {
 			c := snaps[i].Count
 			out[i].PlayerCount = &c
+		}
+		if d.Live != nil && out[i].Status == games.StatusOnline.String() {
+			out[i].JoinCodes = d.Live.ConnectValues()
 		}
 		if a.IdleTimer != nil && out[i].Status == games.StatusOnline.String() {
 			if left, ok := a.IdleTimer.IdleRemaining(d.ID); ok {
@@ -543,235 +473,6 @@ func (a *App) handlePlayers(w http.ResponseWriter, r *http.Request) {
 		names = []string{}
 	}
 	writeJSON(w, http.StatusOK, playersResponse{Available: true, Count: snap.Count, Names: names})
-}
-
-// shortDetail keeps the tail of raw error text (where the cause usually is)
-// on one line, for admins.
-func shortDetail(msg string) string {
-	msg = strings.Join(strings.Fields(msg), " ")
-	if r := []rune(msg); len(r) > 400 {
-		msg = "…" + string(r[len(r)-400:])
-	}
-	return msg
-}
-
-const (
-	defaultActivityLimit = 40
-	maxActivityLimit     = 500
-)
-
-// handleActivity returns the newest activity events (optionally for one
-// game) and the playtime totals derived from join/leave events.
-func (a *App) handleActivity(w http.ResponseWriter, r *http.Request) {
-	if a.History == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"events": []history.Event{}, "playtime": []history.Playtime{}})
-		return
-	}
-	limit := defaultActivityLimit
-	if n, err := strconv.Atoi(r.URL.Query().Get("limit")); err == nil && n > 0 {
-		limit = min(n, maxActivityLimit)
-	}
-	var hide []string
-	if a.Auth.Sessions.RoleFor(actor(r)) != auth.RoleAdmin {
-		hide = []string{history.KindUsers, history.KindConsole, history.KindSettings, history.KindGames}
-	}
-	writeJSON(w, http.StatusOK, map[string]any{
-		"events":   a.History.RecentAllowed(limit, r.URL.Query().Get("game"), func(id string) bool { return a.canSee(r, id) }, hide...),
-		"playtime": a.visiblePlaytime(r),
-	})
-}
-
-// visiblePlaytime is the playtime totals for the games r's user may see.
-func (a *App) visiblePlaytime(r *http.Request) []history.Playtime {
-	all := a.History.Playtime()
-	out := make([]history.Playtime, 0, len(all))
-	for _, p := range all {
-		if a.canSee(r, p.Game) {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// handleAudit is the admin audit view's feed: every kind of event, filtered
-// by game, kind(s), actor, free text and time range, one page at a time.
-// Query: game, kind (comma list), actor, q, since, until (RFC 3339 or
-// YYYY-MM-DD), offset, limit.
-func (a *App) handleAudit(w http.ResponseWriter, r *http.Request) {
-	if a.History == nil {
-		writeJSON(w, http.StatusOK, map[string]any{"events": []history.Event{}, "more": false})
-		return
-	}
-	q := r.URL.Query()
-	f := history.Filter{Game: q.Get("game"), Actor: q.Get("actor"), Text: q.Get("q")}
-	if k := q.Get("kind"); k != "" {
-		f.Kinds = strings.Split(k, ",")
-	}
-	parse := func(name string) (time.Time, bool) {
-		v := q.Get(name)
-		if v == "" {
-			return time.Time{}, true
-		}
-		for _, layout := range []string{time.RFC3339, "2006-01-02"} {
-			if t, err := time.Parse(layout, v); err == nil {
-				return t, true
-			}
-		}
-		http.Error(w, name+": want an RFC 3339 time or YYYY-MM-DD", http.StatusBadRequest)
-		return time.Time{}, false
-	}
-	var ok bool
-	if f.Since, ok = parse("since"); !ok {
-		return
-	}
-	if f.Until, ok = parse("until"); !ok {
-		return
-	}
-	limit := defaultActivityLimit
-	if n, err := strconv.Atoi(q.Get("limit")); err == nil && n > 0 {
-		limit = min(n, maxActivityLimit)
-	}
-	offset, _ := strconv.Atoi(q.Get("offset"))
-	events, more := a.History.Query(f, max(offset, 0), limit)
-	writeJSON(w, http.StatusOK, map[string]any{"events": events, "more": more})
-}
-
-// handleBackup starts a backup of one game in the background.
-func (a *App) handleBackup(w http.ResponseWriter, r *http.Request) {
-	d, ok := a.gameOr404(w, r)
-	if !ok {
-		return
-	}
-	if a.Backups == nil {
-		http.Error(w, "backups are not configured", http.StatusNotFound)
-		return
-	}
-	switch err := a.Backups.Request(r.Context(), d, actor(r)); {
-	case err == nil:
-		log.Printf("audit: %s requested backup of %s", actor(r), d.ID)
-		w.WriteHeader(http.StatusAccepted)
-	case errors.Is(err, backup.ErrNotConfigured):
-		http.Error(w, "this game has no backup configured", http.StatusNotFound)
-	case errors.Is(err, backup.ErrNotRunning), errors.Is(err, backup.ErrBusy), errors.Is(err, backup.ErrRootUnavailable):
-		http.Error(w, strings.TrimPrefix(err.Error(), "backup: "), http.StatusConflict)
-	default:
-		log.Printf("audit: %s backup %s failed: %v", actor(r), d.ID, err)
-		http.Error(w, publicError(err), http.StatusBadGateway)
-	}
-}
-
-// handleRestore starts restoring one backup file of a game in the background.
-// The body names the file: {"file": "<name>"}. The game is stopped (and started
-// again if it was running), so the caller has already confirmed it.
-func (a *App) handleRestore(w http.ResponseWriter, r *http.Request) {
-	d, ok := a.gameOr404(w, r)
-	if !ok {
-		return
-	}
-	if a.Restore == nil {
-		http.Error(w, "restoring is not configured", http.StatusNotFound)
-		return
-	}
-	var body struct {
-		File string `json:"file"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
-		http.Error(w, "bad request", http.StatusBadRequest)
-		return
-	}
-	switch err := a.Restore.Request(r.Context(), d, body.File, actor(r)); {
-	case err == nil:
-		w.WriteHeader(http.StatusAccepted)
-	case errors.Is(err, restore.ErrNotConfigured):
-		http.Error(w, err.Error(), http.StatusNotFound)
-	case errors.Is(err, restore.ErrBadFile):
-		http.Error(w, err.Error(), http.StatusBadRequest)
-	case errors.Is(err, restore.ErrBusy), errors.Is(err, restore.ErrWouldPrune), errors.Is(err, backup.ErrRootUnavailable):
-		http.Error(w, err.Error(), http.StatusConflict)
-	default:
-		log.Printf("web: restore %s: %v", d.ID, err)
-		http.Error(w, publicError(err), http.StatusBadGateway)
-	}
-}
-
-// handleBackupsHealth reports the shared backups folder's latest check: whether
-// it is usable, free space, problems, and folders no game uses (admin only).
-func (a *App) handleBackupsHealth(w http.ResponseWriter, r *http.Request) {
-	if a.Backups == nil || a.Backups.Root == nil {
-		http.Error(w, "no shared backups folder is configured", http.StatusNotFound)
-		return
-	}
-	writeJSON(w, http.StatusOK, struct {
-		backup.Health
-		Offsite backup.OffsiteStatus `json:"offsite"`
-	}{a.Backups.Health(), a.Backups.Offsite()})
-}
-
-// handleBackups lists a game's backup files, newest first.
-func (a *App) handleBackups(w http.ResponseWriter, r *http.Request) {
-	d, ok := a.gameOr404(w, r)
-	if !ok {
-		return
-	}
-	if a.Backups == nil {
-		http.Error(w, "backups are not configured", http.StatusNotFound)
-		return
-	}
-	canRestore := a.Restore != nil && d.Backup != nil && d.Backup.CanRestore
-	busy := a.Backups.Running(d.ID) || (a.Restore != nil && a.Restore.Running(d.ID))
-	files, err := a.Backups.List(r.Context(), d)
-	switch {
-	case errors.Is(err, backup.ErrNotConfigured):
-		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": busy})
-	case err != nil:
-		// Usually just "the container isn't running".
-		writeJSON(w, http.StatusOK, map[string]any{"files": []backup.File{}, "running": busy, "unavailable": true})
-	default:
-		writeJSON(w, http.StatusOK, map[string]any{"files": files, "running": busy, "restorable": canRestore,
-			"restoring": a.Restore != nil && a.Restore.Running(d.ID)})
-	}
-}
-
-// handleHost reports host memory, load and disk space.
-func (a *App) handleHost(w http.ResponseWriter, r *http.Request) {
-	snap, err := a.hostMemo.Do(r.Context(), "host", 5*time.Second, func(context.Context) hoststats.Snapshot {
-		return hoststats.Read(a.HostPaths)
-	})
-	if err != nil {
-		http.Error(w, "host stats unavailable", http.StatusGatewayTimeout)
-		return
-	}
-	if snap.Disks == nil {
-		snap.Disks = []hoststats.Disk{}
-	}
-	writeJSON(w, http.StatusOK, snap)
-}
-
-// handleHealth reports whether CrowsNest can reach Docker. It's separate from
-// /healthz, the container liveness probe: a restart wouldn't fix a stopped
-// daemon, so liveness stays green while this goes red and the dashboard warns.
-// The reason is logged, not returned.
-func (a *App) handleHealth(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, a.health(r.Context()))
-}
-
-// health is the /api/health body; /api/events sends the same.
-func (a *App) health(ctx context.Context) map[string]bool {
-	ok, err := a.healthMemo.Do(ctx, "docker", a.statusTTL(), func(ctx context.Context) bool {
-		if err := a.Docker.Ping(ctx); err != nil {
-			log.Printf("web: docker unreachable: %v", err)
-			return false
-		}
-		return true
-	})
-	h := map[string]bool{"docker": err == nil && ok}
-	if a.Backups != nil && a.Backups.Root != nil {
-		h["backups"] = a.Backups.Healthy()
-		if a.Backups.Offsite().Configured {
-			h["offsite"] = a.Backups.OffsiteHealthy()
-		}
-	}
-	return h
 }
 
 type infoResult struct {
@@ -904,212 +605,6 @@ func (a *App) handleStats(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
-// actor returns the acting username for an audit log line, falling back to
-// "unknown" if for some reason no session is attached (shouldn't happen —
-// these handlers all sit behind requireSessionAndCSRF).
-func actor(r *http.Request) string {
-	if session, ok := auth.FromContext(r.Context()); ok {
-		return session.Username
-	}
-	return "unknown"
-}
-
-func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
-	d, ok := a.gameOr404(w, r)
-	if !ok {
-		return
-	}
-	err := a.Exclusivity.RequestStart(exclusivity.WithActor(r.Context(), actor(r)), d.ID)
-	if err == nil {
-		a.pokeGame(d.ID)
-		log.Printf("audit: %s started %s", actor(r), d.ID)
-		w.WriteHeader(http.StatusAccepted)
-		return
-	}
-	var conflict *exclusivity.ConflictError
-	if errors.As(err, &conflict) {
-		// A game this user may not see is running: do not name it or offer
-		// to stop it.
-		for _, id := range conflict.All {
-			if !a.canSee(r, id) {
-				writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": "Another server is running right now, so this one can't start."})
-				return
-			}
-		}
-		writeJSON(w, http.StatusConflict, map[string]any{"conflict": true, "active_game": conflict.Active, "active_games": conflict.All})
-		return
-	}
-	var busy *exclusivity.BusyError
-	if errors.As(err, &busy) {
-		writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
-		return
-	}
-	var mem *memadmit.Error
-	if errors.As(err, &mem) {
-		log.Printf("audit: %s start %s refused: %v", actor(r), d.ID, err)
-		writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": mem.Error()})
-		return
-	}
-	var cooldown *exclusivity.CooldownError
-	if errors.As(err, &cooldown) {
-		w.Header().Set("Retry-After", strconv.Itoa(int(cooldown.Remaining.Seconds())+1))
-		http.Error(w, cooldown.Error(), http.StatusTooManyRequests)
-		return
-	}
-	log.Printf("audit: %s start %s failed: %v", actor(r), d.ID, err)
-	http.Error(w, publicError(err), http.StatusBadGateway)
-}
-
-func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
-	d, ok := a.gameOr404(w, r)
-	if !ok {
-		return
-	}
-	// Accepted, not finished: the stop runs in the background (a save can
-	// outlast any proxy timeout); progress shows as the "stopping" status.
-	if err := a.Exclusivity.RequestStop(exclusivity.WithActor(r.Context(), actor(r)), d.ID); err != nil {
-		log.Printf("audit: %s stop %s failed: %v", actor(r), d.ID, err)
-		http.Error(w, publicError(err), http.StatusBadGateway)
-		return
-	}
-	a.pokeGame(d.ID)
-	log.Printf("audit: %s requested stop of %s", actor(r), d.ID)
-	w.WriteHeader(http.StatusAccepted)
-}
-
-type switchRequest struct {
-	From string `json:"from"`
-}
-
-func (a *App) handleSwitch(w http.ResponseWriter, r *http.Request) {
-	to, ok := a.gameOr404(w, r)
-	if !ok {
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxSwitchBodyBytes)
-	var req switchRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.From == "" {
-		http.Error(w, `invalid request: expected {"from": "<game id>"}`, http.StatusBadRequest)
-		return
-	}
-	// From here on use the registry's own ID, never the client-supplied
-	// string, so nothing a caller typed reaches the log.
-	fromDef, ok := a.Registry.Get(req.From)
-	if !ok || !a.canSee(r, fromDef.ID) {
-		http.Error(w, "unknown source game", http.StatusBadRequest)
-		return
-	}
-	from := fromDef.ID
-	if err := a.Exclusivity.RequestSwitch(exclusivity.WithActor(r.Context(), actor(r)), from, to.ID); err != nil {
-		log.Printf("audit: %s switch %q->%q failed: %v", actor(r), from, to.ID, err)
-		var busy *exclusivity.BusyError
-		if errors.As(err, &busy) {
-			writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": busy.Error()})
-			return
-		}
-		var mem *memadmit.Error
-		if errors.As(err, &mem) {
-			writeJSON(w, http.StatusConflict, map[string]any{"busy": true, "message": mem.Error()})
-			return
-		}
-		var cooldown *exclusivity.CooldownError
-		if errors.As(err, &cooldown) {
-			w.Header().Set("Retry-After", strconv.Itoa(int(cooldown.Remaining.Seconds())+1))
-			http.Error(w, cooldown.Error(), http.StatusTooManyRequests)
-			return
-		}
-		http.Error(w, publicError(err), http.StatusBadGateway)
-		return
-	}
-	a.pokeGame(from)
-	a.pokeGame(to.ID)
-	log.Printf("audit: %s requested switch %q->%q", actor(r), from, to.ID)
-	w.WriteHeader(http.StatusAccepted)
-}
-
-const maxSettingsBodyBytes = 4096
-
-func (a *App) handleGetSettings(w http.ResponseWriter, r *http.Request) {
-	if a.Settings == nil {
-		http.NotFound(w, r)
-		return
-	}
-	// tz rides along for display only; PUT decodes settings.Values alone (and
-	// refuses unknown fields), so the page must not send it back.
-	resp := settingsResponse{Values: a.Settings.Get(), TZ: a.TimeZone}
-	for _, d := range a.Registry.All() {
-		resp.Games = append(resp.Games, gameSettingsInfo{
-			ID: d.ID, Name: d.DisplayName,
-			NightShutdown:          d.NightShutdown,
-			RestartCooldownSeconds: int(d.RestartCooldown / time.Second),
-		})
-	}
-	writeJSON(w, http.StatusOK, resp)
-}
-
-// gameSettingsInfo is one game's own defaults, shown beside its overrides.
-type gameSettingsInfo struct {
-	ID                     string `json:"id"`
-	Name                   string `json:"name"`
-	NightShutdown          bool   `json:"night_shutdown"`
-	RestartCooldownSeconds int    `json:"restart_cooldown_seconds"`
-}
-
-// settingsResponse is GET /api/settings: the values plus the server's time
-// zone, which the overnight hours are local to.
-type settingsResponse struct {
-	settings.Values
-	TZ string `json:"tz,omitempty"`
-	// Games lists the registered games with their defaults, for the
-	// per-game overrides in per_game.
-	Games []gameSettingsInfo `json:"games,omitempty"`
-}
-
-func (a *App) handlePutSettings(w http.ResponseWriter, r *http.Request) {
-	if a.Settings == nil {
-		http.NotFound(w, r)
-		return
-	}
-	r.Body = http.MaxBytesReader(w, r.Body, maxSettingsBodyBytes)
-	body, err := io.ReadAll(r.Body)
-	if err != nil {
-		http.Error(w, "invalid settings: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	// Applied under the store's lock on top of the current values, so a
-	// partial body only changes what it names and two simultaneous saves
-	// can't overwrite each other.
-	before := a.Settings.Get()
-	var invalid error
-	v, err := a.Settings.Modify(func(v *settings.Values) error {
-		dec := json.NewDecoder(bytes.NewReader(body))
-		dec.DisallowUnknownFields()
-		if err := dec.Decode(v); err != nil {
-			invalid = errors.New("invalid settings: " + err.Error())
-			return invalid
-		}
-		if err := v.Validate(); err != nil {
-			invalid = err
-			return err
-		}
-		return nil
-	})
-	if invalid != nil {
-		http.Error(w, invalid.Error(), http.StatusBadRequest)
-		return
-	}
-	if err != nil {
-		log.Printf("audit: %s settings update failed: %v", actor(r), err)
-		http.Error(w, "could not save settings", http.StatusInternalServerError)
-		return
-	}
-	if a.History != nil {
-		a.History.Record(history.KindSettings, "", actor(r), settingsChanges(before, v))
-	}
-	log.Printf("audit: %s updated settings: %+v", actor(r), v)
-	writeJSON(w, http.StatusOK, v)
-}
-
 // publicError is what a client is told about an internal failure: the
 // details (docker command lines, compose paths, stderr) stay in the log.
 func publicError(err error) string {
@@ -1121,58 +616,9 @@ func publicError(err error) string {
 	return "the request could not be completed; see the CrowsNest log for details"
 }
 
-// settingsChanges describes which settings differ, e.g. "idle_minutes 15→30".
-func settingsChanges(before, after settings.Values) string {
-	var parts []string
-	add := func(name string, b, a any) {
-		if b != a {
-			parts = append(parts, fmt.Sprintf("%s %v→%v", name, b, a))
-		}
-	}
-	add("idle_enabled", before.IdleEnabled, after.IdleEnabled)
-	add("idle_minutes", before.IdleMinutes, after.IdleMinutes)
-	add("night_enabled", before.NightEnabled, after.NightEnabled)
-	add("night_start_hour", before.NightStartHour, after.NightStartHour)
-	add("night_end_hour", before.NightEndHour, after.NightEndHour)
-	add("max_active_games", before.MaxActiveGames, after.MaxActiveGames)
-	add("auto_update", before.AutoUpdate, after.AutoUpdate)
-	add("raw_console", before.RawConsole, after.RawConsole)
-	ids := map[string]bool{}
-	for id := range before.PerGame {
-		ids[id] = true
-	}
-	for id := range after.PerGame {
-		ids[id] = true
-	}
-	for _, id := range slices.Sorted(maps.Keys(ids)) {
-		add(id, describeGameValues(before.PerGame[id]), describeGameValues(after.PerGame[id]))
-	}
-	if len(parts) == 0 {
-		return "no changes"
-	}
-	return strings.Join(parts, ", ")
-}
-
-// describeGameValues renders one game's overrides, "default" when it has none.
-func describeGameValues(g settings.GameValues) string {
-	var parts []string
-	if g.IdleMinutes != nil {
-		parts = append(parts, fmt.Sprintf("idle %dm", *g.IdleMinutes))
-	}
-	if g.NightShutdown != nil {
-		parts = append(parts, fmt.Sprintf("night %t", *g.NightShutdown))
-	}
-	if g.RestartCooldownSeconds != nil {
-		parts = append(parts, fmt.Sprintf("cooldown %ds", *g.RestartCooldownSeconds))
-	}
-	if len(parts) == 0 {
-		return "default"
-	}
-	return strings.Join(parts, " ")
-}
-
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "no-store") // signed-in data must not sit in a browser or proxy cache
 	w.WriteHeader(code)
 	_ = json.NewEncoder(w).Encode(v)
 }

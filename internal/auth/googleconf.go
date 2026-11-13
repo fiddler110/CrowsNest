@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/atomicfile"
 	"net/url"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 
@@ -154,18 +154,7 @@ func (s *GoogleConfStore) Apply(g *GoogleLogin) {
 }
 
 func writeFileAtomic(path string, data []byte) error {
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".auth-*.tmp")
-	if err != nil {
-		return fmt.Errorf("auth: write %s: %w", path, err)
-	}
-	_, werr := tmp.Write(data)
-	cerr := tmp.Close()
-	if err := errors.Join(werr, cerr, os.Chmod(tmp.Name(), 0o600)); err != nil {
-		os.Remove(tmp.Name())
-		return fmt.Errorf("auth: write %s: %w", path, err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		os.Remove(tmp.Name())
+	if err := atomicfile.Write(path, data, 0o600); err != nil {
 		return fmt.Errorf("auth: write %s: %w", path, err)
 	}
 	return nil

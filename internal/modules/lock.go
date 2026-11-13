@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/atomicfile"
 	"io"
 	"net/http"
 	"net/url"
@@ -30,7 +31,9 @@ const MaxModuleBytes = 256 << 10
 // LockEntry is one installed remote module.
 type LockEntry struct {
 	// SignedBy names the trusted key whose signature the module was installed under, "" for a hash pin only.
-	SignedBy    string    `json:"signed_by,omitempty"`
+	SignedBy string `json:"signed_by,omitempty"`
+	// Version is the manifest's release number when it was installed (0 = unversioned).
+	Version     int       `json:"version,omitempty"`
 	ID          string    `json:"id"`
 	Source      string    `json:"source"`
 	SHA256      string    `json:"sha256"`
@@ -107,22 +110,7 @@ func writeAtomic(path string, b []byte) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
-	if err != nil {
-		return err
-	}
-	defer os.Remove(tmp.Name())
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		return err
-	}
-	if err := os.Chmod(tmp.Name(), 0o640); err != nil { // #nosec G302 -- readable by the panel's group, not world
-		return err
-	}
-	return os.Rename(tmp.Name(), path)
+	return atomicfile.Write(path, b, 0o640) // readable by the panel's group, not world
 }
 
 // verifyLocked reports the locked modules under dir whose manifest no longer
@@ -257,6 +245,9 @@ func (m *Manifest) Review() []string {
 	for _, a := range m.Actions {
 		add("adds the admin action %q", a.ID)
 	}
+	for _, f := range m.Files {
+		add("lets admins read and overwrite %s inside the game's container (as %q)", f.Path, f.ID)
+	}
 	if len(m.PreStop) > 0 {
 		add("calls %d request(s) before it stops the game", len(m.PreStop))
 	}
@@ -277,12 +268,63 @@ func (m *Manifest) Review() []string {
 	return out
 }
 
+// CheckUpdate says whether body (parsed as m, signed by signedBy) may replace the installed module e. A module
+// first installed under one trusted key is only updated by the same key (a different signer is a new install,
+// with its own review), and a signed module's release number may not go down.
+func CheckUpdate(e LockEntry, m *Manifest, body []byte, signedBy string) error {
+	if e.SignedBy != "" && signedBy != e.SignedBy {
+		if signedBy == "" {
+			return fmt.Errorf("%q was installed under a signature from %q and this version is not signed by that key; remove the module and install it again to change who it trusts", e.ID, e.SignedBy)
+		}
+		return fmt.Errorf("%q was installed under a signature from %q and this version is signed by %q; remove the module and install it again to change who it trusts", e.ID, e.SignedBy, signedBy)
+	}
+	if e.SignedBy != "" && e.Version > 0 && m.Version < e.Version {
+		return fmt.Errorf("%q: the source serves release %d, older than the installed release %d; refusing a downgrade (remove and install again to go back on purpose)", e.ID, m.Version, e.Version)
+	}
+	if e.SignedBy != "" && e.Version > 0 && m.Version == e.Version && Hash(body) != e.SHA256 {
+		return fmt.Errorf("%q: a different file is served under the same release number %d; the publisher must raise `version`", e.ID, m.Version)
+	}
+	return nil
+}
+
 // Install writes an approved manifest into dir and records it in the lock. The
 // caller has already shown Review and obtained approval; if wantHash is set it
 // must equal the body's hash. A bundled id may not be replaced. replace says
 // the id may already be installed (an update). signedBy is the trusted key the
 // caller verified, recorded in the lock; "" when the install rests on a hash alone.
 func Install(dir, source string, body []byte, wantHash string, replace bool, signedBy string) (*Manifest, error) {
+	return install(dir, source, body, wantHash, replace, signedBy, nil)
+}
+
+// InstallRekeying is Install for an update that may take over from a retired signer: when the installed copy was
+// signed by a key that is no longer in keys (the operator removed it), a trusted key's signature may replace it.
+// The release-number checks still apply.
+func InstallRekeying(dir, source string, body []byte, wantHash string, signedBy string, keys []TrustedKey) (*Manifest, error) {
+	return install(dir, source, body, wantHash, true, signedBy, keys)
+}
+
+// SignerRetired says the module was installed under a signature from a key the operator no longer trusts.
+func SignerRetired(e LockEntry, keys []TrustedKey) bool {
+	if e.SignedBy == "" {
+		return false
+	}
+	for _, k := range keys {
+		if k.Name == e.SignedBy {
+			return false
+		}
+	}
+	return true
+}
+
+// AcceptRetiredSigner returns e with a retired signer replaced by newSigner, for CheckUpdate.
+func AcceptRetiredSigner(e LockEntry, keys []TrustedKey, newSigner string) LockEntry {
+	if keys != nil && newSigner != "" && SignerRetired(e, keys) {
+		e.SignedBy = newSigner
+	}
+	return e
+}
+
+func install(dir, source string, body []byte, wantHash string, replace bool, signedBy string, keys []TrustedKey) (*Manifest, error) {
 	got := Hash(body)
 	if wantHash != "" && !strings.EqualFold(wantHash, got) {
 		return nil, fmt.Errorf("hash mismatch: expected %s, the download is %s", wantHash, got)
@@ -300,7 +342,12 @@ func Install(dir, source string, body []byte, wantHash string, replace bool, sig
 	if err != nil {
 		return nil, err
 	}
-	_, locked := l.Find(m.ID)
+	old, locked := l.Find(m.ID)
+	if locked && replace {
+		if err := CheckUpdate(AcceptRetiredSigner(old, keys, signedBy), m, body, signedBy); err != nil {
+			return nil, err
+		}
+	}
 	_, exists := os.Stat(filepath.Join(dir, m.ID, "module.yaml"))
 	if exists == nil && !locked {
 		return nil, fmt.Errorf("%s/%s/module.yaml exists and was not installed by crowsnest; move it away first", dir, m.ID)
@@ -311,7 +358,7 @@ func Install(dir, source string, body []byte, wantHash string, replace bool, sig
 	if err := writeAtomic(filepath.Join(dir, m.ID, "module.yaml"), body); err != nil {
 		return nil, err
 	}
-	l.set(LockEntry{ID: m.ID, Source: source, SHA256: got, SignedBy: signedBy, InstalledAt: time.Now().UTC().Truncate(time.Second)})
+	l.set(LockEntry{ID: m.ID, Source: source, SHA256: got, SignedBy: signedBy, Version: m.Version, InstalledAt: time.Now().UTC().Truncate(time.Second)})
 	if err := l.write(dir); err != nil {
 		return nil, err
 	}

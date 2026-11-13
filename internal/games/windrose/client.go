@@ -22,7 +22,7 @@ import (
 // HTTP API integration (app.py lines ~339-728): a cookie-session login,
 // a short-TTL cache on /api/status (the plugin's own state snapshot), and
 // concurrent RCON commands (via the same HTTP API) for the richer info
-// panel. See docs/implementation-plan.md phase 10.
+// panel. See docs/archive/implementation-plan.md phase 10.
 const (
 	defaultHTTPTimeout = 5 * time.Second
 	defaultRCONTimeout = 6 * time.Second

@@ -21,7 +21,7 @@ loaders.general = () => {
   const form = $("settings-form");
   const errorEl = $("settings-error");
   const fields = ["idle_enabled", "idle_minutes", "night_enabled", "night_start_hour",
-    "night_end_hour", "max_active_games", "auto_update", "raw_console"];
+    "night_end_hour", "max_active_games", "auto_update", "raw_console", "require_admin_mfa"];
   const input = (n) => form.elements[n];
   (async () => {
     const res = await callAPI("/api/settings");
@@ -48,6 +48,64 @@ loaders.general = () => {
     errorEl.hidden = true;
     toast("Settings saved.", "ok");
   });
+};
+
+// ---------- Schedule ----------
+loaders.schedule = async () => {
+  const rows = $("schedule-rows");
+  const errorEl = $("schedule-error");
+  const fail = (m) => { errorEl.textContent = m; errorEl.hidden = !m; };
+  const [sres, gres] = await Promise.all([callAPI("/api/schedules"), callAPI("/api/settings")]);
+  if (!sres.ok) { toast(await errorText(sres, "Loading schedules"), "error"); return; }
+  const sv = await sres.json();
+  const games = gres.ok ? ((await gres.json()).games || []) : [];
+  $("schedule-tz").textContent = sv.tz || "UTC";
+  const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+  const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+  const refreshNone = () => { $("schedule-none").hidden = rows.children.length > 0; };
+  const addRow = (e) => {
+    const row = el("div", { className: "setting-row schedule-row" });
+    row.dataset.id = e.id;
+    const game = el("select", { name: "game" }, ...games.map((g) => el("option", { value: g.id, textContent: g.name || g.id })));
+    game.value = e.game;
+    const action = el("select", { name: "action" }, el("option", { value: "start", textContent: "Start" }), el("option", { value: "stop", textContent: "Stop" }));
+    action.value = e.action;
+    const time = el("input", { type: "time", name: "time", value: e.time, required: true });
+    const days = el("span", { className: "schedule-days" });
+    dayNames.forEach((n, i) => {
+      const cb = el("input", { type: "checkbox", value: String(i), checked: (e.days || []).includes(i) });
+      days.append(el("label", {}, cb, " " + n + " "));
+    });
+    const empty = el("input", { type: "checkbox", name: "only_if_empty", checked: !!e.only_if_empty });
+    const enabled = el("input", { type: "checkbox", name: "enabled", checked: e.enabled !== false });
+    const remove = el("button", { type: "button", className: "btn btn-ghost btn-danger", textContent: "Remove" });
+    remove.addEventListener("click", () => { row.remove(); refreshNone(); });
+    row.append(game, action, time, days, el("label", {}, empty, " only if empty "), el("label", {}, enabled, " on "), remove);
+    rows.append(row);
+    refreshNone();
+  };
+  rows.replaceChildren();
+  (sv.schedules || []).forEach(addRow);
+  refreshNone();
+  $("schedule-add").onclick = () => addRow({
+    id: "s" + Date.now().toString(36), game: games[0] ? games[0].id : "", action: "start", days: [5], time: "18:00", enabled: true,
+  });
+  $("schedule-form").onsubmit = async (ev) => {
+    ev.preventDefault();
+    const list = [...rows.children].map((row) => ({
+      id: row.dataset.id,
+      game: row.querySelector("[name=game]").value,
+      action: row.querySelector("[name=action]").value,
+      time: row.querySelector("[name=time]").value,
+      days: [...row.querySelectorAll(".schedule-days input:checked")].map((c) => Number(c.value)),
+      enabled: row.querySelector("[name=enabled]").checked,
+      only_if_empty: row.querySelector("[name=only_if_empty]").checked,
+    }));
+    const res = await callAPI("/api/schedules", { method: "PUT", body: JSON.stringify({ schedules: list }) });
+    if (!res.ok) { fail(await errorText(res)); return; }
+    fail("");
+    toast("Schedules saved.", "ok");
+  };
 };
 
 // ---------- Per-game overrides (General pane) ----------
@@ -123,7 +181,7 @@ loaders.audit = () => {
   const more = $("audit-more");
   const PAGE = 50;
   const KINDS = ["start", "stop", "auto_stop", "start_failed", "stop_failed", "join", "leave",
-    "settings", "users", "games", "backup", "restore", "console", "crash", "crash_loop"];
+    "settings", "users", "games", "backup", "restore", "console", "files", "crash", "crash_loop"];
   KINDS.forEach((k) => form.elements.kind.append(new Option(k.replace("_", " "), k)));
   let offset = 0;
   const params = () => {
@@ -181,6 +239,7 @@ loaders.users = () => {
   const gamesBox = $("user-games");
   const gamesField = $("user-games-field");
   let editing = null;
+  let editingUser = null; // the row being edited, to tell what changed
   let googleEnabled = false;
   let gameRefs = [];
   const buildGames = () => {
@@ -200,8 +259,13 @@ loaders.users = () => {
   form.elements.role.addEventListener("change", syncGamesField);
   const showError = (msg) => { errorEl.textContent = msg; errorEl.hidden = !msg; };
 
+  // Changes that decide who can sign in as whom ask for the admin's own password again.
+  const askPassword = (title, message, confirmLabel) =>
+    confirmAction({ eyebrow: "// crew list", title, message, confirmLabel, danger: true, askPassword: true });
+
   const resetForm = () => {
     editing = null;
+    editingUser = null;
     form.reset();
     form.elements.username.readOnly = false;
     form.elements.role.disabled = false;
@@ -218,6 +282,7 @@ loaders.users = () => {
   const startEdit = (u) => {
     resetForm();
     editing = u.username;
+    editingUser = u;
     form.elements.username.value = u.username;
     form.elements.username.readOnly = true;
     form.elements.role.value = u.role;
@@ -268,15 +333,11 @@ loaders.users = () => {
         actions.append(mk("Edit", () => startEdit(u)));
         if (u.mfa) {
           actions.append(mk("Reset 2FA", async () => {
-            const ok = await confirmAction({
-              eyebrow: "// crew list",
-              title: `Reset ${u.username}'s authenticator app?`,
-              message: u.self ? "You will be asked to set it up again." : "They are signed out everywhere and can sign in with just their password until they set it up again.",
-              confirmLabel: "Reset",
-              danger: true,
-            });
-            if (!ok) return;
-            const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "PUT", { reset_mfa: true });
+            const pw = await askPassword(`Reset ${u.username}'s authenticator app?`,
+              (u.self ? "You will be asked to set it up again." : "They are signed out everywhere and can sign in with just their password until they set it up again.") + " Enter your password to confirm.",
+              "Reset");
+            if (!pw) return;
+            const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "PUT", { reset_mfa: true, confirm_password: pw });
             if (r) { render(r); toast(`Reset ${u.username}'s authenticator app.`, "ok"); }
           }));
         }
@@ -286,15 +347,11 @@ loaders.users = () => {
             if (r) toast(`Signed ${u.username} out everywhere.`, "ok");
           }));
           actions.append(mk("Delete", async () => {
-            const ok = await confirmAction({
-              eyebrow: "// crew list",
-              title: `Delete ${u.username}?`,
-              message: "They are signed out everywhere and can no longer sign in. This can't be undone.",
-              confirmLabel: "Delete user",
-              danger: true,
-            });
-            if (!ok) return;
-            const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "DELETE");
+            const pw = await askPassword(`Delete ${u.username}?`,
+              "They are signed out everywhere and can no longer sign in. This can't be undone. Enter your password to confirm.",
+              "Delete user");
+            if (!pw) return;
+            const r = await request(`/api/users/${encodeURIComponent(u.username)}`, "DELETE", { confirm_password: pw });
             if (r) { render(r); if (editing === u.username) resetForm(); }
           }, true));
         }
@@ -320,8 +377,21 @@ loaders.users = () => {
     e.preventDefault();
     const f = form.elements;
     let users;
+    const lower = (v) => (v || "").trim().toLowerCase();
+    const sensitive = editing
+      ? (!f.role.disabled && f.role.value !== editingUser.role) || !!f.password.value ||
+        (googleEnabled && lower(f.google_email.value) !== lower(editingUser.google_email)) ||
+        (oidcAvailable && lower(f.oidc_email.value) !== lower(editingUser.oidc_email))
+      : f.role.value === "admin";
+    let confirmPw = "";
+    if (sensitive) {
+      confirmPw = await askPassword(editing ? `Save changes to ${editing}?` : "Add an admin?",
+        "This changes who can sign in as this user, or what they can do. Enter your password to confirm.", editing ? "Save changes" : "Add admin");
+      if (!confirmPw) return;
+    }
     if (editing) {
       const body = {};
+      if (confirmPw) body.confirm_password = confirmPw;
       if (!f.role.disabled) body.role = f.role.value;
       if (f.password.value) body.password = f.password.value;
       body.games = pickedGames();
@@ -332,7 +402,7 @@ loaders.users = () => {
       users = await request("/api/users", "POST",
         { username: f.username.value.trim(), password: f.password.value, role: f.role.value, games: pickedGames(),
           google_email: googleEnabled ? f.google_email.value.trim() : "",
-          oidc_email: oidcAvailable ? f.oidc_email.value.trim() : "" });
+          oidc_email: oidcAvailable ? f.oidc_email.value.trim() : "", confirm_password: confirmPw || undefined });
     }
     if (!users) return;
     f.role.disabled = false;
@@ -681,3 +751,37 @@ loaders.modules = async () => {
 };
 
 showPane();
+
+loaders.backups = async () => {
+  const res = await callAPI("/api/backups/overview");
+  if (!res.ok) { toast(await errorText(res, "Loading backups"), "error"); return; }
+  const v = await res.json();
+  const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
+  const ago = (iso) => {
+    const s = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+    if (s < 3600) return `${Math.round(s / 60)} min ago`;
+    if (s < 172800) return `${Math.round(s / 3600)} h ago`;
+    return `${Math.round(s / 86400)} days ago`;
+  };
+  const mb = (n) => (n >= 1 << 30 ? (n / (1 << 30)).toFixed(1) + " GiB" : Math.max(1, Math.round(n / (1 << 20))) + " MiB");
+  const list = $("backups-list");
+  list.replaceChildren();
+  v.games.forEach((g) => {
+    let text;
+    if (g.unavailable) text = "can't be listed right now (start the game to see its backups)";
+    else if (!g.latest) text = "no backups yet";
+    else text = `${g.count} kept, newest ${ago(g.latest.time)} (${mb(g.latest.size)}, ${g.latest.name})`;
+    list.append(el("div", { className: "setting-row" }, el("b", { textContent: g.name }), " ", g.running ? "working… " : "", text, g.restorable ? "" : " (no restore)"));
+  });
+  $("backups-none").hidden = v.games.length > 0;
+  const h = v.health;
+  const problem = $("backups-problem");
+  const off = v.offsite && v.offsite.configured && v.offsite.state !== "ok" ? v.offsite.message || "The offsite copy is failing." : "";
+  const text = [...((h && h.problems) || []), off].filter(Boolean).join(" ");
+  problem.textContent = text;
+  problem.hidden = !text;
+  $("backups-folder").textContent = h ? `Shared folder: ${h.ok ? "healthy" : "has problems"}, ${mb(h.free)} free.` : "No shared backups folder is set up; each game keeps its own.";
+  const orphans = $("backups-orphans");
+  orphans.hidden = !(h && h.orphans && h.orphans.length);
+  if (!orphans.hidden) orphans.textContent = `Folders no game uses (kept, never deleted by CrowsNest): ${h.orphans.join(", ")}.`;
+};

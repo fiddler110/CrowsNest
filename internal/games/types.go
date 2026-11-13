@@ -7,6 +7,7 @@ package games
 import (
 	"context"
 	"errors"
+	"github.com/fiddler110/crowsnest/internal/gamefiles"
 	"regexp"
 	"time"
 )
@@ -128,6 +129,11 @@ type RawConsole interface {
 	Raw(ctx context.Context, command string) (string, error)
 }
 
+// ConnectLister gives labelled join values read from a running game.
+type ConnectLister interface {
+	ConnectValues() []ConnectSecret
+}
+
 // GameDef is one game's static identity plus its pluggable strategies.
 type GameDef struct {
 	ID            string
@@ -151,6 +157,10 @@ type GameDef struct {
 	// under the address, already resolved from the environment. Entries whose
 	// variable is unset or empty are dropped.
 	ConnectSecrets []ConnectSecret
+
+	// Live supplies connect values that only exist while the server runs
+	// (a crossplay join code printed in its log). Nil for most games.
+	Live ConnectLister
 
 	// Accent is the card's accent colour ("#rrggbb") from the game's module;
 	// empty keeps the dashboard's default.
@@ -177,6 +187,9 @@ type GameDef struct {
 
 	// Backup is how to back this game up, nil if it isn't configured.
 	Backup *BackupSpec
+
+	// Files are the config files admins may edit from the dashboard (the module's files: block).
+	Files []gamefiles.Spec
 }
 
 // BackupSpec mirrors config.BackupConfig.
@@ -194,6 +207,6 @@ type BackupSpec struct {
 
 // ConnectSecret is a labelled value shown on a game's dashboard card.
 type ConnectSecret struct {
-	Label string
-	Value string
+	Label string `json:"label"`
+	Value string `json:"value"`
 }

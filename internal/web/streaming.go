@@ -38,14 +38,30 @@ func (a *App) maxConcurrentStreams() int {
 	return defaultMaxConcurrentStreams
 }
 
-// acquireStream reserves a slot for a new log-streaming subprocess,
-// reporting false if the process-wide cap is already reached.
-func (a *App) acquireStream() bool {
-	return acquireSlot(&a.streamCount, a.maxConcurrentStreams())
+// defaultMaxStreamsPerUser keeps one signed-in user from holding every slot of the shared cap.
+const defaultMaxStreamsPerUser = 6
+
+func (a *App) maxStreamsPerUser() int {
+	if a.MaxStreamsPerUser > 0 {
+		return a.MaxStreamsPerUser
+	}
+	return defaultMaxStreamsPerUser
 }
 
-func (a *App) releaseStream() {
-	a.streamCount.Add(-1)
+// acquireStream reserves a slot for a new log-streaming subprocess: first one of the user's own, then one of the
+// process-wide cap. It returns a release func, or ok=false and why the stream was refused.
+func (a *App) acquireStream(user string) (release func(), refusal string, ok bool) {
+	if !a.userLogStreams.acquire(user, a.maxStreamsPerUser()) {
+		return nil, "you already have too many log streams open, close a tab and try again", false
+	}
+	if !acquireSlot(&a.streamCount, a.maxConcurrentStreams()) {
+		a.userLogStreams.release(user)
+		return nil, "too many active log streams, try again shortly", false
+	}
+	return func() {
+		a.streamCount.Add(-1)
+		a.userLogStreams.release(user)
+	}, "", true
 }
 
 // handleLogs streams `docker logs -f` for a game as Server-Sent Events,
@@ -56,11 +72,12 @@ func (a *App) handleLogs(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if !a.acquireStream() {
-		http.Error(w, "too many active log streams, try again shortly", http.StatusServiceUnavailable)
+	release, why, ok := a.acquireStream(actor(r))
+	if !ok {
+		http.Error(w, why, http.StatusServiceUnavailable)
 		return
 	}
-	defer a.releaseStream()
+	defer release()
 
 	tail := r.URL.Query().Get("tail")
 	if tail == "" {
@@ -123,11 +140,12 @@ func (a *App) handleStartupProgress(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if !a.acquireStream() {
-		_ = sw.WriteEvent("error", "too many active log streams, try again shortly")
+	release, why, ok := a.acquireStream(actor(r))
+	if !ok {
+		_ = sw.WriteEvent("error", why)
 		return
 	}
-	defer a.releaseStream()
+	defer release()
 
 	// Accepted but the container doesn't exist yet (compose is still
 	// pulling the image or creating it): say so and end the stream; the

@@ -139,6 +139,7 @@ func TestModuleInstall_Refusals(t *testing.T) {
 	// No modules_dir.
 	tl, out = tool(t, srv, "", "")
 	if code := tl.run([]string{"list"}); code != 1 {
+		t.Logf("%s", out)
 		t.Errorf("empty modules_dir: %d", code)
 	}
 }

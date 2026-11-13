@@ -16,7 +16,7 @@ Games still start one at a time unless you raised "Servers allowed at once" and 
 ## Installing a module from a source
 
 If `managed.trusted_keys` lists at least one publisher key in `config.yaml` (and `modules_dir` is set and writable by
-the panel), the Games page has **Game modules from a source**: give it the https address of a `module.yaml`. The
+the panel), the Games page has **Game modules from a source**, which also lists your trusted keys and, if `managed.catalogue_url` is set, a catalogue to pick from: give it the https address of a `module.yaml`. The
 panel fetches the module and the signature beside it (`<address>.sig`), checks that a key you trust signed those exact
 bytes, and shows what the module would let it do. You confirm with your password and the install is of exactly the
 file you were shown (a changed file is refused). Only signed modules can be installed this way. **Check for update**
@@ -58,6 +58,33 @@ Prefer files? Clone the repository and copy the folder: `scripts/install.sh <mod
 `sevendtd/module.yaml` to `<modules_dir>/sevendtd/module.yaml`), then restart. That copy is not pinned or
 signature-checked, so only do it for a file you have read.
 
+## Editing config files
+
+When a game's module declares `files:` (Minecraft's `server.properties` and operators, Valheim's admin, allowed and
+banned lists), admins get a **Files** tab on its card. Pick a file, edit it and press Save.
+
+- **Running or stopped.** While the game runs, files are read and written inside its container with `docker exec`;
+  nothing is mounted into the panel. For a game enabled from the dashboard that is stopped, a short-lived helper
+  container (`<id>-files`, the game's image and data folders only) does it, for files inside the game's data folders.
+  A game set up in `config.yaml`, or a file elsewhere in the image, needs the game running. A file that does not
+  exist yet reads as empty and Save creates it.
+- **Saving asks for your password** and shows how many lines changed. Each save is recorded in the activity feed and
+  the audit file (who, which file, the hash before and after, never the content).
+- **Nothing is overwritten blindly.** The editor remembers the hash of what it loaded. If the file changed since (the
+  game rewrote it, or another admin saved), the save is refused with a 409; Reload and make the change again.
+- **The last 10 versions are kept** in `file-history/` next to `settings.json` (mode 0600, as these files can hold
+  passwords). Pick one from the list, Load that version, then Save to put it back.
+- **Secrets stay hidden.** A module can mark lines such as `rcon.password=` as redacted; the editor shows
+  `••••••••` and keeps the real value on save unless you type a new one. A hidden value is also hidden in the kept
+  versions you load, so loading an old version and saving keeps the *current* secret, not the old one.
+- **A change usually needs a restart.** The note under the editor says what the module says. Some games rewrite
+  their files when they stop (marked `stop_first`); the editor then says to edit while the game is stopped, which
+  the helper container allows.
+- Only text files up to the file's limit (64 KiB by default) are editable. The file keeps its owner and mode.
+
+Operators: the exec guard learns the two fixed commands per file from the module, so installing a module with
+`files:` shows each path in the approval summary. See docs/modules.md, `files:`.
+
 ## Disabling a game and deleting its data
 
 **Games, Disable** removes the container and takes the game off the dashboard; its data folders and backups stay,
@@ -73,7 +100,7 @@ so it can be enabled again. **Disable and delete…** (admin only, the game must
 The two are separate ticks, both off by default. Deleting needs the game's id typed out and your password, like
 widening the guard, and is recorded in the activity log. Delete the data without the backups and you can still bring
 the world back with Restore after enabling the game again. If emptying the folders fails, nothing else is changed and
-the game stays listed. Each game now uses up to three guard scopes (the game, its restore helper and its clean
+the game stays listed. Each game now uses up to four guard scopes (the game, its restore helper, its files helper and its clean
 helper), which count towards `max_scopes` in `policy.yaml` (default 64, so about 20 games with all three).
 
 Only dashboard-enabled games can do this; a game set up by hand in `config.yaml` has to be cleaned up by hand.

@@ -9,8 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/atomicfile"
 	"os"
-	"path/filepath"
 	"sync"
 )
 
@@ -67,6 +67,10 @@ type Values struct {
 	// to games that have an RCON address. Off by default; the fixed-action
 	// console is always available to admins.
 	RawConsole bool `json:"raw_console"`
+
+	// RequireAdminMFA makes an admin who signs in with a password set up an authenticator app before doing
+	// anything else (they can still reach their Account page).
+	RequireAdminMFA bool `json:"require_admin_mfa"`
 
 	// PerGame holds per-game overrides keyed by game id. A body that names a
 	// game replaces that game's entry (null or all-empty removes it); games it
@@ -238,22 +242,7 @@ func writeAtomic(path string, v Values) error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".settings-*")
-	if err != nil {
-		return fmt.Errorf("settings: save: %w", err)
-	}
-	defer os.Remove(tmp.Name()) // no-op after a successful rename
-	if _, err := tmp.Write(append(data, '\n')); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("settings: save: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("settings: save: %w", err)
-	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return fmt.Errorf("settings: save: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
+	if err := atomicfile.Write(path, append(data, '\n'), 0o600); err != nil {
 		return fmt.Errorf("settings: save: %w", err)
 	}
 	return nil

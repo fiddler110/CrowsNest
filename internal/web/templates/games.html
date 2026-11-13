@@ -25,7 +25,16 @@
 
   <section id="sources" class="sources" hidden>
     <h2 class="section-title">// game modules from a source</h2>
-    <p class="hero-sub">Install a module published by someone you trust. It must be signed by one of the keys the operator listed in <code>config.yaml</code> (<span id="sources-keys"></span>). Installing a module grants it nothing: a game from it still has to fit the policy.</p>
+    <p class="hero-sub">Install a module published by someone you trust. It must be signed by one of the keys the operator listed in <code>config.yaml</code> . Installing a module grants it nothing: a game from it still has to fit the policy.</p>
+    <h3>Trusted keys</h3>
+    <p class="hero-sub">Listed in <code>config.yaml</code> (<code>managed.trusted_keys</code>); the dashboard cannot change them. To rotate a key, add the new one next to the old, have the publisher sign again, update each module here, then remove the old key from <code>config.yaml</code>.</p>
+    <ul id="sources-keys" class="session-list"></ul>
+    <div id="mod-catalogue" hidden>
+      <h3>Catalogue</h3>
+      <p class="hero-sub">A list of modules published for you to pick from. It is only a list: picking one still shows you the signed file and what it would do before anything is installed.</p>
+      <ul id="catalogue-list" class="session-list"></ul>
+    </div>
+    <h3>Install by address</h3>
     <form id="source-form" class="pane-form" autocomplete="off">
       <label class="field">Address of the module <small>An https:// address of a module.yaml, with its signature next to it at the same address plus <code>.sig</code>.</small>
         <input type="url" name="url" maxlength="300" placeholder="https://example.com/modules/mygame/module.yaml" spellcheck="false" required></label>

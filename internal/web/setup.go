@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"github.com/fiddler110/crowsnest/internal/audit"
 	"log"
 	"net/http"
 	"strings"
@@ -102,7 +103,7 @@ func (a *App) handleSetup(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "could not save the account; see the CrowsNest log", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("audit: first admin %q created from %s", name, ip)
+	audit.Printf("first admin %q created from %s", name, ip)
 	if a.History != nil {
 		a.History.Record(history.KindUsers, "", name, "first-run setup created the admin")
 	}

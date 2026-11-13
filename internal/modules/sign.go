@@ -3,7 +3,9 @@ package modules
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"regexp"
@@ -50,6 +52,13 @@ func ParseTrustedKeys(in []TrustedKey) ([]TrustedKey, error) {
 		out = append(out, k)
 	}
 	return out, nil
+}
+
+// Fingerprint is a short, stable id for the key (first 16 hex digits of the SHA-256 of the public key), so two
+// keys that carry the same name can be told apart.
+func (k TrustedKey) Fingerprint() string {
+	h := sha256.Sum256(k.pub)
+	return hex.EncodeToString(h[:8])
 }
 
 // ErrNotSigned means no signature was found, or none matches a trusted key.

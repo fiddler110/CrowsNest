@@ -4,9 +4,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/fiddler110/crowsnest/internal/vault"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -73,7 +75,12 @@ func newGoogleHarness(t *testing.T) *googleHarness {
 		AuthURL:      "https://accounts.example/auth",
 		TokenURL:     srv.URL,
 	}
-	h.o = &OIDCLogin{Google: h.g, Service: svc, HTTPClient: srv.Client(), Now: func() time.Time { return h.now }}
+	vlt, _ := vault.New("", filepath.Join(t.TempDir(), "k"))
+	store, err := NewOIDCStore(filepath.Join(t.TempDir(), "oidc.json"), vlt)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.o = &OIDCLogin{Google: h.g, Service: svc, Store: store, HTTPClient: srv.Client(), Now: func() time.Time { return h.now }}
 	return h
 }
 
@@ -339,5 +346,56 @@ func TestTokenClient_DoesNotFollowRedirects(t *testing.T) {
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusTemporaryRedirect || leaked != 0 {
 		t.Fatalf("status %d, redirect target hit %d time(s); want 307 and 0 (the client secret must not be re-sent)", resp.StatusCode, leaked)
+	}
+}
+
+// signIn runs one Google sign-in with the given subject and email and returns the signed-in user ("" if refused).
+func (h *googleHarness) signIn(t *testing.T, sub, email string) string {
+	t.Helper()
+	cookie, q := h.start(t)
+	claims := h.goodClaims(q)
+	claims["sub"], claims["email"] = sub, email
+	h.fake.claims = claims
+	rec := h.callback(t, cookie, "code=abc&state="+url.QueryEscape(q.Get("state")))
+	if s, ok := sessionFrom(t, h.o.Service, rec); ok {
+		return s.Username
+	}
+	return ""
+}
+
+func TestGoogleLogin_BoundToSubject(t *testing.T) {
+	h := newGoogleHarness(t)
+	if got := h.signIn(t, "1234", "alex@example.com"); got != "alex" {
+		t.Fatalf("first sign-in = %q, want alex", got)
+	}
+	// Another Google account that now holds the same address is not alex.
+	if got := h.signIn(t, "9999", "alex@example.com"); got != "" {
+		t.Errorf("a different subject with the same email signed in as %q", got)
+	}
+	// The same account still signs in after Google reports a different address, as long as alex may use Google.
+	if got := h.signIn(t, "1234", "other@example.com"); got != "alex" {
+		t.Errorf("the linked subject with a changed email = %q, want alex", got)
+	}
+	// Re-pointing alex at another address drops the link, so the new account can link.
+	if err := h.o.Store.UnlinkProvider(GoogleProviderID, "alex"); err != nil {
+		t.Fatal(err)
+	}
+	if got := h.signIn(t, "9999", "alex@example.com"); got != "alex" {
+		t.Errorf("after unlinking, the new subject = %q, want alex", got)
+	}
+}
+
+func TestGoogleLogin_RefusesUnverifiableIDToken(t *testing.T) {
+	h := newGoogleHarness(t)
+	keys := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// One RSA key that did not sign the fake's token.
+		json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{
+			{"kty": "RSA", "kid": "k", "n": base64.RawURLEncoding.EncodeToString(make([]byte, 256)), "e": "AQAB"}}})
+	}))
+	defer keys.Close()
+	h.g.JWKSURL = keys.URL
+	h.o.HTTPClient = keys.Client()
+	if got := h.signIn(t, "1234", "alex@example.com"); got != "" {
+		t.Fatalf("an ID token whose signature can't be checked signed in as %q", got)
 	}
 }

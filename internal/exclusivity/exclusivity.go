@@ -17,6 +17,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/memadmit"
+	"github.com/fiddler110/crowsnest/internal/notify"
 )
 
 const (
@@ -236,7 +237,7 @@ type Backuper interface {
 // notify sends message in the background with a short timeout, so a slow or
 // down webhook can never delay or fail the action being reported. Tracked by
 // wg so Wait (tests, shutdown) also flushes pending notifications.
-func (m *Manager) notify(message string) {
+func (m *Manager) notify(game, message string) {
 	if m.Notifier == nil {
 		return
 	}
@@ -245,7 +246,7 @@ func (m *Manager) notify(message string) {
 		defer m.wg.Done()
 		ctx, cancel := context.WithTimeout(context.Background(), notifyTimeout)
 		defer cancel()
-		m.Notifier.Notify(ctx, message)
+		m.Notifier.Notify(notify.WithGame(ctx, game), message)
 	}()
 }
 
@@ -527,7 +528,7 @@ func (m *Manager) launchStart(target games.GameDef, actor string, announce bool)
 				m.record(history.KindStart, target.ID, actor, "")
 			}
 			if announce && actor != "" {
-				m.notify(fmt.Sprintf("**%s** is starting (requested by %s).", target.DisplayName, actor))
+				m.notify(target.ID, fmt.Sprintf("**%s** is starting (requested by %s).", target.DisplayName, actor))
 			}
 		case errors.Is(ctx.Err(), context.Canceled):
 			log.Printf("exclusivity: start of %s cancelled", target.ID)
@@ -540,7 +541,7 @@ func (m *Manager) launchStart(target games.GameDef, actor string, announce bool)
 			if actor != "" {
 				msg += " (requested by " + actor + ")"
 			}
-			m.notify(msg + ": " + res.Err)
+			m.notify(target.ID, msg+": "+res.Err)
 		}
 
 		m.stateMu.Lock()
@@ -574,7 +575,7 @@ func (m *Manager) Stop(ctx context.Context, id string) error {
 	}
 	if actor := actorFrom(ctx); actor != "" {
 		m.record(history.KindStop, id, actor, "")
-		m.notify(fmt.Sprintf("**%s** was stopped by %s.", m.displayName(id), actor))
+		m.notify(id, fmt.Sprintf("**%s** was stopped by %s.", m.displayName(id), actor))
 	}
 	return nil
 }
@@ -603,12 +604,12 @@ func (m *Manager) RequestStop(ctx context.Context, id string) error {
 			log.Printf("exclusivity: stop %s failed: %v", id, err)
 			m.recordFailure(id, publicFailure("stop failed: ", err), "stop failed: "+err.Error())
 			m.record(history.KindStopFailed, id, actor, publicFailure("", err))
-			m.notify(fmt.Sprintf("**%s** failed to stop: %s", d.DisplayName, publicFailure("", err)))
+			m.notify(d.ID, fmt.Sprintf("**%s** failed to stop: %s", d.DisplayName, publicFailure("", err)))
 			return
 		}
 		if actor != "" {
 			m.record(history.KindStop, id, actor, "")
-			m.notify(fmt.Sprintf("**%s** was stopped by %s.", d.DisplayName, actor))
+			m.notify(d.ID, fmt.Sprintf("**%s** was stopped by %s.", d.DisplayName, actor))
 		}
 	}()
 	return nil
@@ -797,7 +798,7 @@ func (m *Manager) runSwitch(ctx context.Context, op *switchOp) error {
 	}
 	if actor := actorFrom(ctx); actor != "" {
 		m.record(history.KindStop, op.from.ID, actor, "switching to "+op.to.DisplayName)
-		m.notify(fmt.Sprintf("%s switched from **%s** to **%s**.", actor, op.from.DisplayName, op.to.DisplayName))
+		m.notify(op.to.ID, fmt.Sprintf("%s switched from **%s** to **%s**.", actor, op.from.DisplayName, op.to.DisplayName))
 	}
 	return nil
 }
@@ -832,7 +833,7 @@ func (m *Manager) RequestSwitch(ctx context.Context, from, to string) error {
 			pre := "switch from " + op.from.DisplayName + " failed: "
 			m.recordFailure(op.to.ID, publicFailure(pre, err), pre+err.Error())
 			m.record(history.KindStartFailed, op.to.ID, actorFrom(bg), publicFailure("switch from "+op.from.DisplayName+": ", err))
-			m.notify(fmt.Sprintf("Switch from **%s** to **%s** failed: %s", op.from.DisplayName, op.to.DisplayName, publicFailure("", err)))
+			m.notify(op.to.ID, fmt.Sprintf("Switch from **%s** to **%s** failed: %s", op.from.DisplayName, op.to.DisplayName, publicFailure("", err)))
 		}
 	}()
 	return nil

@@ -76,6 +76,9 @@ type ManagedConfig struct {
 	// URL. Left empty, the dashboard installs nothing remote; the command line's hash-pinned install still works.
 	// The list lives here, not in anything the dashboard can edit.
 	TrustedKeys []TrustedKey `yaml:"trusted_keys"`
+	// CatalogueURL is an https address of an index.json listing modules (see docs/modules.md). The dashboard shows
+	// its entries as a pick list; it is only a list of pointers, and every install still needs a trusted signature.
+	CatalogueURL string `yaml:"catalogue_url"`
 }
 
 // TrustedKey is one publisher key a module signature may be made with.
@@ -189,6 +192,18 @@ type ServerConfig struct {
 	// sent back by the browser at all.
 	SecureCookies bool `yaml:"secure_cookies"`
 
+	// SessionIdleMinutes is how long a session lasts without activity (default 180). Using the panel renews it.
+	// SessionMaxHours is the longest a session can last from sign-in however active it is (default 12). Set it to
+	// no more than the idle time to turn renewal off, so a session simply ends that long after sign-in.
+	// LogLevel is debug, info (default), warn or error; LogFormat is text (default) or json. AuditFile is the
+	// tamper-evident record of security-relevant actions (default /app/data/audit.jsonl; see docs/operating.md).
+	LogLevel  string `yaml:"log_level"`
+	LogFormat string `yaml:"log_format"`
+	AuditFile string `yaml:"audit_file"`
+
+	SessionIdleMinutes int `yaml:"session_idle_minutes"`
+	SessionMaxHours    int `yaml:"session_max_hours"`
+
 	// MaxActiveGames caps how many game servers may run at once. Zero
 	// (the default) means 1: starting a second game is refused and the UI
 	// offers to switch instead. Overridden by the CROWSNEST_MAX_ACTIVE_GAMES
@@ -299,6 +314,14 @@ type NotificationsConfig struct {
 	// secret in this config (rcon_password_env, rest_api_password_env).
 	// Empty (the default) means notifications are disabled.
 	DiscordWebhookURLEnv string `yaml:"discord_webhook_url_env"`
+
+	// NtfyURLEnv names an environment variable holding an ntfy topic URL (https://ntfy.sh/<topic> or your own
+	// server), and NtfyTokenEnv one holding its access token if the topic is protected. WebhookURLEnv names one
+	// holding a URL that receives {"text": "..."} as JSON. Each is a further channel next to Discord; any
+	// that are set get every message.
+	NtfyURLEnv    string `yaml:"ntfy_url_env"`
+	NtfyTokenEnv  string `yaml:"ntfy_token_env"`
+	WebhookURLEnv string `yaml:"webhook_url_env"`
 
 	// PlayerEvents posts a message when a player joins or leaves a game
 	// (needs the webhook above). On by default; set false to silence it.
@@ -531,6 +554,15 @@ func (c *Config) applyDefaults() {
 	if c.Server.Addr == "" {
 		c.Server.Addr = defaultAddr
 	}
+	if c.Server.AuditFile == "" {
+		c.Server.AuditFile = "/app/data/audit.jsonl"
+	}
+	if c.Server.SessionIdleMinutes <= 0 {
+		c.Server.SessionIdleMinutes = 180
+	}
+	if c.Server.SessionMaxHours <= 0 {
+		c.Server.SessionMaxHours = 12
+	}
 	if c.Server.SessionSecretFile == "" {
 		c.Server.SessionSecretFile = defaultSessionKeyFile
 	}
@@ -626,6 +658,11 @@ func (s ServerConfig) Location() (*time.Location, error) {
 func (c *Config) validate() error {
 	if c.UsersFile == "" {
 		return fmt.Errorf("users_file is required")
+	}
+	if u := c.Managed.CatalogueURL; u != "" {
+		if pu, err := url.Parse(u); err != nil || pu.Scheme != "https" || pu.Host == "" {
+			return fmt.Errorf("managed.catalogue_url must be an https:// address")
+		}
 	}
 	if c.Managed.Dir != "" {
 		if c.Managed.PolicyFile == "" {

@@ -135,10 +135,11 @@ unmounted-drive refusal. **Restoring from offsite** is a copy back: `rclone copy
 ## Restoring a backup
 
 On a dashboard-enabled game whose module has a `restore:` command (Minecraft, Valheim, Windrose and Palworld), each file in the **Backups** tab has a **Restore** button.
-It asks first, then:
+It asks for **your password** first (a restore overwrites a world, so it is treated like deleting one), then:
 
-1. stops the game (when it keeps a backup before stopping, that backup is taken first, so the world as it was a
-   moment ago is the newest file in the list and is your way back);
+1. takes a safety backup of a running game (always, even when the module does not back up before every stop), so the
+   world as it was a moment ago is the newest file in the list and is your way back; if that backup fails, nothing is
+   stopped or replaced. Then it stops the game;
 2. runs a one-shot container, `<game id>-restore`, from the game's own pinned image, with the game's data folders and
    its backups folder (read-only), whose entrypoint is the module's `restore` command and which finds the chosen file in
    `$CROWSNEST_RESTORE_FILE`; the container is removed afterwards;
@@ -149,8 +150,8 @@ The result is in the activity log (kind `restore`) and in Discord. Things to wat
 - **It replaces the current world.** The bundled commands delete the world folder and unpack the archive. If the
   command fails half way, the game is left **stopped** with partly restored data and nothing is started; restore the
   newest backup (the safety copy) or the file again.
-- **No safety copy when the game was stopped,** or when the module does not back up before stopping: there is nothing
-  to take one from. Back up first if the current world matters.
+- **No safety copy when the game was stopped:** there is nothing to take one from, so the panel refuses until you
+  confirm "Restore without a backup" (the API needs `"without_backup": true`).
 - **A restore that would delete its own file is refused.** With `keep: N`, the safety backup pushes the oldest file
   out; asking for that one is refused with a message, before anything is stopped.
 - **Only plain file names** inside the game's own folder are accepted, and only files that are listed there.
@@ -164,3 +165,24 @@ The result is in the activity log (kind `restore`) and in Discord. Things to wat
 - **Older archives.** A restore command expects the layout its module's backup command writes (`world/`,
   `worlds_local/`, `SaveProfiles/`). Archives made some other way are not understood.
 - **Config-file games** (a hand-written compose service) cannot restore from the dashboard; their backups stay where they are.
+
+## Backing up the panel's own state
+
+Game backups (above) do not cover CrowsNest itself. `crowsnest state export` writes one `.tar.gz` of the panel's own
+files: the users file, settings, sign-in settings, authenticator apps and SSO links, profiles, the activity log, the
+dashboard games' `games.json` and `secrets.json`, and the module lock with the installed modules.
+
+```sh
+docker exec crowsnest crowsnest state export -o /app/data/crowsnest-state.tar.gz   # or run it from a one-shot container
+```
+
+Put the file somewhere the offsite copy (or your own backup job) picks up.
+
+- **The vault key is not in it, on purpose.** Sign-in secrets, authenticator apps and game passwords are sealed with
+  it (see "Secrets at rest"); a snapshot without the key cannot be read, and a snapshot with the key beside it gives
+  nothing away that the key does not. Keep `master.key` (or the `CROWSNEST_MASTER_KEY` value) in a password manager or
+  other separate place. The session secret and signed-in sessions are not saved either: everyone signs in again.
+- **Restore:** stop the panel, then `crowsnest state restore <file>`; it refuses to overwrite a file that exists
+  unless you pass `--force`, and refuses a snapshot holding anything it did not write. Put the vault key back before
+  starting the panel.
+- Dashboard games' folders and their backups are not part of it: those are the game data and the backups folder.

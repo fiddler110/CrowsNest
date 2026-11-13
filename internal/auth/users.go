@@ -9,8 +9,8 @@ import (
 	"bufio"
 	"errors"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/atomicfile"
 	"os"
-	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
@@ -426,19 +426,8 @@ func writeUsers(path string, users Users) error {
 		}
 	}
 
-	// Temp file + rename so a crash never leaves a truncated users file.
-	tmp, err := os.CreateTemp(filepath.Dir(path), ".users-*.tmp")
-	if err != nil {
-		return fmt.Errorf("auth: write users file %s: %w", path, err)
-	}
-	_, werr := tmp.WriteString(b.String())
-	cerr := tmp.Close()
-	if err := errors.Join(werr, cerr, os.Chmod(tmp.Name(), 0o600)); err != nil {
-		os.Remove(tmp.Name())
-		return fmt.Errorf("auth: write users file %s: %w", path, err)
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		os.Remove(tmp.Name())
+	// Temp file + sync + rename so a crash never leaves a truncated users file.
+	if err := atomicfile.Write(path, []byte(b.String()), 0o600); err != nil {
 		return fmt.Errorf("auth: write users file %s: %w", path, err)
 	}
 	return nil

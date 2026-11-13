@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"slices"
 	"syscall"
 	"time"
 
@@ -67,11 +68,21 @@ func newExecProxy(ctx context.Context, listen, upstream string) (*http.Server, e
 	}
 	rules := execRules(cfg)
 	var mods *modules.Set
+	if mods, err = modules.ForConfig(cfg, log.Printf); err != nil {
+		return nil, fmt.Errorf("load modules: %w", err)
+	}
+	for _, g := range cfg.Games { // config.yaml games whose module declares editable files
+		id := g.ID
+		if g.Module != "" {
+			id = g.Module
+		}
+		if mf, ok := mods.Manifest(id); ok {
+			rules = append(rules, managed.FileRules(g.ContainerName, mf.Files)...)
+		}
+	}
+	static := slices.Clone(rules) // config.yaml's own commands, kept when the managed ones are swapped
 	if cfg.Managed.Dir != "" {
 		// Dashboard-enabled games: their module's backup command, reloaded as games come and go.
-		if mods, err = modules.ForConfig(cfg, log.Printf); err != nil {
-			return nil, fmt.Errorf("load modules: %w", err)
-		}
 		more, err := managed.ExecRulesFor(cfg.Managed.Dir, cfg.Managed.PolicyFile, mods, cfg.Platform.BackupsRoot != "")
 		if err != nil {
 			return nil, err
@@ -84,8 +95,8 @@ func newExecProxy(ctx context.Context, listen, upstream string) (*http.Server, e
 	}
 	g.Logf = log.Printf
 	log.Printf("execguard: %d allowlisted command(s), listening on %q, upstream %q", len(rules), listen, upstream) // #nosec G706 -- operator-supplied command-line flags, not request data
-	if mods != nil {
-		go watchManagedRules(ctx, g, execRules(cfg), cfg.Managed.Dir, cfg.Managed.PolicyFile, mods, cfg.Platform.BackupsRoot != "")
+	if cfg.Managed.Dir != "" {
+		go watchManagedRules(ctx, g, static, cfg.Managed.Dir, cfg.Managed.PolicyFile, mods, cfg.Platform.BackupsRoot != "")
 	}
 	return &http.Server{Addr: listen, Handler: g, ReadHeaderTimeout: 10 * time.Second}, nil
 }

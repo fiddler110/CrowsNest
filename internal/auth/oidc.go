@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/audit"
 	"io"
 	"log"
 	"net/http"
@@ -21,6 +22,25 @@ import (
 // issuer (so one provider can't vouch for another), that the endpoints are
 // https, and that PKCE with S256 is not ruled out.
 func Discover(ctx context.Context, client *http.Client, issuer string) (authURL, tokenURL string, err error) {
+	d, err := DiscoverFull(ctx, client, issuer)
+	return d.AuthURL, d.TokenURL, err
+}
+
+// Discovery is what a provider's discovery document gives CrowsNest.
+type Discovery struct {
+	AuthURL, TokenURL string
+	// JWKSURL is where the provider publishes the keys its ID tokens are signed with ("" when it names none).
+	JWKSURL string
+}
+
+// DiscoverFull is Discover that also returns the provider's signing-key address.
+func DiscoverFull(ctx context.Context, client *http.Client, issuer string) (d Discovery, err error) {
+	authURL, tokenURL, err := discover(ctx, client, issuer, &d)
+	d.AuthURL, d.TokenURL = authURL, tokenURL
+	return d, err
+}
+
+func discover(ctx context.Context, client *http.Client, issuer string, out *Discovery) (authURL, tokenURL string, err error) {
 	if client == nil {
 		client = tokenClient
 	}
@@ -49,6 +69,7 @@ func Discover(ctx context.Context, client *http.Client, issuer string) (authURL,
 		AuthURL    string   `json:"authorization_endpoint"`
 		TokenURL   string   `json:"token_endpoint"`
 		Challenges []string `json:"code_challenge_methods_supported"`
+		JWKSURL    string   `json:"jwks_uri"`
 	}
 	if err := json.NewDecoder(io.LimitReader(resp.Body, maxTokenResponse)).Decode(&doc); err != nil {
 		return "", "", errors.New("the discovery document is not JSON")
@@ -60,6 +81,12 @@ func Discover(ctx context.Context, client *http.Client, issuer string) (authURL,
 		if _, err := httpsOrLocal(v); err != nil {
 			return "", "", fmt.Errorf("the discovery document's %s %s", name, err)
 		}
+	}
+	if doc.JWKSURL != "" {
+		if _, err := httpsOrLocal(doc.JWKSURL); err != nil {
+			return "", "", fmt.Errorf("the discovery document's jwks_uri %s", err)
+		}
+		out.JWKSURL = doc.JWKSURL
 	}
 	if len(doc.Challenges) > 0 {
 		ok := false
@@ -80,6 +107,8 @@ type OIDCLogin struct {
 	Google  *GoogleLogin
 	Users   *UserStore
 	Service *Service
+
+	keys jwksCache
 
 	HTTPClient *http.Client // for tests
 	Now        func() time.Time
@@ -215,7 +244,7 @@ func (o *OIDCLogin) ServeCallback(w http.ResponseWriter, r *http.Request, id str
 	}
 	username, err := o.resolve(p, claims)
 	if err != nil {
-		log.Printf("audit: %s sign-in refused: %v", p.Name, err)
+		audit.Printf("%s sign-in refused: %v", p.Name, err)
 		o.fail(w, r, LoginErrorNotAllowed)
 		return
 	}
@@ -223,7 +252,7 @@ func (o *OIDCLogin) ServeCallback(w http.ResponseWriter, r *http.Request, id str
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	log.Printf("audit: %s signed in with %s", username, p.Name)
+	audit.Printf("%s signed in with %s", username, p.Name)
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
 
@@ -238,12 +267,31 @@ type oidcClaims struct {
 // linked to that subject for good.
 func (o *OIDCLogin) resolve(p OIDCProvider, c oidcClaims) (string, error) {
 	if p.ID == GoogleProviderID {
-		// Google keeps its email allowlist (env and users file); validate has
-		// already insisted on a verified address.
+		// A Google account already linked decides it, whatever address it now has, so a changed or reused
+		// email can't take the account over. The first time, the allowlist (env and users file) names the
+		// person by email (validate has already insisted on a verified address) and the account's subject is
+		// linked to them for good.
+		if o.Store == nil { // no link store: email only
+			name, ok := o.Google.Lookup(c.email)
+			if !ok {
+				return "", fmt.Errorf("%q is not on the Google allowlist", c.email)
+			}
+			return name, nil
+		}
+		if name, ok := o.Store.LinkedUser(p.ID, c.sub); ok {
+			if !o.Google.Allows(name) {
+				return "", fmt.Errorf("subject %q is linked to %q, who can no longer sign in with Google", c.sub, name)
+			}
+			return name, nil
+		}
 		name, ok := o.Google.Lookup(c.email)
 		if !ok {
 			return "", fmt.Errorf("%q is not on the Google allowlist", c.email)
 		}
+		if err := o.Store.Link(p.ID, c.sub, name); err != nil {
+			return "", fmt.Errorf("linking %q to %q: %w", c.sub, name, err)
+		}
+		audit.Printf("%s linked to Google account %q", name, c.sub)
 		return name, nil
 	}
 	if name, ok := o.Store.LinkedUser(p.ID, c.sub); ok {
@@ -262,7 +310,7 @@ func (o *OIDCLogin) resolve(p OIDCProvider, c oidcClaims) (string, error) {
 	if err := o.Store.Link(p.ID, c.sub, name); err != nil {
 		return "", fmt.Errorf("linking %q to %q: %w", c.sub, name, err)
 	}
-	log.Printf("audit: %s linked to %s account %q", name, p.Name, c.sub)
+	audit.Printf("%s linked to %s account %q", name, p.Name, c.sub)
 	return name, nil
 }
 
@@ -290,6 +338,14 @@ func (o *OIDCLogin) exchange(ctx context.Context, p OIDCProvider, code string, s
 	var tr tokenResponse
 	if err := json.Unmarshal(body, &tr); err != nil || tr.IDToken == "" {
 		return oidcClaims{}, errors.New("token response has no id_token")
+	}
+	// The token came straight from the token endpoint over TLS, which OpenID Connect accepts without a signature
+	// check; when the provider publishes its keys, check it anyway, so a hijacked connection or a proxy that
+	// rewrites the reply can't mint an identity.
+	if p.JWKSURL != "" {
+		if err := o.keys.verifyJWT(ctx, o.client(), p.JWKSURL, tr.IDToken, o.now()); err != nil {
+			return oidcClaims{}, err
+		}
 	}
 	return o.validate(p, tr.IDToken, st.Nonce)
 }

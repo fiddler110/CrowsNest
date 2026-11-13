@@ -8,6 +8,7 @@ description: "Valheim dedicated server (lloesche/valheim-server) with its own wo
 # Shown on the card of a game enabled from the dashboard.
 connect:
   - {label: Join password, option: server_pass}
+  - {label: Crossplay join code, log: 'join code (\d+)'}   # printed once CROSSPLAY=1 is set; changes every restart
 
 runtime:
   ram: 3g                # typical use; admission swaps in the measured peak after a run
@@ -35,6 +36,12 @@ backup:
   before_stop: true
   restore: ["/bin/sh", "-c", "set -e; rm -rf /config/worlds_local; tar xzf \"$CROWSNEST_RESTORE_FILE\" -C /config; chown -R \"$(stat -c %u:%g /config)\" /config/worlds_local"]
 
+# Player lists, one Steam id per line. The server reads them at start, so restart it after a change.
+files:
+  - {id: adminlist, label: Admins, path: /config/adminlist.txt, max_bytes: 16384, restart: "Restart the server to apply it."}
+  - {id: permittedlist, label: Allowed players, path: /config/permittedlist.txt, max_bytes: 16384, restart: "Restart the server to apply it. An empty list lets everyone in."}
+  - {id: bannedlist, label: Banned players, path: /config/bannedlist.txt, max_bytes: 16384, restart: "Restart the server to apply it."}
+
 options:
   - {key: server_name, label: Server name, default: My Valheim Server}
   - {key: world_name, label: World name, default: Midgard}
@@ -49,6 +56,7 @@ players:
   join: 'Got handshake from client (\S+)'
   leave: 'Closing socket (\S+)'
   world: 'Load world:\s*(.+?)\s*$'
+  name: 'Got character ZDOID from (.+?) : -?\d+:-?\d+'   # the character name follows the handshake's Steam id
 startup_progress:
   match: 'Update state \(0x61\) downloading, progress: (\d+(?:\.\d+)?)'
   from: 10

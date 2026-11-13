@@ -3,7 +3,7 @@
 # Copy this file to config.yaml and edit it, then bind-mount it into the
 # container at /app/config.yaml (or point CROWSNEST_CONFIG elsewhere).
 # See compose.yaml.example for the matching Docker Compose setup and
-# docs/implementation-plan.md for the full schema/behavior reference.
+# docs/archive/implementation-plan.md for the full schema/behavior reference.
 
 server:
   addr: ":5000"
@@ -148,5 +148,6 @@ games:
 # managed:
 #   dir: /app/data/managed
 #   policy_file: /etc/crowsnest/policy.yaml
+#   catalogue_url: https://raw.githubusercontent.com/fiddler110/crowsnest-modules/main/index.json   # optional pick list on the Games page
 #   trusted_keys:                        # publishers whose signed modules the dashboard may install from a URL
 #     - {name: me, public_key: "<base64 from `crowsnest module keygen me`>"}   # needs modules_dir too (see docs/modules.md)

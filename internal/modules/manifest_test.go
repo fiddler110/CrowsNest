@@ -1,6 +1,7 @@
 package modules
 
 import (
+	"github.com/fiddler110/crowsnest/internal/config"
 	"os"
 	"path/filepath"
 	"strings"
@@ -183,5 +184,96 @@ func TestRESTSectionsRejected(t *testing.T) {
 		if _, err := Parse(strings.NewReader(y)); err == nil {
 			t.Errorf("%s: want error", name)
 		}
+	}
+}
+
+func TestRCONActionsManifest(t *testing.T) {
+	base := "api_version: 1\nid: mc\nname: MC\n"
+	act := "actions:\n  - {id: kick, label: Kick, fields: [{name: player}], rcon: 'kick {player}'}\n"
+	m, err := Parse(strings.NewReader(base + "rcon: {addr: 'mc:25575', password_env: P}\n" + act))
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := &games.GameDef{ID: "mc"}
+	m.Wire()(def, Env{})
+	if def.Console == nil || len(def.Console.Actions()) != 1 {
+		t.Fatalf("console = %+v", def.Console)
+	}
+	for name, y := range map[string]string{
+		"no rcon addr": base + act,
+		"mixed":        base + "rcon: {addr: 'mc:1'}\napi: {base_url: 'http://x'}\n" + act + "  - {id: save, label: Save, request: {path: /s}}\n",
+		"multi-line":   base + "rcon: {addr: 'mc:1'}\nactions:\n  - {id: a, label: A, rcon: \"x\\ny\"}\n",
+	} {
+		if _, err := Parse(strings.NewReader(y)); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}
+
+func TestConnectFromLog(t *testing.T) {
+	base := "api_version: 1\nid: v\nname: V\nstatus: {ready_log: 'ready'}\nplayers: {type: log_markers, join: 'in (\\S+)', leave: 'out (\\S+)', name: 'as (.+)'}\n"
+	m, err := Parse(strings.NewReader(base + "connect:\n  - {label: Code, log: 'code (\\d+)'}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := &games.GameDef{ID: "v", ContainerName: "v"}
+	m.Wire()(def, Env{})
+	if def.Live == nil {
+		t.Fatal("no live connect values wired")
+	}
+	for name, y := range map[string]string{
+		"both":       base + "connect:\n  - {label: C, option: o, log: 'c (\\d+)'}\n",
+		"no group":   base + "connect:\n  - {label: C, log: 'code'}\n",
+		"no markers": "api_version: 1\nid: v\nname: V\nconnect:\n  - {label: C, log: 'c (\\d+)'}\n",
+	} {
+		if _, err := Parse(strings.NewReader(y)); err == nil {
+			t.Errorf("%s was accepted", name)
+		}
+	}
+}
+
+func TestFilesDeclared(t *testing.T) {
+	m, err := Parse(strings.NewReader(`
+api_version: 1
+id: a
+name: A
+files:
+  - {id: cfg, label: Config, path: /data/a.cfg, redact: ['^pw=(.*)$']}
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	def := &games.GameDef{ID: "a"}
+	m.Wire()(def, Env{})
+	if len(def.Files) != 1 || def.Files[0].MaxBytes == 0 || def.Files[0].Restart != "required" {
+		t.Fatalf("files not wired with defaults: %+v", def.Files)
+	}
+	for name, y := range map[string]string{
+		"relative path": "files: [{id: a, path: data/a.cfg}]",
+		"dotdot":        "files: [{id: a, path: /data/../etc/shadow}]",
+		"no group":      "files: [{id: a, path: /x, redact: ['pw=']}]",
+		"duplicate":     "files: [{id: a, path: /x}, {id: a, path: /y}]",
+	} {
+		if _, err := Parse(strings.NewReader("api_version: 1\nid: a\nname: A\n" + y + "\n")); err == nil {
+			t.Errorf("%s: accepted", name)
+		}
+	}
+}
+
+// A module with files needs exec, and the install summary says so.
+func TestFilesNeedExecAndAreListedForApproval(t *testing.T) {
+	m, ok := Bundled().Manifest("valheim")
+	if !ok || len(m.Files) != 3 {
+		t.Fatalf("valheim files = %+v", m.Files)
+	}
+	r, err := m.Render(config.GameConfig{ID: "valheim", ContainerName: "valheim", Module: "valheim"}, Platform{GamesRoot: "/srv/games"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !r.Scope.Exec {
+		t.Error("the guard scope does not allow exec, so files could never be read")
+	}
+	if !strings.Contains(strings.Join(m.Review(), "|"), "/config/adminlist.txt") {
+		t.Errorf("the install summary does not mention the files: %v", m.Review())
 	}
 }

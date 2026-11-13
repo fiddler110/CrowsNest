@@ -110,7 +110,7 @@ func (t *moduleTool) keygen(name string) error {
 		return err
 	}
 	path := name + ".key"
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- a file the operator named
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 G703 -- a file the operator named
 	if err != nil {
 		return fmt.Errorf("%s: %w (it is never overwritten)", path, err)
 	}
@@ -128,7 +128,7 @@ func (t *moduleTool) keygen(name string) error {
 
 // sign writes <file>.sig, the signature a CrowsNest that trusts the key looks for beside the module's URL.
 func (t *moduleTool) sign(file, keyFile string) error {
-	body, err := os.ReadFile(file) // #nosec G304 -- a file the operator named
+	body, err := os.ReadFile(file) // #nosec G304 G703 -- a file the operator named
 	if err != nil {
 		return err
 	}
@@ -136,7 +136,7 @@ func (t *moduleTool) sign(file, keyFile string) error {
 	if err != nil {
 		return fmt.Errorf("%s is not a valid module, so it is not signed: %w", file, err)
 	}
-	seed, err := os.ReadFile(keyFile) // #nosec G304 -- a file the operator named
+	seed, err := os.ReadFile(keyFile) // #nosec G304 G703 -- a file the operator named
 	if err != nil {
 		return err
 	}
@@ -144,7 +144,7 @@ func (t *moduleTool) sign(file, keyFile string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(file+modules.SigSuffix, sig, 0o644); err != nil { // #nosec G306 -- a signature is public
+	if err := os.WriteFile(file+modules.SigSuffix, sig, 0o644); err != nil { // #nosec G306 G703 -- a signature is public
 		return err
 	}
 	fmt.Fprintf(t.out, "signed %s (%s), sha256:%.12s. Publish %s%s next to it.\n", file, m.ID, modules.Hash(body), filepath.Base(file), modules.SigSuffix)
@@ -247,10 +247,13 @@ func (t *moduleTool) update(id, wantHash string, yes bool) error {
 		return err
 	}
 	if e.SignedBy != "" && by == "" && wantHash == "" {
-		return fmt.Errorf("%q was installed under a signature from %q and this version is not signed by a trusted key; refusing (pass --sha256 if you checked it by hand)", id, e.SignedBy)
+		return fmt.Errorf("%q was installed under a signature from %q and this version is not signed by a trusted key; refusing (to trust a different source of it, remove the module and install it again)", id, e.SignedBy)
 	}
 	if m.ID != id {
 		return fmt.Errorf("the source now serves module %q, not %q; refusing", m.ID, id)
+	}
+	if err := modules.CheckUpdate(e, m, body, by); err != nil {
+		return err
 	}
 	if modules.Hash(body) == e.SHA256 {
 		// Same bytes as approved. If the file on disk was edited, this restores it.

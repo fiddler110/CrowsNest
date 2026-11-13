@@ -132,7 +132,7 @@ What I haven't verified against real servers yet:
 The Minecraft, Source, Don't Starve Together and 7 Days to Die modules (published in
 [crowsnest-modules](https://github.com/fiddler110/crowsnest-modules)) were written and tested against sample logs, not
 against servers I run. Treat them as a starting point. The quickstart stack hasn't been run end to end on a clean machine
-either, though its config and policy are checked by a test. [`docs/implementation-plan.md`](docs/implementation-plan.md)
+either, though its config and policy are checked by a test. [`docs/archive/implementation-plan.md`](docs/archive/implementation-plan.md)
 has the history and the open items, and [`roadmap.md`](roadmap.md) has what's next.
 
 ## Games
@@ -218,7 +218,7 @@ Two roles (admin, player); sessions you can list and end per device; password si
 provider, with an optional authenticator app (TOTP); sealed storage for client secrets, game secrets and the session
 key. Behind the panel, the guard limits Docker to the containers, images and ports the policy names.
 
-Details: [docs/accounts.md](docs/accounts.md), the policy and guard in [docs/modules.md](docs/modules.md), and how
+Details: [docs/accounts.md](docs/accounts.md), the [threat model](docs/threat-model.md), the policy and guard in [docs/modules.md](docs/modules.md), and how
 to report a problem in [SECURITY.md](SECURITY.md).
 
 ### HTTP API

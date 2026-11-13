@@ -2,6 +2,7 @@ package modules
 
 import (
 	"encoding/json"
+	"github.com/fiddler110/crowsnest/internal/gamefiles"
 	"reflect"
 	"strings"
 	"testing"
@@ -104,7 +105,7 @@ func TestRenderedFilesAreValid(t *testing.T) {
 		t.Fatal(err)
 	}
 	scopes, err := dockerguard.LoadScopes(strings.ReplaceAll(string(js), "${USERDIR}", "/srv/games"))
-	if err != nil || len(scopes) != 4 { // each game and its data cleaner
+	if err != nil || len(scopes) != 5 { // each game and its data cleaner, and valheim's files helper
 		t.Fatalf("guard rejected the scopes: %v\n%s", err, js)
 	}
 	cf, err := ComposeFile(rs, "")
@@ -400,5 +401,42 @@ func TestRenderCleanContainer(t *testing.T) {
 	}
 	if b, _ := ScopesJSON([]*Rendered{r}); !strings.Contains(string(b), `"mc-2-clean"`) {
 		t.Errorf("scopes JSON has no clean scope: %s", b)
+	}
+}
+
+// A game whose module declares files gets a <id>-files helper scope with only its data folders, and the helper
+// edits only files inside them.
+func TestFilesHelperScopeAndSpec(t *testing.T) {
+	r := renderBundled(t, config.GameConfig{ID: "valheim", ContainerName: "valheim"})
+	if r.FilesScope == nil || r.FilesScope.Name != "valheim-files" {
+		t.Fatalf("files scope = %+v", r.FilesScope)
+	}
+	if len(r.FilesScope.Ports) != 0 || r.FilesScope.Exec {
+		t.Errorf("the helper scope must have no ports and no exec: %+v", r.FilesScope)
+	}
+	if strings.Join(r.FilesScope.Binds, ",") != strings.Join(r.CleanScope.Binds, ",") {
+		t.Errorf("the helper sees %v, not just the data folders %v", r.FilesScope.Binds, r.CleanScope.Binds)
+	}
+	sp := gamefiles.Spec{ID: "admins", Path: "/config/adminlist.txt", MaxBytes: 100}
+	rd, ok := r.FileSpec(sp, false, "")
+	if !ok || rd.Name != "valheim-files" || rd.Env != nil || !rd.NoRestart || strings.Join(rd.Entrypoint, "|") != strings.Join(sp.HelperReadArgs(), "|") {
+		t.Fatalf("read spec = %+v, %v", rd, ok)
+	}
+	wr, ok := r.FileSpec(sp, true, "76561198000000000\n")
+	if !ok || len(wr.Env) != 1 || wr.Env[0] != gamefiles.ContentEnv+"=76561198000000000\n" || wr.Entrypoint[0] != "/bin/sh" {
+		t.Fatalf("write spec = %+v, %v", wr, ok)
+	}
+	if _, ok := r.FileSpec(gamefiles.Spec{ID: "x", Path: "/etc/passwd"}, false, ""); ok {
+		t.Error("a file outside the data folders was offered to the helper")
+	}
+	if _, ok := r.FileSpec(gamefiles.Spec{ID: "x", Path: "/config"}, false, ""); ok {
+		t.Error("the data folder itself is not a file")
+	}
+	scopes, _ := ScopesJSON([]*Rendered{r})
+	if !strings.Contains(string(scopes), `"valheim-files"`) {
+		t.Error("the files scope is not in the guard's scopes")
+	}
+	if p := renderBundled(t, config.GameConfig{ID: "palworld", ContainerName: "palworld"}); p.FilesScope != nil {
+		t.Error("a module with no files gets a files scope")
 	}
 }

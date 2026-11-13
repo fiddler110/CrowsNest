@@ -21,6 +21,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/notify"
 	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
@@ -213,7 +214,7 @@ func (m *Manager) checkGame(ctx context.Context, d games.GameDef) {
 		m.History.Record(history.KindAutoStop, d.ID, "", "night shutdown: no players at "+now.Format("15:04"))
 	}
 	if m.Notifier != nil {
-		m.Notifier.Notify(ctx, fmt.Sprintf(
+		m.Notifier.Notify(notify.WithGame(ctx, d.ID), fmt.Sprintf(
 			"\U0001f319 **%s** is shutting down for the night (no players active at %s).",
 			d.DisplayName, now.Format("15:04"),
 		))

@@ -1,10 +1,15 @@
 package notify
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"strings"
 	"testing"
 )
 
@@ -87,4 +92,28 @@ func (t rewriteHostTransport) RoundTrip(req *http.Request) (*http.Response, erro
 	}
 	newReq.Header = req.Header
 	return http.DefaultTransport.RoundTrip(newReq)
+}
+
+type failingTransport struct{}
+
+func (failingTransport) RoundTrip(*http.Request) (*http.Response, error) {
+	return nil, errors.New("connection refused")
+}
+
+func TestDiscord_Notify_LogDoesNotCarryWebhookToken(t *testing.T) {
+	var buf bytes.Buffer
+	log.SetOutput(&buf)
+	defer log.SetOutput(os.Stderr)
+	d := &Discord{
+		WebhookURL: "https://discord.com/api/webhooks/123/SECRET-TOKEN",
+		HTTPClient: &http.Client{Transport: failingTransport{}}, retry: fast,
+	}
+	d.Notify(context.Background(), "hi")
+	out := buf.String()
+	if !strings.Contains(out, "connection refused") {
+		t.Fatalf("expected the failure to be logged, got %q", out)
+	}
+	if strings.Contains(out, "SECRET-TOKEN") {
+		t.Errorf("log leaks the webhook token: %q", out)
+	}
 }

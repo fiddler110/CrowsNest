@@ -5,12 +5,13 @@
 # Results go to the repository's Security tab (code scanning) as well as failing the job.
 #
 # What fails the build:
-#   - gofmt / go vet / go test -race / build failures
+#   - gofmt / go vet / staticcheck / go test -race / build failures
+#   - the browser tests (e2e) and the real-Docker integration test
 #   - govulncheck: a known vulnerability that the code actually reaches
 #   - gosec: a finding at medium severity and confidence or above. A justified exception is a
 #     `#nosec Gxxx -- reason` comment on the statement, reviewed like any other change.
 #   - gitleaks: any secret in the git history
-#   - Trivy (repo and image): a fixable HIGH or CRITICAL. Unfixed ones are reported, not enforced.
+#   - Trivy (repo, and the amd64 and arm64 images): a fixable HIGH or CRITICAL. Unfixed ones are reported, not enforced.
 name: ci
 
 on:
@@ -36,6 +37,8 @@ jobs:
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { echo "Not gofmt-formatted:"; gofmt -l .; exit 1; }
       - run: go vet ./...
+      - name: staticcheck
+        run: go run honnef.co/go/tools/cmd/staticcheck@v0.8.2 ./...   # staticcheck.conf holds the one disabled check
       - run: go test -race -count=1 ./...
       - run: go build ./...
       - name: dashboard JS parses
@@ -43,6 +46,30 @@ jobs:
       # go test above already runs it; named here so a duplicate id fails visibly.
       - name: no duplicate ids in the page templates
         run: go test -count=1 -run 'TestTemplates_NoDuplicateIDs|TestPages_SharedLayoutAndUniqueIDs' ./internal/web
+
+  e2e:
+    name: browser tests (Playwright)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+      # The dashboard (real code, fake docker) runs as a Go test on the runner; the browser is the official
+      # Playwright image, so nothing is installed on the host. See e2e/README.md.
+      - run: CI=1 ./e2e/run-docker.sh
+
+  integration:
+    name: real Docker (guard + client + a tiny image)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
+        with:
+          go-version-file: go.mod
+      # The runner's own daemon: creates, starts and stops a busybox container through the scoped guard, and checks
+      # the guard refuses an image, bind, network, name or security option outside the scope.
+      - run: go test -tags integration -count=1 -v ./internal/integration
 
   compose:
     name: example compose file is valid
@@ -103,18 +130,25 @@ jobs:
         with: {sarif_file: trivy-fs.sarif, category: trivy-fs}
 
   image:
-    name: container image scan (Trivy)
+    name: container image scan (Trivy, ${{ matrix.arch }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]   # the release publishes both, so both are scanned
     permissions:
       contents: read
       security-events: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+      - uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1  # v4.4.0
+        if: matrix.arch != 'amd64'
       - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069  # v4.4.1
       - uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc  # v7.4.0
         with:
           context: .
           load: true
+          platforms: linux/${{ matrix.arch }}   # Go cross-compiles natively; only the final stage's apk steps run under QEMU
           tags: crowsnest:ci
       - name: Trivy image (a fixable HIGH or CRITICAL fails, as it would at release)
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0
@@ -124,12 +158,14 @@ jobs:
           ignore-unfixed: true
           exit-code: "1"
           format: sarif
-          output: trivy-image.sarif
+          output: trivy-image-${{ matrix.arch }}.sarif
           limit-severities-for-sarif: true
       - name: Upload Trivy image results
-        if: ${{ always() && hashFiles('trivy-image.sarif') != '' }}
+        if: ${{ always() && hashFiles(format('trivy-image-{0}.sarif', matrix.arch)) != '' }}
         uses: github/codeql-action/upload-sarif@cdf488f595d80d6e07e03d4674febd5ab45fa938  # v4
-        with: {sarif_file: trivy-image.sarif, category: trivy-image}
+        with:
+          sarif_file: trivy-image-${{ matrix.arch }}.sarif
+          category: trivy-image-${{ matrix.arch }}
       - name: Full report (all severities, informational)
         if: always()
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25  # v0.36.0

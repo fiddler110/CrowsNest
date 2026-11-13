@@ -120,12 +120,12 @@ func (a *App) handlePutOIDC(w http.ResponseWriter, r *http.Request) {
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 12*time.Second)
 	defer cancel()
-	authURL, tokenURL, err := auth.Discover(ctx, nil, p.Issuer)
+	disc, err := auth.DiscoverFull(ctx, nil, p.Issuer)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
-	p.AuthURL, p.TokenURL = authURL, tokenURL
+	p.AuthURL, p.TokenURL, p.JWKSURL = disc.AuthURL, disc.TokenURL, disc.JWKSURL
 	if existed && prev.Enabled && !p.Enabled {
 		others := false
 		for _, o := range a.OIDC.Store.List() {

@@ -3,6 +3,7 @@ package modules
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/gamefiles"
 	"os"
 	"regexp"
 	"strconv"
@@ -193,6 +194,9 @@ type Rendered struct {
 	// CleanScope is the guard scope of the one-shot container that empties
 	// the game's data folders (<id>-clean), or nil when it has none.
 	CleanScope *GuardScope
+	// FilesScope is the guard scope of the one-shot container that reads or writes a declared file of a stopped game
+	// (<id>-files): the game's image and data folders, nothing else. Nil when the module declares no files.
+	FilesScope *GuardScope
 	// EnvVars are the .env variables the service reads, name -> default
 	// ("" for secrets and unset values), in a stable order.
 	EnvVars []EnvVar
@@ -270,7 +274,7 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 	}
 	scope := GuardScope{
 		Name: g.ID, Images: []string{image}, Networks: []string{network},
-		Ports: []GuardPort{}, Binds: []string{}, Labels: svc.Labels, Exec: m.Backup != nil,
+		Ports: []GuardPort{}, Binds: []string{}, Labels: svc.Labels, Exec: m.Backup != nil || len(m.Files) > 0,
 	}
 	// optVal is an instance's option, or the module's default for it.
 	optVal := func(key string) string {
@@ -417,6 +421,13 @@ func (m *Manifest) Render(g config.GameConfig, p Platform) (*Rendered, error) {
 		}
 		r.RestoreScope = &rs
 	}
+	if len(m.Files) > 0 && len(r.dataBinds) > 0 {
+		fs := GuardScope{
+			Name: g.ID + FilesSuffix, Images: scope.Images, Networks: scope.Networks,
+			Ports: []GuardPort{}, Binds: append([]string{}, dataScope...), Labels: scope.Labels,
+		}
+		r.FilesScope = &fs
+	}
 	if len(r.dataBinds) > 0 {
 		cs := GuardScope{
 			Name: g.ID + CleanSuffix, Images: scope.Images, Networks: scope.Networks,
@@ -453,6 +464,39 @@ func (r *Rendered) CleanSpec() (dockerctl.CreateSpec, bool) {
 		Name: r.CleanScope.Name, Image: r.Service.Image, Labels: r.Service.Labels,
 		Network: r.nets[0].Name, Binds: r.dataBinds, Entrypoint: argv, NoRestart: true,
 	}, true
+}
+
+// FilesSuffix names a game's one-shot container that edits a declared file while the game is stopped: <id>-files.
+const FilesSuffix = "-files"
+
+// InDataFolder reports whether path lies inside one of the game's data folders, the only place a one-shot helper
+// container can see it (anything else would be edited in a container that is thrown away).
+func (r *Rendered) InDataFolder(path string) bool {
+	for _, b := range r.dataBinds {
+		dir := strings.TrimRight(b[strings.LastIndex(b, ":")+1:], "/")
+		if dir != "" && strings.HasPrefix(path, dir+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// FileSpec is the one-shot container that reads (content ignored) or writes file sp of the stopped game: its image
+// and data folders, the fixed script from gamefiles as the entrypoint, the new content in the environment. It is
+// never published and never restarts. ok is false when the file is not in a data folder.
+func (r *Rendered) FileSpec(sp gamefiles.Spec, write bool, content string) (dockerctl.CreateSpec, bool) {
+	if r.FilesScope == nil || !r.InDataFolder(sp.Path) {
+		return dockerctl.CreateSpec{}, false
+	}
+	spec := dockerctl.CreateSpec{
+		Name: r.FilesScope.Name, Image: r.Service.Image, Labels: r.Service.Labels,
+		Network: r.nets[0].Name, Binds: r.dataBinds, Entrypoint: sp.HelperReadArgs(), NoRestart: true,
+	}
+	if write {
+		spec.Entrypoint = sp.HelperWriteArgs()
+		spec.Env = []string{gamefiles.ContentEnv + "=" + content}
+	}
+	return spec, true
 }
 
 // RestoreSuffix names a game's one-shot restore container: <id>-restore. Its
@@ -570,6 +614,9 @@ func ScopesJSON(rs []*Rendered) ([]byte, error) {
 		scopes = append(scopes, r.Scope)
 		if r.RestoreScope != nil {
 			scopes = append(scopes, *r.RestoreScope)
+		}
+		if r.FilesScope != nil {
+			scopes = append(scopes, *r.FilesScope)
 		}
 		if r.CleanScope != nil {
 			scopes = append(scopes, *r.CleanScope)

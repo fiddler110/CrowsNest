@@ -235,3 +235,29 @@ func TestLogs_PlayerForbidden(t *testing.T) {
 		t.Errorf("player logs = %d, want 403", rec.Code)
 	}
 }
+
+func TestHandleLogs_PerUserStreamCap(t *testing.T) {
+	h := newHarness(t, logsPrintTwoLines)
+	h.App.MaxStreamsPerUser = 1
+	if !h.App.userLogStreams.acquire("tester", 1) { // the user already holds their one stream
+		t.Fatal("could not take a slot")
+	}
+	get := func() int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/logs", nil))
+		return rec.Code
+	}
+	if got := get(); got != http.StatusServiceUnavailable {
+		t.Fatalf("a second stream for the same user = %d, want 503", got)
+	}
+	if n := h.App.streamCount.Load(); n != 0 {
+		t.Fatalf("a refused stream took a shared slot: %d", n)
+	}
+	h.App.userLogStreams.release("tester")
+	if got := get(); got != http.StatusOK {
+		t.Fatalf("after the slot was freed = %d, want 200", got)
+	}
+	if got := get(); got != http.StatusOK { // and a finished stream gives its slot back
+		t.Fatalf("after a finished stream = %d, want 200", got)
+	}
+}

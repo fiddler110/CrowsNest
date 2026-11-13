@@ -3,6 +3,7 @@ package auth
 import (
 	"encoding/json"
 	"errors"
+	"github.com/fiddler110/crowsnest/internal/audit"
 	"log"
 	"net"
 	"net/http"
@@ -38,9 +39,15 @@ type Service struct {
 	Users Users
 	// Store, when set, takes the place of Users and follows changes to the
 	// users file while running.
-	Store          *UserStore
-	Sessions       *SessionManager
-	LoginLimiter   *Limiter
+	Store        *UserStore
+	Sessions     *SessionManager
+	LoginLimiter *Limiter
+	// UserLimiter throttles failed sign-ins per username, across every address, so guesses spread over many
+	// addresses still add up. Nil turns it off.
+	UserLimiter *Limiter
+	// OnSignIn, when set, is told about every new session (after it is recorded). The panel uses it to notice a
+	// sign-in from a browser or system the person has not used before.
+	OnSignIn       func(SessionRecord)
 	TrustedProxies []*net.IPNet
 
 	// SecureCookies marks the session cookie Secure; set true once serving
@@ -79,6 +86,32 @@ const (
 type mfaPending struct {
 	User string `json:"u"`
 	Exp  int64  `json:"e"`
+}
+
+func userKey(username string) string {
+	if len(username) > 64 {
+		username = username[:64]
+	}
+	return "user:" + strings.ToLower(username)
+}
+
+// throttled reports whether sign-in attempts from ip, or against username ("" = not known yet), are blocked.
+// Only failures count towards the limits (see failed), so signing in correctly never uses them up.
+func (s *Service) throttled(ip, username string) bool {
+	if s.LoginLimiter != nil && s.LoginLimiter.Blocked(ip) {
+		return true
+	}
+	return username != "" && s.UserLimiter != nil && s.UserLimiter.Blocked(userKey(username))
+}
+
+// failed counts one wrong password or code against the address and the username.
+func (s *Service) failed(ip, username string) {
+	if s.LoginLimiter != nil {
+		s.LoginLimiter.Hit(ip)
+	}
+	if username != "" && s.UserLimiter != nil {
+		s.UserLimiter.Hit(userKey(username))
+	}
 }
 
 // PasswordLoginDisabled reports whether password sign-in is off right now.
@@ -126,7 +159,7 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := ClientIP(r, s.TrustedProxies)
-	if s.LoginLimiter != nil && !s.LoginLimiter.Allow(ip) {
+	if s.throttled(ip, "") {
 		http.Error(w, "too many login attempts, try again later", http.StatusTooManyRequests)
 		return
 	}
@@ -138,6 +171,10 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	username := strings.ToLower(strings.TrimSpace(req.Username))
+	if s.throttled(ip, username) {
+		http.Error(w, "too many login attempts, try again later", http.StatusTooManyRequests)
+		return
+	}
 
 	var record UserRecord
 	var known bool
@@ -155,9 +192,11 @@ func (s *Service) ServeLogin(w http.ResponseWriter, r *http.Request) {
 	}
 	validPassword := VerifyPassword(hash, req.Password)
 	if !known || !validPassword {
+		s.failed(ip, username)
 		http.Error(w, "invalid credentials", http.StatusUnauthorized)
 		return
 	}
+	s.upgradeHash(username, record.Hash, req.Password)
 
 	if s.MFA != nil && s.MFA.Enabled(username) {
 		token, err := s.Sessions.signPurpose("mfa-pending", mfaPending{User: username, Exp: time.Now().Add(mfaPendingTTL).Unix()})
@@ -192,7 +231,7 @@ func (s *Service) ServeLoginMFA(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ip := ClientIP(r, s.TrustedProxies)
-	if s.LoginLimiter != nil && !s.LoginLimiter.Allow(ip) {
+	if s.throttled(ip, "") {
 		http.Error(w, "too many login attempts, try again later", http.StatusTooManyRequests)
 		return
 	}
@@ -200,6 +239,10 @@ func (s *Service) ServeLoginMFA(w http.ResponseWriter, r *http.Request) {
 	var p mfaPending
 	if err != nil || s.Sessions.verifyPurpose("mfa-pending", c.Value, &p) != nil || time.Now().Unix() > p.Exp || p.User == "" {
 		http.Error(w, "your sign-in expired: enter your password again", http.StatusUnauthorized)
+		return
+	}
+	if s.throttled(ip, p.User) {
+		http.Error(w, "too many login attempts, try again later", http.StatusTooManyRequests)
 		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxLoginBodyBytes)
@@ -214,16 +257,17 @@ func (s *Service) ServeLoginMFA(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case err == nil:
 	case errors.Is(err, mfa.ErrLocked):
-		log.Printf("audit: %q second factor refused: locked", p.User)
+		audit.Printf("%q second factor refused: locked", p.User)
 		http.Error(w, "too many wrong codes, try again in a few minutes", http.StatusTooManyRequests)
 		return
 	default:
-		log.Printf("audit: %q second factor refused: %v", p.User, err)
+		audit.Printf("%q second factor refused: %v", p.User, err)
+		s.failed(ip, p.User)
 		http.Error(w, "that code is not right", http.StatusUnauthorized)
 		return
 	}
 	if used {
-		log.Printf("audit: %q signed in with a recovery code (%d left)", p.User, s.MFA.RecoveryLeft(p.User))
+		audit.Printf("%q signed in with a recovery code (%d left)", p.User, s.MFA.RecoveryLeft(p.User))
 	}
 	// #nosec G124 -- clears the pending cookie; same attributes as when it was set
 	http.SetCookie(w, &http.Cookie{Name: mfaCookieName, Value: "", Path: "/login/mfa", MaxAge: -1, Expires: time.Unix(0, 0),
@@ -257,9 +301,13 @@ func (s *Service) newSession(w http.ResponseWriter, r *http.Request, username st
 		if len(ua) > 200 {
 			ua = ua[:200]
 		}
-		if err := reg.Add(SessionRecord{ID: session.ID, User: username, Created: session.IssuedAt, LastSeen: session.IssuedAt,
-			Expires: session.ExpiresAt, UserAgent: ua, IP: ClientIP(r, s.TrustedProxies)}); err != nil {
+		rec := SessionRecord{ID: session.ID, User: username, Created: session.IssuedAt, LastSeen: session.IssuedAt,
+			Expires: session.ExpiresAt, UserAgent: ua, IP: ClientIP(r, s.TrustedProxies)}
+		if err := reg.Add(rec); err != nil {
 			return Session{}, err
+		}
+		if s.OnSignIn != nil {
+			s.OnSignIn(rec)
 		}
 	}
 	token, err := s.Sessions.Encode(session)
@@ -327,8 +375,32 @@ func (s *Service) ConfirmPassword(r *http.Request, username, password string) (o
 	} else {
 		record = s.Users[username]
 	}
-	if s.LoginLimiter != nil && !s.LoginLimiter.Allow(ClientIP(r, s.TrustedProxies)) {
+	ip := ClientIP(r, s.TrustedProxies)
+	if s.throttled(ip, username) {
 		return false, true, true
 	}
-	return VerifyPassword(record.Hash, password), true, false
+	if !VerifyPassword(record.Hash, password) {
+		s.failed(ip, username)
+		return false, true, false
+	}
+	return true, true, false
+}
+
+// upgradeHash re-hashes a correct password at the current bcrypt cost when the stored hash is weaker, so raising
+// PasswordCost takes effect as people sign in. A failure only means the old hash stays.
+func (s *Service) upgradeHash(username, hash, password string) {
+	if s.Store == nil || !HashNeedsUpgrade(hash) {
+		return
+	}
+	nh, err := HashPassword(password)
+	if err != nil {
+		return
+	}
+	if err := SetUserHash(s.Store.Path(), username, nh); err != nil {
+		log.Printf("auth: could not upgrade %s's password hash: %v", username, err)
+		return
+	}
+	if _, err := s.Store.Reload(); err != nil {
+		log.Printf("auth: reload users after a hash upgrade: %v", err)
+	}
 }

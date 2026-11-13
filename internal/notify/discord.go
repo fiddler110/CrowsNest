@@ -10,10 +10,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
-	"time"
 )
 
 const discordWebhookPrefix = "https://discord.com/api/webhooks/"
@@ -25,50 +25,49 @@ const discordWebhookPrefix = "https://discord.com/api/webhooks/"
 type Discord struct {
 	WebhookURL string
 	HTTPClient *http.Client
+	// Status, when set, records whether the last send worked.
+	Status *Status
+	// Mentions, when set, lists the Discord user ids to ping for a notice about a game (see WithGame).
+	Mentions *Mentions
+	retry    retry
 }
 
-func (d *Discord) client() *http.Client {
-	if d.HTTPClient != nil {
-		return d.HTTPClient
-	}
-	return &http.Client{Timeout: 10 * time.Second}
-}
-
-// Notify posts message to the configured webhook. It never returns an
-// error — a failed or unconfigured notification should never fail the
-// stop it's reporting on — and instead logs anything worth knowing about.
+// Notify posts message (cut to Discord's 2,000 characters) to the configured webhook, retrying rate limits, server
+// errors and network failures with backoff. It never returns an error: a failed or unconfigured notification should
+// never fail the stop it's reporting on. A failure is logged and recorded in Status.
 func (d *Discord) Notify(ctx context.Context, message string) {
 	if d == nil || strings.TrimSpace(d.WebhookURL) == "" {
 		return
 	}
 	if !strings.HasPrefix(d.WebhookURL, discordWebhookPrefix) {
 		log.Printf("notify: webhook URL does not look like a Discord webhook URL — skipping")
+		d.Status.record("discord", errors.New("the webhook URL is not a Discord webhook URL"))
 		return
 	}
-
-	body, err := json.Marshal(map[string]any{
-		"content": message,
-		// Player names come from game servers; never let one ping the channel.
-		"allowed_mentions": map[string]any{"parse": []string{}},
+	// Player names come from game servers; never let one ping the channel. Only the ids people chose are allowed.
+	ids := d.Mentions.IDsFor(GameFrom(ctx))
+	if len(ids) > 20 {
+		ids = ids[:20]
+	}
+	allowed := map[string]any{"parse": []string{}}
+	if len(ids) > 0 {
+		allowed["users"] = ids
+		var tags []string
+		for _, id := range ids {
+			tags = append(tags, "<@"+id+">")
+		}
+		message = strings.Join(tags, " ") + " " + message
+	}
+	body, _ := json.Marshal(map[string]any{
+		"content":          truncate(message, discordLimit),
+		"allowed_mentions": allowed,
 	})
-	if err != nil {
-		log.Printf("notify: encode message: %v", err)
-		return
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.WebhookURL, bytes.NewReader(body))
-	if err != nil {
-		log.Printf("notify: build request: %v", err)
-		return
-	}
-	req.Header.Set("Content-Type", "application/json")
-
-	resp, err := d.client().Do(req)
-	if err != nil {
-		log.Printf("notify: send Discord webhook: %v", err)
-		return
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusNoContent {
-		log.Printf("notify: Discord webhook returned %d", resp.StatusCode)
-	}
+	deliver(ctx, "discord", httpClient(d.HTTPClient), d.retry, d.Status, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, d.WebhookURL, bytes.NewReader(body))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		return req, nil
+	})
 }

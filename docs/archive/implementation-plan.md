@@ -1,5 +1,7 @@
 # CrowsNest — Implementation Plan
 
+> Archived: the original 2026 design record. It is historical and parts are out of date; current behaviour is in the other pages under `docs/`, and open work is in [`roadmap.md`](../../roadmap.md).
+
 Go rewrite of the original single-game (Windrose-only) Python/Flask CrowsNest,
 expanded to control three independent game server containers — Windrose,
 Valheim, Palworld — from one dashboard, with a guard that keeps at most one

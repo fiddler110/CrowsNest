@@ -90,3 +90,31 @@ func TestInfo_UnattachedIsUnavailable(t *testing.T) {
 		t.Fatalf("Info = %v %v", info, ok)
 	}
 }
+
+func TestScan_NamesAndJoinCode(t *testing.T) {
+	spec := valheimSpec()
+	spec.Player = regexp.MustCompile(`Got character ZDOID from (.+?) : -?\d+:-?\d+`)
+	spec.Codes = []Code{{Label: "Crossplay join code", Re: regexp.MustCompile(`join code (\d+)`)}}
+	tr := New(nil, "v", spec)
+	tr.attached = true
+	tr.scan(strings.NewReader(strings.Join([]string{
+		`Session "Test" with join code 270154 and IP 1.2.3.4:2456 is active with 0 player(s)`,
+		"Got handshake from client 111",
+		"Got character ZDOID from Alice B : 123:1",
+		"Got handshake from client 222",
+		"Got character ZDOID from Alice B : 0:0", // a character not spawned yet still names its joiner
+		"Got handshake from client 333",
+	}, "\n")))
+	_, names, _ := count(t, tr)
+	if got := strings.Join(names, ","); got != "333,Alice B,Alice B" {
+		t.Fatalf("names = %q", got)
+	}
+	v := tr.ConnectValues()
+	if len(v) != 1 || v[0].Value != "270154" {
+		t.Fatalf("codes = %v", v)
+	}
+	tr.reset()
+	if v := tr.ConnectValues(); len(v) != 0 {
+		t.Fatalf("codes after restart = %v", v)
+	}
+}

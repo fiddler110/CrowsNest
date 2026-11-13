@@ -14,6 +14,8 @@
     <a href="#general" data-pane="general"><svg class="icon"><use href="#i-gear"/></svg>General</a>
     <a href="#users" data-pane="users"><svg class="icon"><use href="#i-users"/></svg>Users</a>
     <a href="#signin" data-pane="signin"><svg class="icon"><use href="#i-users"/></svg>Sign-in</a>
+    <a href="#schedule" data-pane="schedule"><svg class="icon"><use href="#i-play"/></svg>Schedule</a>
+    <a href="#backups" data-pane="backups"><svg class="icon"><use href="#i-archive"/></svg>Backups</a>
     <a href="#policy" data-pane="policy"><svg class="icon"><use href="#i-info"/></svg>Game policy</a>
     <a href="#audit" data-pane="audit"><svg class="icon"><use href="#i-info"/></svg>Audit log</a>
     <a href="#modules" data-pane="modules"><svg class="icon"><use href="#i-play"/></svg>Game modules</a>
@@ -45,6 +47,7 @@
 
         <h3>Updates and console</h3>
         <label class="setting-check"><input type="checkbox" name="auto_update"> Update a server to the latest version each time it starts</label>
+        <label class="setting-check"><input type="checkbox" name="require_admin_mfa"> Require admins who sign in with a password to set up an authenticator app (they are sent to their Account page until they do)</label>
         <label class="setting-check"><input type="checkbox" name="raw_console"> Allow the raw RCON console for admins (sends any command to the game server)</label>
 
         <p id="settings-error" class="settings-error" role="alert" hidden></p>
@@ -150,6 +153,30 @@
       </form>
     </section>
 
+    <section class="settings-pane" data-pane="schedule" hidden>
+      <h1>Schedule</h1>
+      <p class="hero-sub">Start or stop a game at a set time on chosen days. Times are in the server's time zone (<span id="schedule-tz">UTC</span>). A time that passes while CrowsNest is down is skipped, and a start still obeys the memory and one-game-at-a-time rules. "Only if empty" makes a stop skip when anyone is connected or the player count is unknown.</p>
+      <form id="schedule-form" class="pane-form" autocomplete="off">
+        <div id="schedule-rows" class="schedule-rows"></div>
+        <p id="schedule-none" class="settings-help field-note" hidden>No schedules yet.</p>
+        <p id="schedule-error" class="settings-error" role="alert" hidden></p>
+        <div class="pane-actions">
+          <button id="schedule-add" class="btn btn-ghost" type="button">Add a schedule</button>
+          <button class="btn btn-primary" type="submit">Save schedules</button>
+        </div>
+      </form>
+    </section>
+
+    <section class="settings-pane" data-pane="backups" hidden>
+      <h1>Backups</h1>
+      <p class="hero-sub">The newest backup of each game, and the state of the shared backups folder. Make or restore one from the game's own card.</p>
+      <p id="backups-problem" class="banner" role="status" hidden></p>
+      <div id="backups-list" class="schedule-rows"></div>
+      <p id="backups-none" class="settings-help field-note" hidden>No game has a backup set up.</p>
+      <p id="backups-folder" class="settings-help field-note"></p>
+      <p id="backups-orphans" class="settings-help field-note" hidden></p>
+    </section>
+
     <section class="settings-pane" data-pane="policy" hidden>
       <h1>Game policy</h1>
       <p class="hero-sub" id="policy-note">What the panel is allowed to create when you add a game on the Games page. Anything outside it is refused before a container exists.</p>
@@ -205,6 +232,7 @@
           <label class="field">To (inclusive) <input type="date" name="until"></label>
         </div>
         <div class="pane-actions">
+          <a class="btn btn-ghost" href="/api/audit/export" download title="The tamper-evident record of sign-ins and actions, one entry per line. Check it with: crowsnest audit verify">Export audit file</a>
           <button id="audit-reset" class="btn btn-ghost" type="button">Clear</button>
           <button class="btn btn-primary" type="submit">Filter</button>
         </div>

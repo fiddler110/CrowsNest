@@ -46,6 +46,35 @@ func (l *Limiter) Allow(key string) bool {
 	return true
 }
 
+// Blocked reports whether key has used up its allowance, without recording an attempt.
+func (l *Limiter) Blocked(key string) bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	cutoff := time.Now().Add(-l.window)
+	n := 0
+	for _, t := range l.hits[key] {
+		if t.After(cutoff) {
+			n++
+		}
+	}
+	return n >= l.max
+}
+
+// Hit records one attempt for key (a failed sign-in) whether or not it is over the limit.
+func (l *Limiter) Hit(key string) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	now := time.Now()
+	cutoff := now.Add(-l.window)
+	kept := l.hits[key][:0]
+	for _, t := range l.hits[key] {
+		if t.After(cutoff) {
+			kept = append(kept, t)
+		}
+	}
+	l.hits[key] = append(kept, now)
+}
+
 // Prune drops every tracked key with no hits inside the current window.
 // Allow already trims stale hits off a key each time that key is seen
 // again, but a key that's hit once and never revisited (e.g. a one-off

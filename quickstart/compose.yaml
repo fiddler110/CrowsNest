@@ -17,7 +17,7 @@ x-hardening: &hardening
 services:
   crowsnest:
     <<: *hardening
-    image: ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG:-latest}
+    image: ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG:?copy .env.example to .env to pin the release}
     container_name: crowsnest
     depends_on: [guard]
     ports:
@@ -44,7 +44,7 @@ services:
   # Refusals: docker logs dockerproxy-crowsnest 2>&1 | grep DENY
   guard:
     <<: *hardening
-    image: ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG:-latest}
+    image: ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG:?copy .env.example to .env to pin the release}
     container_name: dockerproxy-crowsnest
     hostname: dockerproxy-crowsnest
     command: ["guard", "--listen", ":2375", "--exec"]

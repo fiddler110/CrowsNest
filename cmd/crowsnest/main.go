@@ -7,6 +7,7 @@ import (
 	"bufio"
 	"context"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/gamefiles"
 	"io"
 	"log"
 	"net"
@@ -18,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/fiddler110/crowsnest/internal/audit"
 	"github.com/fiddler110/crowsnest/internal/auth"
 	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/config"
@@ -27,6 +29,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
 	"github.com/fiddler110/crowsnest/internal/idleshutdown"
+	"github.com/fiddler110/crowsnest/internal/logging"
 	"github.com/fiddler110/crowsnest/internal/managed"
 	"github.com/fiddler110/crowsnest/internal/mfa"
 	"github.com/fiddler110/crowsnest/internal/modules"
@@ -34,6 +37,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/notify"
 	"github.com/fiddler110/crowsnest/internal/playerwatch"
 	"github.com/fiddler110/crowsnest/internal/restore"
+	"github.com/fiddler110/crowsnest/internal/schedule"
 	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/statehub"
 	"github.com/fiddler110/crowsnest/internal/vault"
@@ -92,6 +96,25 @@ func main() {
 		}
 		t := &moduleTool{dir: cfg.ModulesDir, keys: keys, in: os.Stdin, out: os.Stdout}
 		os.Exit(t.run(os.Args[2:]))
+	case "rekey":
+		if len(os.Args) != 2 {
+			fmt.Fprintln(os.Stderr, errRekeyUsage)
+			os.Exit(2)
+		}
+		if err := runRekey(os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	case "audit":
+		if err := runAudit(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
+	case "state":
+		if err := runState(os.Args[2:], os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(2)
+		}
 	case "doctor":
 		cfg, err := config.Load(configPath())
 		if err != nil {
@@ -175,6 +198,15 @@ func serve() error {
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
+	if err := logging.Setup(os.Stderr, cfg.Server.LogLevel, cfg.Server.LogFormat); err != nil {
+		return fmt.Errorf("server.log_level / server.log_format: %w", err)
+	}
+	auditLog, err := audit.Open(cfg.Server.AuditFile)
+	if err != nil {
+		return err
+	}
+	defer auditLog.Close()
+	audit.Default = auditLog
 
 	docker := &dockerctl.Client{Host: cfg.Server.DockerHost}
 	mods, err := modules.ForConfig(cfg, log.Printf)
@@ -230,12 +262,18 @@ func serve() error {
 	}
 	loginLimiter := auth.NewLimiter(10, 5*time.Minute)
 	go loginLimiter.RunPruner(ctx, 10*time.Minute)
-	sessions := auth.NewSessionManager(secret, auth.DefaultSessionTTL)
+	userLimiter := auth.NewLimiter(10, 15*time.Minute) // failed sign-ins per username, from any address
+	go userLimiter.RunPruner(ctx, 10*time.Minute)
+	auth.UseSecureCookieName(cfg.Server.SecureCookies)
+	sessions := auth.NewSessionManager(secret, time.Duration(cfg.Server.SessionIdleMinutes)*time.Minute)
+	sessions.AbsoluteMax = time.Duration(cfg.Server.SessionMaxHours) * time.Hour
+	sessions.Secure = cfg.Server.SecureCookies
 	sessions.Store = userStore // per-user revocation; follows `revoke-sessions` live
 	authSvc := &auth.Service{
 		Store:                userStore,
 		Sessions:             sessions,
 		LoginLimiter:         loginLimiter,
+		UserLimiter:          userLimiter,
 		TrustedProxies:       trustedProxies,
 		SecureCookies:        cfg.Server.SecureCookies,
 		DisablePasswordLogin: !cfg.Auth.PasswordLoginEnabled(),
@@ -339,6 +377,7 @@ func serve() error {
 	exclusivityMgr.History = activity
 	backups := &backup.Manager{Docker: docker, Root: backupRoot, History: activity, BaseContext: ctx, OffsiteFile: cfg.Platform.OffsiteStatusFile}
 	exclusivityMgr.Backups = backups
+	gameFiles := &gamefiles.Service{Docker: docker, HistoryDir: filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "file-history")}
 	exclusivityMgr.MaxActiveFunc = func() int { return settingsStore.Get().MaxActiveGames }
 	exclusivityMgr.CooldownFunc = func(id string) (time.Duration, bool) {
 		secs, ok := settingsStore.Get().CooldownOverride(id)
@@ -387,8 +426,10 @@ func serve() error {
 		History:      activity,
 		HostPaths:    cfg.Server.HostDiskPaths,
 		Backups:      backups,
+		Files:        gameFiles,
 		Templates:    templates,
 	}
+	authSvc.OnSignIn = app.NoteSignIn
 
 	var managedMgr *managed.Manager
 	if cfg.Managed.Dir != "" {
@@ -408,6 +449,10 @@ func serve() error {
 		mgr.RunHelper = func(ctx context.Context, spec dockerctl.CreateSpec) error {
 			return docker.RunOnce(ctx, spec, 10*time.Minute, time.Second)
 		}
+		mgr.RunHelperOutput = func(ctx context.Context, spec dockerctl.CreateSpec, maxOut int64) (string, error) {
+			return docker.RunOnceOutput(ctx, spec, 2*time.Minute, 500*time.Millisecond, maxOut)
+		}
+		gameFiles.Helper = mgr
 		app.Managed = mgr
 		managedMgr = mgr
 		var tk []modules.TrustedKey
@@ -418,28 +463,36 @@ func serve() error {
 			return fmt.Errorf("managed.trusted_keys: %w", err)
 		}
 		app.Modules, app.ModulesDir = mods, cfg.ModulesDir
+		app.CatalogueURL = cfg.Managed.CatalogueURL
 		log.Printf("managed games: enabled from the dashboard, state in %s, policy %s", cfg.Managed.Dir, cfg.Managed.PolicyFile)
 	}
 
-	var discordNotifier *notify.Discord
-	if cfg.Notifications.DiscordWebhookURLEnv != "" {
-		discordNotifier = &notify.Discord{WebhookURL: os.Getenv(cfg.Notifications.DiscordWebhookURLEnv)}
-		if discordNotifier.WebhookURL == "" {
-			log.Printf("notify: %s is not set — Discord notifications disabled", cfg.Notifications.DiscordWebhookURLEnv)
-		}
-	} else {
-		discordNotifier = &notify.Discord{} // inert zero value; Notify becomes a no-op
+	notifyStatus := &notify.Status{}
+	mentions, err := notify.OpenMentions(filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "mentions.json"))
+	if err != nil {
+		return err
+	}
+	app.Mentions = mentions
+	channels, notifier := buildNotifier(*cfg.Notifications, notifyStatus, mentions)
+	for _, c := range channels {
+		app.DiscordOn = app.DiscordOn || c == "discord"
+	}
+	app.AuditFile = auditLog.Path()
+	app.Notify = notifyStatus
+	app.NotifyConfigured = len(channels) > 0
+	if len(channels) == 0 && cfg.Notifications.DiscordWebhookURLEnv != "" {
+		log.Printf("notify: %s is not set — Discord notifications disabled", cfg.Notifications.DiscordWebhookURLEnv)
 	}
 
 	// Manual starts/stops/switches and failed starts notify too. Auto-stops
 	// call Stop without an actor, so they don't double up with idle/night's
 	// own messages.
-	exclusivityMgr.Notifier = discordNotifier
-	backups.Notifier = discordNotifier
+	exclusivityMgr.Notifier = notifier
+	backups.Notifier = notifier
 	if managedMgr != nil && backupRoot != nil {
 		app.Restore = &restore.Manager{
 			Docker: docker, Control: exclusivityMgr, Backups: backups, Spec: managedMgr.RestoreSpec,
-			History: activity, Notifier: discordNotifier, BaseContext: ctx,
+			History: activity, Notifier: notifier, BaseContext: ctx,
 		}
 	}
 	// Re-check the shared backups folder every minute: a drive that disappears
@@ -450,7 +503,7 @@ func serve() error {
 	crashes.Crashes = cfg.CrashLoop.Crashes
 	crashes.Window = time.Duration(cfg.CrashLoop.WindowMinutes) * time.Minute
 	crashes.History = activity
-	crashes.Notifier = discordNotifier
+	crashes.Notifier = notifier
 	app.Crashes = crashes
 	if cfg.CrashLoop.Enabled == nil || *cfg.CrashLoop.Enabled {
 		go crashes.Run(ctx)
@@ -475,7 +528,7 @@ func serve() error {
 		}
 		return 0, false
 	}
-	idle.Notifier = discordNotifier
+	idle.Notifier = notifier
 	idle.History = activity
 	idle.Hub = hub
 	app.IdleTimer = idle
@@ -498,18 +551,30 @@ func serve() error {
 		return v.NightEnabled, v.NightStartHour, v.NightEndHour
 	}
 	night.GameOverride = func(id string) (bool, bool) { return settingsStore.Get().NightOverride(id) }
-	night.Notifier = discordNotifier
+	night.Notifier = notifier
 	night.History = activity
 	night.Hub = hub
 	night.StartedAt = docker.StartedAt
 	night.MinUptime = time.Duration(cfg.NightShutdown.MinUptimeMinutes) * time.Minute
 	go night.Run(ctx)
 
+	schedStore, err := schedule.Open(filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "schedules.json"))
+	if err != nil {
+		return err
+	}
+	app.Schedules = schedStore
+	sched := &schedule.Runner{
+		Store: schedStore, Registry: registry, Control: exclusivityMgr, Hub: hub, History: activity, Loc: loc,
+		ActorCtx: exclusivity.WithActor,
+		Notify:   func(ctx context.Context, msg string) { notifier.Notify(ctx, msg) },
+	}
+	go sched.Run(ctx)
+
 	// Always runs: it feeds the activity log's playtime totals, and only posts
 	// join/leave messages when a webhook is set and player_events isn't off.
 	var joinLeave playerwatch.Notifier
-	if discordNotifier.WebhookURL != "" && cfg.Notifications.PlayerEventsEnabled() {
-		joinLeave = discordNotifier
+	if len(channels) > 0 && cfg.Notifications.PlayerEventsEnabled() {
+		joinLeave = notifier
 	}
 	watcher := playerwatch.New(registry, joinLeave, 30*time.Second)
 	watcher.History = activity
@@ -521,7 +586,7 @@ func serve() error {
 	// for as long as the dashboard is watching.
 	srv := &http.Server{
 		Addr:              cfg.Server.Addr,
-		Handler:           auth.SecurityHeaders(cfg.Server.SecureCookies, newMux(app)),
+		Handler:           auth.SecurityHeaders(cfg.Server.SecureCookies, app.MFAGate(newMux(app))),
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    64 << 10,
@@ -814,4 +879,27 @@ func importLegacyGoogleUsers(cfg *config.Config, userStore *auth.UserStore) {
 	if err := os.WriteFile(marker, []byte("done\n"), 0o600); err != nil {
 		log.Printf("warning: could not write %s: %v", marker, err)
 	}
+}
+
+// buildNotifier makes the notifier every part of the panel posts through: one per channel that is set up, all
+// sharing status so the dashboard can say when sending fails. channels names the ones in use.
+func buildNotifier(n config.NotificationsConfig, status *notify.Status, mentions *notify.Mentions) (channels []string, all notify.Notifier) {
+	var m notify.Multi
+	if v := envValue(n.DiscordWebhookURLEnv); v != "" {
+		m, channels = append(m, &notify.Discord{WebhookURL: v, Status: status, Mentions: mentions}), append(channels, "discord")
+	}
+	if v := envValue(n.NtfyURLEnv); v != "" {
+		m, channels = append(m, &notify.Ntfy{URL: v, Token: envValue(n.NtfyTokenEnv), Status: status}), append(channels, "ntfy")
+	}
+	if v := envValue(n.WebhookURLEnv); v != "" {
+		m, channels = append(m, &notify.Webhook{URL: v, Status: status}), append(channels, "webhook")
+	}
+	return channels, m
+}
+
+func envValue(name string) string {
+	if name == "" {
+		return ""
+	}
+	return os.Getenv(name)
 }

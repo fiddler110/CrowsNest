@@ -1,0 +1,9 @@
+# Extends gitleaks' default rules. The one allowlist entry is a made-up value in a test (a fake session secret that
+# the test seals with a throwaway key); it is matched by file and rule, not by commit, so it survives a squash merge.
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "fake secrets in the rekey test fixtures"
+targetRules = ["generic-api-key"]
+paths = ['''cmd/crowsnest/rekey_test\.go''']

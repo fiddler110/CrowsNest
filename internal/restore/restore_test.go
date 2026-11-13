@@ -167,7 +167,7 @@ func newFixture(t *testing.T, keep int) *fixture {
 
 func TestRestore_RunningGameIsStoppedRestoredAndStartedAgain(t *testing.T) {
 	f := newFixture(t, 0)
-	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex"); err != nil {
+	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex", true); err != nil {
 		t.Fatalf("Request = %v", err)
 	}
 	f.m.Wait()
@@ -186,7 +186,7 @@ func TestRestore_RunningGameIsStoppedRestoredAndStartedAgain(t *testing.T) {
 func TestRestore_StoppedGameStaysStopped(t *testing.T) {
 	f := newFixture(t, 0)
 	f.e.gameUp = false
-	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex"); err != nil {
+	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex", true); err != nil {
 		t.Fatal(err)
 	}
 	f.m.Wait()
@@ -201,7 +201,7 @@ func TestRestore_StoppedGameStaysStopped(t *testing.T) {
 func TestRestore_FailureLeavesTheGameStoppedAndSaysWhy(t *testing.T) {
 	f := newFixture(t, 0)
 	f.e.helperExit = 2
-	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex"); err != nil {
+	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex", true); err != nil {
 		t.Fatal(err)
 	}
 	f.m.Wait()
@@ -225,7 +225,7 @@ func TestRestore_FailureLeavesTheGameStoppedAndSaysWhy(t *testing.T) {
 func TestRestore_StopFailureChangesNothing(t *testing.T) {
 	f := newFixture(t, 0)
 	f.c.stopErr = errors.New("boom")
-	_ = f.m.Request(context.Background(), f.def, "mid.tgz", "alex")
+	_ = f.m.Request(context.Background(), f.def, "mid.tgz", "alex", true)
 	f.m.Wait()
 	if got := strings.Join(f.e.log, ","); got != "stop pal" {
 		t.Fatalf("sequence = %s, want only the stop", got)
@@ -239,16 +239,16 @@ func TestRestore_RefusesBeforeStoppingAnything(t *testing.T) {
 	ctx := context.Background()
 	f := newFixture(t, 0)
 	for _, name := range []string{"", "../etc/passwd", "a b.tgz", "sub/x.tgz", ".hidden"} {
-		if err := f.m.Request(ctx, f.def, name, "alex"); !errors.Is(err, ErrBadFile) {
+		if err := f.m.Request(ctx, f.def, name, "alex", true); !errors.Is(err, ErrBadFile) {
 			t.Errorf("%q = %v, want ErrBadFile", name, err)
 		}
 	}
-	if err := f.m.Request(ctx, f.def, "missing.tgz", "alex"); !errors.Is(err, ErrBadFile) {
+	if err := f.m.Request(ctx, f.def, "missing.tgz", "alex", true); !errors.Is(err, ErrBadFile) {
 		t.Errorf("missing file = %v", err)
 	}
 	noRestore := f.def
 	noRestore.Backup = &games.BackupSpec{Exec: []string{"b"}, LocalDir: f.dir}
-	if err := f.m.Request(ctx, noRestore, "mid.tgz", "alex"); !errors.Is(err, ErrNotConfigured) {
+	if err := f.m.Request(ctx, noRestore, "mid.tgz", "alex", true); !errors.Is(err, ErrNotConfigured) {
 		t.Errorf("no restore command = %v", err)
 	}
 	if len(f.e.log) != 0 {
@@ -258,17 +258,17 @@ func TestRestore_RefusesBeforeStoppingAnything(t *testing.T) {
 	// keep 3 with three files: stopping adds a fourth and prunes old.tgz, which is
 	// the one being asked for.
 	f = newFixture(t, 3)
-	if err := f.m.Request(ctx, f.def, "old.tgz", "alex"); !errors.Is(err, ErrWouldPrune) {
+	if err := f.m.Request(ctx, f.def, "old.tgz", "alex", true); !errors.Is(err, ErrWouldPrune) {
 		t.Fatalf("oldest under keep = %v, want ErrWouldPrune", err)
 	}
-	if err := f.m.Request(ctx, f.def, "mid.tgz", "alex"); err != nil {
+	if err := f.m.Request(ctx, f.def, "mid.tgz", "alex", true); err != nil {
 		t.Fatalf("a file that survives the prune: %v", err)
 	}
 	f.m.Wait()
 	// With the game stopped there is no safety backup to prune anything.
 	f = newFixture(t, 3)
 	f.e.gameUp = false
-	if err := f.m.Request(ctx, f.def, "old.tgz", "alex"); err != nil {
+	if err := f.m.Request(ctx, f.def, "old.tgz", "alex", true); err != nil {
 		t.Fatalf("stopped game: %v", err)
 	}
 	f.m.Wait()
@@ -280,11 +280,11 @@ func TestRestore_OneAtATime(t *testing.T) {
 	if !ok {
 		t.Fatal("hold")
 	}
-	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex"); !errors.Is(err, ErrBusy) {
+	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex", true); !errors.Is(err, ErrBusy) {
 		t.Fatalf("during a backup = %v, want ErrBusy", err)
 	}
 	release()
-	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex"); err != nil {
+	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex", true); err != nil {
 		t.Fatal(err)
 	}
 	f.m.Wait()
@@ -303,11 +303,47 @@ func TestRestore_SafetyBackupIsNotBlockedByTheRestoreItself(t *testing.T) {
 		}
 		release()
 	}
-	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex"); err != nil {
+	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex", true); err != nil {
 		t.Fatalf("Request = %v", err)
 	}
 	f.m.Wait()
 	if blocked {
 		t.Fatal("the game was held against backups while it was being stopped")
+	}
+}
+
+func TestRestore_StoppedGameNeedsAcknowledgementOfNoBackup(t *testing.T) {
+	f := newFixture(t, 0)
+	f.e.gameUp = false
+	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex", false); !errors.Is(err, ErrNoSafetyBackup) {
+		t.Fatalf("Request = %v, want ErrNoSafetyBackup", err)
+	}
+	f.m.Wait()
+	if len(f.e.log) != 0 || f.m.Running("pal") {
+		t.Fatalf("something ran: %v", f.e.log)
+	}
+}
+
+func TestRestore_RunningGameIsAlwaysBackedUpFirst(t *testing.T) {
+	f := newFixture(t, 0)
+	f.def.Backup.BeforeStop = false // the module does not back up before a stop; a restore still must
+	if err := f.m.Request(context.Background(), f.def, "mid.tgz", "alex", false); err != nil {
+		t.Fatal(err)
+	}
+	f.m.Wait()
+	// The fake docker writes no new backup file, so the safety backup fails: nothing may be stopped or replaced.
+	if len(f.e.log) != 0 {
+		t.Fatalf("the game was touched after a failed safety backup: %v", f.e.log)
+	}
+	if len(f.rec.events) == 0 || !strings.Contains(strings.Join(f.rec.events, "|"), "safety backup") {
+		t.Fatalf("events = %v", f.rec.events)
+	}
+}
+
+func TestRestore_WouldPruneAppliesEvenWithoutBeforeStop(t *testing.T) {
+	f := newFixture(t, 3)
+	f.def.Backup.BeforeStop = false
+	if err := f.m.Request(context.Background(), f.def, "old.tgz", "alex", false); !errors.Is(err, ErrWouldPrune) {
+		t.Fatalf("Request = %v, want ErrWouldPrune", err)
 	}
 }

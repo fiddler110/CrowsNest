@@ -27,6 +27,7 @@ type OIDCProvider struct {
 	RedirectURL  string `json:"redirect_url"`
 	AuthURL      string `json:"auth_url"`
 	TokenURL     string `json:"token_url"`
+	JWKSURL      string `json:"jwks_url,omitempty"` // where its ID-token signing keys are published
 	Enabled      bool   `json:"enabled"`
 }
 
@@ -252,6 +253,23 @@ func (s *OIDCStore) Link(id, sub, username string) error {
 		s.links[id] = map[string]string{}
 	}
 	s.links[id][sub] = username
+	return s.saveLocked()
+}
+
+// UnlinkProvider forgets username's link at one provider (their Google email was changed or removed).
+func (s *OIDCStore) UnlinkProvider(id, username string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	changed := false
+	for sub, u := range s.links[id] {
+		if u == username {
+			delete(s.links[id], sub)
+			changed = true
+		}
+	}
+	if !changed {
+		return nil
+	}
 	return s.saveLocked()
 }
 

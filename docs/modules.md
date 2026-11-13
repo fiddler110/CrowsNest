@@ -109,6 +109,33 @@ the game's saves with the archive's contents and fix ownership; write it to matc
 status 0 is success. The scope for that container is generated from the game's own, so it adds no ports, exec,
 folders or image. It is shown in the approval summary. See docs/backups.md, "Restoring a backup".
 
+`files:` lets admins edit config files from the dashboard (the **Files** tab on the game's card):
+
+```yaml
+files:
+  - id: server-properties            # what the API calls it; the web side never sends a path
+    label: Server settings
+    path: /data/server.properties    # absolute, inside the container; no .., globs or quotes; not under /proc, /sys, /dev
+    max_bytes: 65536                 # default 65536, at most 1048576
+    restart: "Restart to apply it."  # "required" (the default), "none", or a hint shown under the editor
+    stop_first: false                # true if the game rewrites the file when it stops
+    redact: ['^rcon\.password=(.*)$']  # capture group 1 is hidden in the editor and kept on save
+```
+
+Files are read and written with `docker exec` in the game's container (so the image needs `sh`, `head`, `cp`, `mv`
+and `cat`), not through a mount. The exec guard allowlists exactly two fixed commands per file: a read, and a write
+that copies the old file (keeping its owner and mode), writes standard input beside it and renames it over the
+original. A file that does not exist reads as empty, and saving creates it. While the game runs this is all
+`docker exec`. For a **dashboard-enabled game that is stopped**, the panel uses a one-shot helper container instead,
+`<id>-files`: the game's own image and data folders (nothing else: no ports, no exec, not the backups folder), with
+the same two fixed scripts as its entrypoint and the new content in an environment variable. It has its own guard
+scope, counted towards `max_scopes`, and is admitted by the game's name like `-restore` and `-clean` (so a game id may
+not end in `-files`). Only a file inside one of the game's data folders can be edited this way; a file elsewhere in the
+image, and any game set up in `config.yaml`, needs the game running. Use `stop_first: true` for a file the game
+rewrites on shutdown, so the editor tells the admin to edit it while the game is stopped. The approval
+summary lists every file path, because installing such a module lets admins overwrite it. See docs/managing-games.md,
+"Editing config files".
+
 An optional `accent: "#rrggbb"` sets the colour of the game's dashboard card. Without one the card uses the
 default theme colour.
 
@@ -489,10 +516,34 @@ The list lives in `config.yaml`, which the dashboard cannot edit. With it set:
 - `crowsnest module install` and `update` fetch `<url>.sig`, say whether a trusted key signed those bytes, and record
   the key's name in the lock file (`crowsnest module list` shows it). An unsigned module still installs by hash as
   before. **An update is refused if the module was installed under a signature and the new version is not signed by a
-  trusted key** (pass `--sha256` if you checked it by hand), so a compromised source cannot quietly drop the signature.
+  trusted key** (to trust a different source of it, remove the module and install it again), so a compromised source cannot quietly drop the signature. **The signer is pinned too:** an update signed by a different trusted key than the one the module was installed under is refused for the same reason.
 - The dashboard's **Game modules from a source** can install a module and update one, but only from a signed source (see managing-games.md).
 
 The signature is ed25519 over `crowsnest-module-v1\n` plus the file's exact bytes, base64, one line. What a signature
 means: the key's holder published this file. It does not review the file, so the install summary is still the thing
-to read, and a signed module is no more trusted by the policy than an unsigned one. It also does not stop a replay of an
-older signed version: pin what you approved with the lock file, and rotate a key (remove it from `trusted_keys`) if it leaks.
+to read, and a signed module is no more trusted by the policy than an unsigned one. To stop a replay of an
+older signed copy, a publisher gives the module a `version: N` (a whole number that only goes up). It is inside the
+signed bytes and recorded in the lock file; an update of a signed module whose `version` is lower, or the same with
+different bytes, is refused. A module installed with no `version` has no such protection, so publishers should add one.
+Rotate a key (remove it from `trusted_keys`) if it leaks.
+
+**Rotating a key.** The dashboard cannot change who you trust, so a rotation is a config edit, and **Games, Game
+modules from a source** shows where it stands: each trusted key with its fingerprint and the installed modules it
+signed. (1) The publisher makes a new key and re-signs; you add it to `trusted_keys` next to the old one. (2) Update
+each module (an update signed by a different trusted key is still refused while the old key is listed). (3) Remove the
+old key. A module whose signing key is no longer listed is flagged, and **an update signed by a key you do trust may
+then take over** from it (the preview says so; the release-number checks still apply; `crowsnest module update` does
+the same). Until then it keeps running as installed.
+
+### A catalogue
+
+Set `managed.catalogue_url` to an https address of an `index.json` and the Games page lists its modules to pick from:
+
+```json
+{"modules": [{"id": "minecraft", "name": "Minecraft", "description": "…", "url": "https://…/minecraft/module.yaml", "version": 1}]}
+```
+
+It is only a list of pointers and is not itself trusted or signed. Picking an entry fills in the address and shows the
+same preview as a hand-typed one: the module must still be signed by a trusted key, you read what it would do, and your
+password installs those exact bytes. `version` is only used to say "newer release listed". The modules repository
+publishes one at `index.json`.

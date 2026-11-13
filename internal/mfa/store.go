@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/atomicfile"
 	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -80,21 +80,7 @@ func (s *Store) saveLocked() error {
 	if err != nil {
 		return err
 	}
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".mfa-*.tmp")
-	if err != nil {
-		return err
-	}
-	_, werr := tmp.Write(append(out, '\n'))
-	cerr := tmp.Close()
-	if err := errors.Join(werr, cerr, os.Chmod(tmp.Name(), 0o600)); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	if err := os.Rename(tmp.Name(), s.path); err != nil {
-		os.Remove(tmp.Name())
-		return err
-	}
-	return nil
+	return atomicfile.Write(s.path, append(out, '\n'), 0o600)
 }
 
 // Enabled reports whether user has finished enrolling.
@@ -279,4 +265,37 @@ func newRecoveryCodes() (codes, hashes []string, err error) {
 		hashes = append(hashes, string(h))
 	}
 	return codes, hashes, nil
+}
+
+// Reseal re-encrypts every enrolled secret in the file at path under another vault, for `crowsnest rekey`; it
+// returns how many changed. A missing file is not an error; running it again after an interruption is safe. The
+// panel must be stopped.
+func Reseal(path string, from, to *vault.Vault) (int, error) {
+	raw, err := os.ReadFile(path) // #nosec G304 -- path derives from the operator's config.yaml
+	if os.IsNotExist(err) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	var users map[string]*record
+	if err := json.Unmarshal(raw, &users); err != nil {
+		return 0, fmt.Errorf("mfa: parse %s: %w", path, err)
+	}
+	n := 0
+	for name, r := range users {
+		out, changed, err := from.Reseal(to, purpose(name), r.Secret)
+		if err != nil {
+			return 0, fmt.Errorf("mfa: %s, user %s: %w", path, name, err)
+		}
+		if changed {
+			r.Secret = out
+			n++
+		}
+	}
+	if n == 0 {
+		return 0, nil
+	}
+	out, _ := json.MarshalIndent(users, "", "  ") // #nosec G117 -- the secrets are sealed
+	return n, atomicfile.Write(path, append(out, '\n'), 0o600)
 }

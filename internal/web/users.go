@@ -3,6 +3,7 @@ package web
 import (
 	"encoding/json"
 	"errors"
+	"github.com/fiddler110/crowsnest/internal/audit"
 	"io"
 	"log"
 	"net/http"
@@ -48,6 +49,9 @@ type userBody struct {
 	// OIDCEmail links an OIDC sign-in email to the user; "" on update removes it.
 	OIDCEmail *string `json:"oidc_email"`
 	Revoke    bool    `json:"revoke_sessions"`
+	// ConfirmPassword is the signed-in admin's own password, asked again for
+	// changes that decide who can sign in as whom (not the user's new password).
+	ConfirmPassword string `json:"confirm_password"`
 	// ResetMFA removes the user's authenticator app (a lost phone) and signs them out.
 	ResetMFA bool `json:"reset_mfa"`
 	// Games limits a player to these game ids; an empty list means all games.
@@ -213,7 +217,7 @@ func (a *App) userChanged(r *http.Request, detail string) {
 	if a.History != nil {
 		a.History.Record(history.KindUsers, "", actor(r), detail)
 	}
-	log.Printf("audit: %s %q", actor(r), detail)
+	audit.Printf("%s %q", actor(r), detail)
 }
 
 func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
@@ -260,6 +264,9 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "give the user a password, a Google account, or both", http.StatusBadRequest)
 		return
 	}
+	if role == auth.RoleAdmin && !a.stepUp(w, r, b.ConfirmPassword, "create an admin") {
+		return
+	}
 	if err := auth.ValidateUsername(name); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -278,7 +285,7 @@ func (a *App) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		allowed = l
 	}
 	if err := auth.CreateUser(a.Auth.Store.Path(), name, hash, email, role); err != nil {
-		log.Printf("audit: %s create user %q failed: %v", actor(r), name, err)
+		audit.Printf("%s create user %q failed: %v", actor(r), name, err)
 		http.Error(w, "could not save user", http.StatusInternalServerError)
 		return
 	}
@@ -315,6 +322,9 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	path := a.Auth.Store.Path()
 	var changes []string
 	revoke := b.Revoke
+	if a.updateNeedsStepUp(rec, b) && !a.stepUp(w, r, b.ConfirmPassword, "change user "+name) {
+		return
+	}
 
 	if b.Role != nil {
 		role, err := auth.ParseRole(*b.Role)
@@ -368,6 +378,7 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "could not save user", http.StatusInternalServerError)
 					return
 				}
+				a.unlinkGoogle(name)
 				changes = append(changes, "Google account removed")
 			}
 		} else {
@@ -381,6 +392,7 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 					http.Error(w, "could not save user", http.StatusInternalServerError)
 					return
 				}
+				a.unlinkGoogle(name) // the new address must prove itself again
 				changes = append(changes, "Google account "+e)
 			}
 		}
@@ -466,6 +478,27 @@ func (a *App) handleUpdateUser(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"users": a.userList(self)})
 }
 
+// updateNeedsStepUp says whether an update changes who can sign in as this user
+// or how: a role, a new password, an authenticator reset, or a linked sign-in
+// email. Games and session sign-outs are not.
+func (a *App) updateNeedsStepUp(rec auth.UserRecord, b userBody) bool {
+	if b.Role != nil {
+		if role, err := auth.ParseRole(*b.Role); err == nil && role != rec.EffectiveRole() {
+			return true
+		}
+	}
+	if b.Password != nil && *b.Password != "" || b.ResetMFA {
+		return true
+	}
+	if b.GoogleEmail != nil && strings.ToLower(strings.TrimSpace(*b.GoogleEmail)) != rec.GoogleEmail {
+		return true
+	}
+	if b.OIDCEmail != nil && strings.ToLower(strings.TrimSpace(*b.OIDCEmail)) != rec.OIDCEmail {
+		return true
+	}
+	return false
+}
+
 func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !a.usersEnabled(w, r) {
 		return
@@ -483,6 +516,13 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "there must be at least one admin", http.StatusBadRequest)
 		return
 	}
+	b, ok := readUserBody(w, r)
+	if !ok {
+		return
+	}
+	if !a.stepUp(w, r, b.ConfirmPassword, "delete user "+name) {
+		return
+	}
 	if a.MFA != nil {
 		_ = a.MFA.Remove(name)
 	}
@@ -495,4 +535,12 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	}
 	a.userChanged(r, "deleted user "+name)
 	writeJSON(w, http.StatusOK, map[string]any{"users": a.userList(actor(r))})
+}
+
+// unlinkGoogle forgets which Google account is name's, so the next Google sign-in links whoever the new allowlist
+// entry matches.
+func (a *App) unlinkGoogle(name string) {
+	if a.OIDC != nil && a.OIDC.Store != nil {
+		_ = a.OIDC.Store.UnlinkProvider(auth.GoogleProviderID, name)
+	}
 }
