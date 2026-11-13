@@ -46,7 +46,6 @@ Done (R15 to R23); see `CHANGELOG.md`.
 
 1. [ ] **WebAuthn/passkeys** (track B, Sign-in methods); admin MFA is required via a setting now.
 2. [ ] **An Allow switch for URL-installed modules** (needs the guard to read the lock file; track A, Phase 5).
-3. [ ] **Discord slash commands** (track B).
 
 #### P4: larger design work
 
@@ -73,7 +72,6 @@ Done (R15 to R23); see `CHANGELOG.md`.
 - [ ] **Sign-in:** editing the `name=email`
   env allowlist, requiring MFA for players, WebAuthn/passkeys,
   encrypting the users file.
-- [ ] **Discord slash commands**.
 - [ ] **Backups:** a restore for config-file games; try each restore command on a real world; config-file games still back up
   inside their own data and would need the bind added by hand; an optional host-side mount check.
 - [ ] **File editing, next steps:** a Save-and-restart button, per-format validation (JSON first), and `files:` for
@@ -93,6 +91,11 @@ Done (R15 to R23); see `CHANGELOG.md`.
   the known format, not a capture).
 - [ ] **Idle/night auto-stop and Discord notifications** against real servers (idle auto-stop fired on the test
   stack; Discord notices untested, no webhook there); check firewall for `:5001`/game ports.
+
+### Backlog (parked, come back to it later)
+
+- [ ] **Discord slash commands** (track B). Parked by the owner on 2026-11-12. Needs a Discord application and its
+  public key before it can start.
 
 ### Considered, not doing
 
