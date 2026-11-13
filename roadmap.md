@@ -13,7 +13,7 @@ the accounts/settings review (2026-11-08/09).
 Three tracks that share one path: **A. Modular games** (the phased rework),
 **B. Accounts and settings** (largely rides on the modules), and **C. Verify
 and harden** (open checks against real servers). Phase numbers match
-`docs/modularization-plan.md`. Phases 0, 1, 3, 4 and 5 are done (see `CHANGELOG.md`).
+`docs/modularization-plan.md`. Phases 0, 1, 3, 4, 5 and 6 are done (see `CHANGELOG.md`).
 
 ### Priority order (review of 2026-11-12)
 
@@ -25,9 +25,11 @@ inside a tier, top to bottom. Items that already live in track A, B or C are nam
 
 #### P0: do now (small, and each closes a real gap)
 
-- [ ] **R4 (ops). Upgrade production from 0.11.0 to 0.13.0.** The operator's step: run `template-check.sh`,
+- [ ] **R4 (ops). Upgrade production from 0.11.0 to the next release.** The operator's step: run `template-check.sh`,
   compare compose and config, then pull and recreate. It signs everyone out once, and Minecraft, Source and
-  Don't Starve Together are no longer bundled.
+  Don't Starve Together are no longer bundled. Phase 6 also needs the game containers (Palworld and any other
+  `config.yaml` game) created first with `docker compose --profile <game> up --no-start`, because the panel no
+  longer runs compose; `compose_*` and `auto_update` are ignored.
 - [ ] **R5 (ops). Finish the Phase 5 live checks on the test stack:** "Make a copy" in the browser, a positive
   signed install from a public URL, the module-update diff, the offsite status banner, and Start→Switch from
   the browser (track C).
@@ -35,6 +37,8 @@ inside a tier, top to bottom. Items that already live in track A, B or C are nam
 #### P1: next (security design and data safety)
 
 - [ ] **Try the signed-module Allow switch on a real guard** (mount the modules folder, add a key to `policy.yaml`, install a signed module, switch it on, start it).
+- [ ] **Try Phase 6 on the real host:** start, stop, backup and a config-file edit through the guard against the
+  production Palworld container (the real-Docker CI test covers exec through the guard with a busybox image only).
 - [ ] **Try passkeys in a real browser** (Windows Hello, a phone, a security key): the server side is tested with a software authenticator only.
 - [ ] **Track C checks against real servers:** idle and night auto-stop with Discord notices, the Windrose
   invite-code join, crash-loop detection against a container that really crashes, and each restore command on a
