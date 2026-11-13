@@ -60,7 +60,7 @@ type Values struct {
 	// MaxActiveGames is how many games may run at once.
 	MaxActiveGames int `json:"max_active_games"`
 
-	// AutoUpdate pulls the latest image for a game each time it is started.
+	// AutoUpdate is ignored (it needed docker compose); kept so an older settings.json still loads.
 	AutoUpdate bool `json:"auto_update"`
 
 	// RawConsole lets admins send arbitrary RCON commands from the dashboard

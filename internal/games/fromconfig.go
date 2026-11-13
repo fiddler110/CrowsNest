@@ -20,9 +20,6 @@ func FromConfig(cfgs []config.GameConfig, docker *dockerctl.Client) []GameDef {
 			ID:             g.ID,
 			DisplayName:    g.DisplayName,
 			ContainerName:  g.ContainerName,
-			ComposeFile:    g.ComposeFile,
-			ComposeProfile: g.ComposeProfile,
-			ComposeService: g.ComposeService,
 			ConnectAddress: g.ConnectAddress,
 			ConnectNote:    g.ConnectNote,
 			ConnectSecrets: connectSecrets(g),
@@ -43,15 +40,10 @@ func backupSpec(b *config.BackupConfig) *BackupSpec {
 		CanRestore: len(b.Restore) > 0 && b.LocalDir != ""}
 }
 
-// DockerTarget converts a GameDef's container/compose identity into a
+// DockerTarget converts a GameDef's container identity into a
 // dockerctl.Target for Start/Stop calls.
 func (d GameDef) DockerTarget() dockerctl.Target {
-	return dockerctl.Target{
-		ContainerName:  d.ContainerName,
-		ComposeFile:    d.ComposeFile,
-		ComposeProfile: d.ComposeProfile,
-		ComposeService: d.ComposeService,
-	}
+	return dockerctl.Target{ContainerName: d.ContainerName}
 }
 
 // connectSecrets resolves a game's connect_secrets from the environment.

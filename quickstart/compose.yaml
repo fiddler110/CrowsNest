@@ -24,7 +24,6 @@ services:
       - "${CROWSNEST_BIND:-127.0.0.1}:5000:5000"   # put HTTPS in front before exposing it beyond this machine
     environment:
       - TZ=${TZ:-UTC}
-      - DOCKER_CONFIG=/tmp/.docker
     tmpfs:
       - /tmp:size=16m,mode=1777
     pids_limit: 256

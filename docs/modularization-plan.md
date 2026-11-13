@@ -188,7 +188,7 @@ block selects them by id. Until Phase 2 a manifest game still needs its containe
 | 3. Derived security | Generate guard scopes, execguard rules and compose fragments from manifests. Per-module secrets. Scopes file with reload. `policy.yaml` envelope, privilege approval, lock file. Fuzz the guard. | Adding a game touches one directory plus `.env`; an out-of-envelope module cannot be applied from the UI. Gets its own security review. |
 | 4. State hub | Central poller, single SSE stream, adaptive cadence, memory-budget admission. | Dashboard load makes no per-tab probes. |
 | 5. Modules in the UI | Install, enable, configure, remove modules and profiles from the dashboard (inside the envelope); signed remote sources. | A profile is created and started with no file edits. |
-| 6. Optional | Drop docker CLI/compose from the image; scheduling, slash commands, backup retention/offsite, metrics. | Image has no docker binary. |
+| 6. Optional | Drop docker CLI/compose from the image (**done**: every Docker call is an Engine API call); scheduling, slash commands, backup retention/offsite, metrics. | Image has no docker binary. |
 
 ## 5. Risks
 

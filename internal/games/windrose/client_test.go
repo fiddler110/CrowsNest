@@ -3,30 +3,26 @@ package windrose
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
+	"github.com/fiddler110/crowsnest/internal/dockerctl/dockertest"
 )
 
-// newFakeDockerInspect builds a dockerctl.Client whose `docker inspect
-// --format {{.State.StartedAt}}` reports startedAt, for isStale/uptime
-// tests that need a container start time without a real container.
+// newFakeDockerInspect builds a dockerctl.Client whose engine reports startedAt for every container name the tests
+// use, for isStale/uptime tests that need a container start time without a real container.
 func newFakeDockerInspect(t *testing.T, startedAt time.Time) *dockerctl.Client {
 	t.Helper()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "docker")
-	script := fmt.Sprintf("#!/bin/sh\necho '%s'\n", startedAt.UTC().Format(time.RFC3339Nano))
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake docker: %v", err)
+	f := dockertest.New(t)
+	for _, name := range []string{"windrose", "windrose-server", "wr"} {
+		f.Add(name, true)
+		f.SetStartedAt(name, startedAt)
 	}
-	return &dockerctl.Client{DockerBin: path}
+	return f.Client()
 }
 
 // fakeWplusServer builds an httptest.Server standing in for the Windrose+

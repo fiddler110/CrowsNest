@@ -2,41 +2,24 @@ package logtrack
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
+	"github.com/fiddler110/crowsnest/internal/dockerctl/dockertest"
 	"github.com/fiddler110/crowsnest/internal/games"
 )
 
-// fakeDocker writes a docker stand-in: ps reports the container as running
-// (or not), inspect gives a start time, logs prints a canned run.
+// fakeDocker is an engine with the container "v" running (or not) and a canned run in its log.
 func fakeDocker(t *testing.T, running bool, logs string) *dockerctl.Client {
 	t.Helper()
-	dir := t.TempDir()
-	ps := ""
-	if running {
-		ps = "v"
-	}
-	script := `#!/bin/sh
-case "$1" in
-  ps) printf '%s' "` + ps + `" ;;
-  inspect) echo "2026-01-01T00:00:00Z" ;;
-  logs) cat <<'LOG'
-` + logs + `
-LOG
-  ;;
-esac
-`
-	bin := filepath.Join(dir, "docker")
-	if err := os.WriteFile(bin, []byte(script), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	return &dockerctl.Client{DockerBin: bin}
+	f := dockertest.New(t)
+	f.Add("v", running).Image = "x"
+	f.SetStartedAt("v", time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+	f.Logs["v"] = logs + "\n"
+	return f.Client()
 }
 
 func TestCheck(t *testing.T) {

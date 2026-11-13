@@ -4,6 +4,19 @@ Everything that has landed, moved out of [`roadmap.md`](roadmap.md) so the roadm
 Newest first within each part. Design detail for the modular-games rework is in
 [`docs/modularization-plan.md`](docs/modularization-plan.md).
 
+## Engine API only (Phase 6)
+
+- [x] **The docker CLI and compose are gone from the panel image (done 2026-11-12).** Start, stop and exec now go
+  through the Engine API like everything else (exec is create, a hijacked start with the 8-byte stream framing, and
+  an inspect for the exit code), so the image is the Go binary plus certificates and tzdata, and the compose-from-
+  source Dockerfile stage and its x/net CVE churn are gone. Tests run against a fake Engine
+  (`internal/dockerctl/dockertest`) instead of shell-script fake `docker` binaries. **Breaking for hand-configured
+  games:** `compose_file`, `compose_profile` and `compose_service` are ignored (with a warning), so a game's
+  container must already exist on the host (`docker compose --profile <game> up --no-start`) or be re-added from the
+  dashboard, which creates it. `auto_update` (a pull before every start) is also ignored now. Tested against the fake
+  Engine and the unit suite, and the real-Docker integration test now runs exec (output, stderr, exit code, stdin)
+  through the guard; **not tried on the production host with Palworld.**
+
 ## Accounts (P3)
 
 - [x] **Allow switch for signed URL-installed modules (done 2026-11-12).** A module installed from a URL and signed

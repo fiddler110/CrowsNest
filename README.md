@@ -173,7 +173,7 @@ You add games from the web page. Then open `http://<host>:5000`, read the setup 
 `docker compose logs crowsnest` and create the first admin. `docker compose exec crowsnest crowsnest doctor` checks
 Docker access, file permissions, the policy and a few safety settings, and tells you what to fix.
 
-Prefer to define games by hand in `config.yaml` and a compose file, or to see how CrowsNest reaches Docker (the
+Prefer to define games by hand in `config.yaml` (with containers you create yourself), or to see how CrowsNest reaches Docker (the
 guard, or a socket proxy)? That is [docs/setup.md](docs/setup.md).
 
 ## What it does

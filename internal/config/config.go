@@ -5,6 +5,7 @@ package config
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"net/url"
 	"os"
@@ -215,9 +216,8 @@ type ServerConfig struct {
 	// game needs. Zero means 1024; negative turns the memory check off.
 	MemoryReserveMB int `yaml:"memory_reserve_mb"`
 
-	// AutoUpdate pulls the latest image for a game every time it is started
-	// (`docker compose pull`), so restarts pick up new server versions.
-	// Default false. Changeable at runtime from the dashboard.
+	// AutoUpdate is ignored: it relied on `docker compose pull`, and the panel no longer runs compose. Dashboard
+	// games update with "Update image". The key is still accepted so an older config.yaml loads.
 	AutoUpdate bool `yaml:"auto_update"`
 }
 
@@ -376,9 +376,12 @@ type ConnectSecret struct {
 
 // GameConfig is one entry in the game registry.
 type GameConfig struct {
-	ID             string `yaml:"id"`
-	DisplayName    string `yaml:"display_name"`
-	ContainerName  string `yaml:"container_name"`
+	ID            string `yaml:"id"`
+	DisplayName   string `yaml:"display_name"`
+	ContainerName string `yaml:"container_name"`
+	// ComposeFile, ComposeProfile and ComposeService are ignored: the panel no longer runs docker compose. They
+	// are still accepted so an older config.yaml loads (Load warns); the game's container must already exist, or
+	// be added from the dashboard.
 	ComposeFile    string `yaml:"compose_file"`
 	ComposeProfile string `yaml:"compose_profile"`
 	ComposeService string `yaml:"compose_service"`
@@ -790,14 +793,8 @@ func (c *Config) validate() error {
 		}
 		containers[g.ContainerName] = g.ID
 
-		if g.ComposeFile == "" {
-			return fmt.Errorf("games[%d] (%s): compose_file is required", i, g.ID)
-		}
-		if g.ComposeProfile == "" {
-			return fmt.Errorf("games[%d] (%s): compose_profile is required", i, g.ID)
-		}
-		if g.ComposeService == "" {
-			return fmt.Errorf("games[%d] (%s): compose_service is required", i, g.ID)
+		if g.ComposeFile != "" || g.ComposeProfile != "" || g.ComposeService != "" {
+			log.Printf("warning: games[%d] (%s): compose_file, compose_profile and compose_service are ignored: CrowsNest no longer runs docker compose, so the container %q must already exist (create it on the host, or add the game from the dashboard)", i, g.ID, g.ContainerName)
 		}
 	}
 	return nil

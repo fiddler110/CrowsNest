@@ -33,7 +33,6 @@ server:
                                                # dialog are saved (mount the directory, writable
                                                # by uid 1000). They override the values in this
                                                # file; delete it to reset.
-  # auto_update: false                        # pull the latest image every time a game starts
 
 idle_shutdown:
   enabled: true
@@ -73,13 +72,12 @@ users_file: /app/users.env     # <NAME>_PASSWORD_HASH entries; managed by `crows
 #     # client_secret_env: CROWSNEST_GOOGLE_CLIENT_SECRET
 #     # users_env: CROWSNEST_GOOGLE_USERS    # one-time import of old name=email pairs; the dashboard owns the list
 
+# Each game below is an existing container (create it on the host first; CrowsNest starts and stops it, it does
+# not run compose). Games added from the dashboard are created for you.
 games:
   - id: windrose
     display_name: Windrose
     container_name: windrose
-    compose_file: /data/compose.yaml
-    compose_profile: windrose
-    compose_service: windrose
     # Windrose+ integration (optional): live player count/names, world time
     # and weather, connection info, memory usage, multipliers. Omit this
     # block to run with docker-ps-only status and no player count.
@@ -90,17 +88,11 @@ games:
   - id: valheim
     display_name: Valheim
     container_name: valheim
-    compose_file: /data/compose.yaml
-    compose_profile: valheim
-    compose_service: valheim
     # night_shutdown: false     # opt this game out, e.g. a friend group spanning time zones
 
   - id: palworld
     display_name: Palworld
     container_name: palworld
-    compose_file: /data/compose.yaml
-    compose_profile: palworld
-    compose_service: palworld
     # Optional connection details shown on the game's card, with a copy
     # button for each value. All of it is shown to every logged-in user.
     # See docs/connecting.md for reaching the game without a router port

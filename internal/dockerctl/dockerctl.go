@@ -1,12 +1,6 @@
-// Package dockerctl wraps Docker: the read operations (Ping, Exists, Running,
-// StartedAt, FinishedAt, Stats, Logs) speak the Docker Engine HTTP API
-// directly (see http.go), because a CLI process costs ~10x more per call.
-// Everything else — and the read operations too when the engine is reached
-// over TLS, which the HTTP path does not implement — shells out to the CLI
-// so that compose
-// profiles/services (used to keep game servers out of a bare `docker compose
-// up`) map directly onto CLI commands, matching the container image's staged
-// docker CLI + compose plugin.
+// Package dockerctl talks to Docker through the Engine HTTP API (see http.go, create.go and exec.go): reads, create,
+// start, stop, exec. There is no docker CLI or compose in the image. The one process it still starts is nvidia-smi,
+// for host GPU stats.
 //
 // Unix-only (relies on process groups for reliable timeout cancellation),
 // which matches the project's Linux-only runtime (Alpine container image,
@@ -18,9 +12,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"strings"
@@ -34,11 +27,8 @@ const (
 	// defaultStopTimeout must exceed every game's stop_grace_period (docker
 	// stop returns once the container has exited, which can take the full
 	// grace period while the game saves) — Valheim's is 2m.
-	defaultStopTimeout = 5 * time.Minute
-	// defaultStartTimeout covers a first `compose up` that has to pull a
-	// multi-GB image. Callers normally bound Start with their own, shorter
-	// context too.
-	defaultStartTimeout = 30 * time.Minute
+	defaultStopTimeout  = 5 * time.Minute
+	defaultStartTimeout = time.Minute
 	defaultGPUTimeout   = 5 * time.Second
 
 	// waitDelay bounds how long Wait may take to return after a timeout
@@ -64,27 +54,9 @@ func newCmd(ctx context.Context, bin string, args ...string) *exec.Cmd {
 	return cmd
 }
 
-func (c *Client) newCmd(ctx context.Context, args ...string) *exec.Cmd {
-	if c.Host != "" {
-		// The docker CLI's -H flag is global: it must precede the
-		// subcommand ("docker -H <host> ps ...", "docker -H <host> compose
-		// -f ... up -d ..."), which prepending here guarantees regardless
-		// of which operation called us.
-		args = append([]string{"-H", c.Host}, args...)
-	}
-	return newCmd(ctx, c.bin(), args...)
-}
-
-// Target identifies a container plus, for one that may not exist yet, the
-// compose file/profile/service used to create it.
+// Target identifies the container to start.
 type Target struct {
-	ContainerName  string
-	ComposeFile    string
-	ComposeProfile string
-	ComposeService string
-	// Pull makes Start run `compose pull <service>` first, fetching a newer
-	// image if one has been published. Ignored without a compose file.
-	Pull bool
+	ContainerName string
 }
 
 // Stats is a snapshot of `docker stats` for one container.
@@ -105,18 +77,10 @@ type GPUStats struct {
 	MemTotalMiB string
 }
 
-// Client runs docker CLI commands. The zero value is ready to use.
+// Client talks to the Docker Engine API. The zero value is ready to use.
 type Client struct {
-	// DockerBin overrides the docker binary/path; defaults to "docker".
-	DockerBin string
-
-	// Host, when non-empty, is passed as the docker CLI's global `-H` flag
-	// on every invocation (e.g. "tcp://docker-socket-proxy:2375"), so every
-	// command — including `docker compose` — is issued against a remote
-	// daemon or a docker-socket-proxy instead of the local
-	// /var/run/docker.sock. Empty (the default) leaves the docker CLI to
-	// its own resolution (DOCKER_HOST env var, then the local socket),
-	// which is what a direct socket-mount deployment wants.
+	// Host is where the engine (or the guard in front of it) listens: "unix:///var/run/docker.sock", "tcp://host:2375"
+	// or "http://host:2375". Empty means $DOCKER_HOST, then the local socket. TLS and ssh hosts are not supported.
 	Host string
 
 	// NvidiaSmiBin overrides the nvidia-smi binary/path used by GPUStats;
@@ -150,13 +114,6 @@ const (
 	gpuMissingRetry = 10 * time.Minute
 )
 
-func (c *Client) bin() string {
-	if c.DockerBin != "" {
-		return c.DockerBin
-	}
-	return "docker"
-}
-
 func (c *Client) nvidiaSmiBin() string {
 	if c.NvidiaSmiBin != "" {
 		return c.NvidiaSmiBin
@@ -164,226 +121,32 @@ func (c *Client) nvidiaSmiBin() string {
 	return "nvidia-smi"
 }
 
-// run executes `docker <args...>`, returning trimmed stdout. defaultTimeout
-// applies unless c.Timeout overrides it.
-func (c *Client) run(ctx context.Context, defaultTimeout time.Duration, args ...string) (string, error) {
-	timeout := defaultTimeout
-	if c.Timeout > 0 {
-		timeout = c.Timeout
-	}
-
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-
-	cmd := c.newCmd(runCtx, args...)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-
-	err := cmd.Run()
-	if err != nil {
-		if runCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("dockerctl: %s %s: timed out after %s", c.bin(), strings.Join(args, " "), timeout)
-		}
-		return "", fmt.Errorf("dockerctl: %s %s: %w: %s", c.bin(), strings.Join(args, " "), err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.String(), nil
-}
-
-// cliExists reports whether a container by this name exists (running or not).
-func (c *Client) cliExists(ctx context.Context, name string) (bool, error) {
-	out, err := c.run(ctx, defaultShortTimeout, "ps", "-a", "--filter", "name=^"+name+"$", "--format", "{{.Names}}")
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(out) != "", nil
-}
-
-// cliPing is the CLI fallback for Ping (see http.go): it reports whether the Docker daemon (or the socket proxy in front of it)
-// answers. Unlike the status checks it says nothing about any one container;
-// it is how the dashboard tells "docker is down" from "every game is offline".
-func (c *Client) cliPing(ctx context.Context) error {
-	_, err := c.run(ctx, defaultShortTimeout, "version", "--format", "{{.Server.Version}}")
-	return err
-}
-
-// cliRunning is the CLI fallback for Running.
-func (c *Client) cliRunning(ctx context.Context, name string) (bool, error) {
-	out, err := c.run(ctx, defaultShortTimeout, "ps", "--filter", "name=^"+name+"$", "--format", "{{.Names}}")
-	if err != nil {
-		return false, err
-	}
-	return strings.TrimSpace(out) != "", nil
-}
-
-// Start starts the target's container. With a compose file configured it
-// always goes through `docker compose up -d <service>`, which pulls a
-// missing image, creates the container on first run, recreates it when
-// the compose file/.env changed since it was created, and otherwise just
-// starts the existing one. Without a compose file it falls back to `docker
-// start` of an existing container.
+// Start starts an existing container (a started one is left running). Containers are created by the dashboard
+// (managed games) or by whoever set a hand-configured game up; there is no compose here to create one.
 func (c *Client) Start(ctx context.Context, t Target) error {
-	if t.ComposeFile == "" {
-		exists, err := c.cliExists(ctx, t.ContainerName)
-		if err != nil {
-			return err
+	ctx, cancel := c.opCtx(ctx, defaultStartTimeout)
+	defer cancel()
+	resp, err := c.send(ctx, http.MethodPost, "/containers/"+url.PathEscape(t.ContainerName)+"/start", nil, nil)
+	if err != nil {
+		var ae *apiError
+		if asAPI(err, &ae) && ae.Status == http.StatusNotFound {
+			return fmt.Errorf("dockerctl: container %q does not exist: create it on the host, or add the game from the dashboard", t.ContainerName)
 		}
-		if !exists {
-			return fmt.Errorf("dockerctl: container %q does not exist and no compose file is configured", t.ContainerName)
-		}
-		_, err = c.run(ctx, defaultStartTimeout, "start", t.ContainerName)
 		return err
 	}
-	args := []string{"compose", "-f", t.ComposeFile}
-	if t.ComposeProfile != "" {
-		args = append(args, "--profile", t.ComposeProfile)
-	}
-	if t.Pull {
-		pull := append(append([]string{}, args...), "pull", t.ComposeService)
-		if _, err := c.run(ctx, defaultStartTimeout, pull...); err != nil {
-			// Offline registry or rate limit shouldn't stop a server that
-			// can run fine on its existing image.
-			if ctx.Err() != nil {
-				return err
-			}
-			log.Printf("dockerctl: pull %s failed, starting with the existing image: %v", t.ComposeService, err)
-		}
-	}
-	args = append(args, "up", "-d", t.ComposeService)
-	_, err := c.run(ctx, defaultStartTimeout, args...)
-	return err
+	return resp.Body.Close()
 }
 
-// Stop stops the named container.
+// Stop stops the named container and waits for it: the engine answers once the container has exited, which can take
+// its whole stop grace period while the game saves.
 func (c *Client) Stop(ctx context.Context, name string) error {
-	_, err := c.run(ctx, defaultStopTimeout, "stop", name)
-	return err
-}
-
-// cliStartedAt is the CLI fallback for StartedAt: the container's current-run start time.
-func (c *Client) cliStartedAt(ctx context.Context, name string) (time.Time, error) {
-	out, err := c.run(ctx, defaultShortTimeout, "inspect", "--format", "{{.State.StartedAt}}", name)
-	if err != nil {
-		return time.Time{}, err
-	}
-	ts := strings.TrimSpace(out)
-	t, err := time.Parse(time.RFC3339Nano, ts)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("dockerctl: parse StartedAt %q: %w", ts, err)
-	}
-	return t, nil
-}
-
-// cliFinishedAt is the CLI fallback for FinishedAt: when the container's most recent run ended. It's the
-// zero time for a container that has never stopped.
-func (c *Client) cliFinishedAt(ctx context.Context, name string) (time.Time, error) {
-	out, err := c.run(ctx, defaultShortTimeout, "inspect", "--format", "{{.State.FinishedAt}}", name)
-	if err != nil {
-		return time.Time{}, err
-	}
-	ts := strings.TrimSpace(out)
-	t, err := time.Parse(time.RFC3339Nano, ts)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("dockerctl: parse FinishedAt %q: %w", ts, err)
-	}
-	if t.Year() <= 1 {
-		return time.Time{}, nil // docker reports 0001-01-01 for "never"
-	}
-	return t, nil
-}
-
-// Exec runs `docker exec <name> <args...>` and returns its stdout. Used by
-// per-game StatusCheckers that need to inspect state inside the container
-// (e.g. grep a log file for a readiness marker).
-func (c *Client) Exec(ctx context.Context, name string, args ...string) (string, error) {
-	full := append([]string{"exec", name}, args...)
-	return c.run(ctx, defaultShortTimeout, full...)
-}
-
-// ExecTimeout is Exec with its own time limit, for long jobs such as a backup.
-// The limit applies unless the client's Timeout override is set.
-func (c *Client) ExecTimeout(ctx context.Context, name string, timeout time.Duration, args ...string) (string, error) {
-	full := append([]string{"exec", name}, args...)
-	return c.run(ctx, timeout, full...)
-}
-
-// ExecStdin runs `docker exec -i <name> <args...>` with stdin as the command's standard input and returns its
-// stdout. Used to write a file into a container; the exec guard allowlists the exact command.
-func (c *Client) ExecStdin(ctx context.Context, name string, stdin io.Reader, timeout time.Duration, args ...string) (string, error) {
-	full := append([]string{"exec", "-i", name}, args...)
-	if c.Timeout > 0 {
-		timeout = c.Timeout
-	}
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	ctx, cancel := c.opCtx(ctx, defaultStopTimeout)
 	defer cancel()
-	cmd := c.newCmd(runCtx, full...)
-	cmd.Stdin = stdin
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
-		if runCtx.Err() == context.DeadlineExceeded {
-			return "", fmt.Errorf("dockerctl: docker exec %s: timed out after %s", name, timeout)
-		}
-		return "", fmt.Errorf("dockerctl: docker exec %s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
-	}
-	return stdout.String(), nil
-}
-
-// cliLogs is the CLI fallback for Logs: it streams `docker logs -f` for the named container. since and tail are
-// passed through to the docker CLI verbatim when non-empty (since accepts
-// docker's RFC3339 or relative syntax, e.g. "1h"). The caller must cancel
-// ctx to stop the stream and release the underlying process.
-func (c *Client) cliLogs(ctx context.Context, name, since, tail string) (io.ReadCloser, error) {
-	args := []string{"logs", "-f"}
-	if since != "" {
-		args = append(args, "--since", since)
-	}
-	if tail != "" {
-		args = append(args, "--tail", tail)
-	}
-	args = append(args, name)
-
-	cmd := c.newCmd(ctx, args...)
-	pr, pw := io.Pipe()
-	cmd.Stdout = pw
-	cmd.Stderr = pw
-
-	if err := cmd.Start(); err != nil {
-		_ = pr.Close()
-		_ = pw.Close()
-		return nil, fmt.Errorf("dockerctl: start %s %s: %w", c.bin(), strings.Join(args, " "), err)
-	}
-
-	go func() {
-		pw.CloseWithError(cmd.Wait())
-	}()
-
-	return pr, nil
-}
-
-// cliStats is the CLI fallback for Stats: a `docker stats --no-stream` snapshot for the named
-// container.
-func (c *Client) cliStats(ctx context.Context, name string) (Stats, error) {
-	out, err := c.run(ctx, defaultShortTimeout, "stats", "--no-stream", "--format", "{{.CPUPerc}}\t{{.MemUsage}}\t{{.MemPerc}}", name)
+	resp, err := c.send(ctx, http.MethodPost, "/containers/"+url.PathEscape(name)+"/stop", nil, nil)
 	if err != nil {
-		return Stats{}, err
+		return err
 	}
-
-	var s Stats
-	parts := strings.Split(strings.TrimSpace(out), "\t")
-	if len(parts) >= 1 {
-		s.CPUPercent = strings.TrimSuffix(strings.TrimSpace(parts[0]), "%")
-	}
-	if len(parts) >= 2 {
-		if used, total, ok := strings.Cut(parts[1], "/"); ok {
-			s.MemUsed = strings.TrimSpace(used)
-			s.MemTotal = strings.TrimSpace(total)
-		}
-	}
-	if len(parts) >= 3 {
-		s.MemPercent = strings.TrimSuffix(strings.TrimSpace(parts[2]), "%")
-	}
-	return s, nil
+	return resp.Body.Close()
 }
 
 // GPUStats returns a host-level GPU utilization/memory snapshot via

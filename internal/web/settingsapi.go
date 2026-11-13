@@ -114,7 +114,6 @@ func settingsChanges(before, after settings.Values) string {
 	add("night_start_hour", before.NightStartHour, after.NightStartHour)
 	add("night_end_hour", before.NightEndHour, after.NightEndHour)
 	add("max_active_games", before.MaxActiveGames, after.MaxActiveGames)
-	add("auto_update", before.AutoUpdate, after.AutoUpdate)
 	add("raw_console", before.RawConsole, after.RawConsole)
 	add("require_admin_mfa", before.RequireAdminMFA, after.RequireAdminMFA)
 	ids := map[string]bool{}

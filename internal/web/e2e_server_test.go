@@ -18,24 +18,6 @@ import (
 	"github.com/fiddler110/crowsnest/internal/restore"
 )
 
-// statefulDocker is a fake docker whose containers survive between calls: a file named after the container, in
-// $E2E_STATE, means it is running. It answers just what the dashboard asks for.
-const statefulDocker = `#!/bin/sh
-name_of() { for a in "$@"; do case "$a" in name=^*) n=${a#name=^}; echo "${n%\$}";; esac; done; }
-case "$1" in
-  ps)
-    n=$(name_of "$@")
-    if [ "$2" = "-a" ]; then [ -n "$n" ] && echo "$n"; exit 0; fi
-    [ -f "$E2E_STATE/$n" ] && echo "$n"
-    exit 0 ;;
-  start) touch "$E2E_STATE/$2" ;;
-  stop) rm -f "$E2E_STATE/$2" ;;
-  inspect) echo "2026-01-01T00:00:00Z" ;;
-  version) echo 27.0.0 ;;
-esac
-exit 0
-`
-
 // TestE2EServer serves the dashboard on E2E_ADDR over a fake docker, for the browser tests in e2e/. It is skipped
 // unless E2E_ADDR is set, and runs until interrupted. The one user is admin / correct-horse-battery.
 func TestE2EServer(t *testing.T) {
@@ -44,8 +26,7 @@ func TestE2EServer(t *testing.T) {
 		t.Skip("E2E_ADDR not set; this is the server the browser tests in e2e/ start")
 	}
 	state := t.TempDir()
-	t.Setenv("E2E_STATE", state)
-	docker := fakeDockerClient(t, statefulDocker)
+	docker := fakeDockerClient(t, nil, "alpha", "bravo", "charlie")
 	var defs []games.GameDef
 	for _, id := range []string{"alpha", "bravo"} {
 		defs = append(defs, games.GameDef{ID: id, DisplayName: id, ContainerName: id,

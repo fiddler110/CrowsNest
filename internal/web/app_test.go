@@ -19,6 +19,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/auth"
 	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
+	"github.com/fiddler110/crowsnest/internal/dockerctl/dockertest"
 	"github.com/fiddler110/crowsnest/internal/exclusivity"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
@@ -36,13 +37,52 @@ type testHarness struct {
 	CSRFToken string
 }
 
-func newHarness(t *testing.T, dockerScript string, gameIDs ...string) *testHarness {
+// setup shapes the fake engine a test runs against; nil leaves every game's container there and stopped.
+type setup func(f *dockertest.Fake)
+
+// up makes these containers run.
+func up(names ...string) setup {
+	return func(f *dockertest.Fake) {
+		for _, n := range names {
+			f.SetRunning(n, true)
+		}
+	}
+}
+
+// all runs several setups in order.
+func all(ss ...setup) setup {
+	return func(f *dockertest.Fake) {
+		for _, s := range ss {
+			if s != nil {
+				s(f)
+			}
+		}
+	}
+}
+
+// engineWith is an engine with one stopped container per id (windrose when none), then st applied.
+func engineWith(t *testing.T, st setup, ids ...string) (*dockertest.Fake, *dockerctl.Client) {
+	t.Helper()
+	if len(ids) == 0 {
+		ids = []string{"windrose"}
+	}
+	f := dockertest.New(t)
+	for _, id := range ids {
+		f.Add(id, false)
+	}
+	if st != nil {
+		st(f)
+	}
+	return f, f.Client()
+}
+
+func newHarness(t *testing.T, st setup, gameIDs ...string) *testHarness {
 	t.Helper()
 	if len(gameIDs) == 0 {
 		gameIDs = []string{"windrose"}
 	}
 
-	docker := fakeDockerClient(t, dockerScript)
+	_, docker := engineWith(t, st, gameIDs...)
 
 	defs := make([]games.GameDef, len(gameIDs))
 	for i, id := range gameIDs {
@@ -57,16 +97,11 @@ func newHarness(t *testing.T, dockerScript string, gameIDs ...string) *testHarne
 	return newHarnessFromDefs(t, docker, defs)
 }
 
-// fakeDockerClient writes dockerScript to a temp file and returns a Client
-// pointed at it.
-func fakeDockerClient(t *testing.T, dockerScript string) *dockerctl.Client {
+// fakeDockerClient is an engine client for the given game ids with st applied.
+func fakeDockerClient(t *testing.T, st setup, ids ...string) *dockerctl.Client {
 	t.Helper()
-	dir := t.TempDir()
-	binPath := filepath.Join(dir, "docker")
-	if err := os.WriteFile(binPath, []byte(dockerScript), 0o755); err != nil {
-		t.Fatalf("write fake docker: %v", err)
-	}
-	return &dockerctl.Client{DockerBin: binPath}
+	_, c := engineWith(t, st, ids...)
+	return c
 }
 
 // newHarnessFromDefs is newHarness's shared core, for tests that need
@@ -177,7 +212,7 @@ func TestListGames_IdleCountdownOnlyWhenOnline(t *testing.T) {
 }
 
 func TestSettingsAPI(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	store, err := settings.New(settings.Values{IdleEnabled: true, IdleMinutes: 15, NightStartHour: 23, NightEndHour: 5, MaxActiveGames: 1}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -220,15 +255,15 @@ func TestSettingsAPI(t *testing.T) {
 	}
 }
 
-const psOnlyRunning = `#!/bin/sh
-if [ "$1" = "ps" ] && [ "$2" != "-a" ]; then
-  case "$*" in *"name=^$RUNNING_CONTAINER\$"*) echo "$RUNNING_CONTAINER" ;; esac
-fi
-exit 0
-`
+// psOnlyRunning runs the container named by $RUNNING_CONTAINER, if any.
+func psOnlyRunning(f *dockertest.Fake) {
+	if n := os.Getenv("RUNNING_CONTAINER"); n != "" {
+		f.SetRunning(n, true)
+	}
+}
 
 func TestHandleListGames(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\n[ \"$1\" = ps ] && echo windrose\n")
+	h := newHarness(t, up("windrose"))
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games", nil))
 
@@ -245,7 +280,7 @@ func TestHandleListGames(t *testing.T) {
 }
 
 func TestHandleListGames_Unauthenticated(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/games", nil)) // no cookie
 
@@ -255,7 +290,7 @@ func TestHandleListGames_Unauthenticated(t *testing.T) {
 }
 
 func TestHandleStatus_Offline(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\n[ \"$1\" = ps ] && :\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/status", nil))
 
@@ -272,7 +307,7 @@ func TestHandleStatus_Offline(t *testing.T) {
 }
 
 func TestHandleStatus_UnknownGame(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/palworld/status", nil))
 
@@ -282,7 +317,7 @@ func TestHandleStatus_UnknownGame(t *testing.T) {
 }
 
 func TestHandleStart(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\ncase \"$1\" in\n  ps) echo windrose ;;\n  start) exit 0 ;;\nesac\n")
+	h := newHarness(t, up("windrose"))
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPost, "/api/games/windrose/start", nil))
 
@@ -292,7 +327,7 @@ func TestHandleStart(t *testing.T) {
 }
 
 func TestHandleStart_MissingCSRF(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodPost, "/api/games/windrose/start", nil)) // cookie, no csrf header
 
@@ -321,7 +356,7 @@ func TestHandleStart_Conflict(t *testing.T) {
 }
 
 func TestHandleStop(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\n[ \"$1\" = stop ] && exit 0\nexit 1\n")
+	h := newHarness(t, up("windrose"))
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPost, "/api/games/windrose/stop", nil))
 
@@ -331,38 +366,7 @@ func TestHandleStop(t *testing.T) {
 }
 
 func TestHandleSwitch(t *testing.T) {
-	dir := t.TempDir()
-	statePath := filepath.Join(dir, "state")
-	os.WriteFile(statePath, []byte("valheim\n"), 0o644)
-	t.Setenv("FAKE_DOCKER_STATE", statePath)
-	t.Setenv("EXISTING", "windrose")
-
-	script := `#!/bin/sh
-case "$1" in
-  start)
-    name="$2"
-    grep -qx "$name" "$FAKE_DOCKER_STATE" 2>/dev/null || echo "$name" >> "$FAKE_DOCKER_STATE"
-    exit 0
-    ;;
-  stop)
-    name="$2"
-    grep -vx "$name" "$FAKE_DOCKER_STATE" > "$FAKE_DOCKER_STATE.tmp" 2>/dev/null
-    mv "$FAKE_DOCKER_STATE.tmp" "$FAKE_DOCKER_STATE"
-    exit 0
-    ;;
-  ps)
-    if [ "$2" = "-a" ]; then
-      candidates="$EXISTING $(cat "$FAKE_DOCKER_STATE" 2>/dev/null)"
-    else
-      candidates="$(cat "$FAKE_DOCKER_STATE" 2>/dev/null)"
-    fi
-    for n in $candidates; do
-      case "$*" in *"name=^$n\$"*) echo "$n"; break ;; esac
-    done
-    ;;
-esac
-`
-	h := newHarness(t, script, "windrose", "valheim")
+	h := newHarness(t, up("valheim"), "windrose", "valheim")
 	h.App.Exclusivity.StopPollInterval = time.Millisecond
 	h.App.Exclusivity.StopPollTimeout = time.Second
 
@@ -376,7 +380,7 @@ esac
 }
 
 func TestHandleSwitch_BodyTooLarge(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n", "windrose", "valheim")
+	h := newHarness(t, nil, "windrose", "valheim")
 
 	oversized := bytes.Repeat([]byte(" "), maxSwitchBodyBytes+1)
 	body := append([]byte(`{"from":"valheim","pad":"`), append(oversized, []byte(`"}`)...)...)
@@ -390,7 +394,9 @@ func TestHandleSwitch_BodyTooLarge(t *testing.T) {
 }
 
 func TestHandleStats(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\n[ \"$1\" = stats ] && printf '12.34%%\\t100MiB / 512MiB\\t19.53%%\\n'\n")
+	h := newHarness(t, all(up("windrose"), func(f *dockertest.Fake) {
+		f.Stats = `{"id":"abc","cpu_stats":{"cpu_usage":{"total_usage":1234},"system_cpu_usage":10000,"online_cpus":1},"precpu_stats":{},"memory_stats":{"usage":104857600,"limit":536870912}}`
+	}))
 	// nvidia-smi is unset -> defaults to the "nvidia-smi" binary, which
 	// won't exist on the test host; GPUStats should degrade to ok=false
 	// rather than erroring the whole endpoint.
@@ -416,7 +422,7 @@ func TestHandleStats(t *testing.T) {
 }
 
 func TestHandleStats_ContainerNotRunning(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 1\n")
+	h := newHarness(t, func(f *dockertest.Fake) { f.Remove("windrose") })
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/stats", nil))
 
@@ -433,7 +439,7 @@ func TestHandleStats_ContainerNotRunning(t *testing.T) {
 }
 
 func TestHandleStats_UnknownGame(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/palworld/stats", nil))
 
@@ -466,7 +472,7 @@ func (f fakeInfoProvider) Info(context.Context) (map[string]any, bool) {
 }
 
 func TestHandleListGames_IncludesPlayerCount(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\n[ \"$1\" = ps ] && echo windrose\n")
+	docker := fakeDockerClient(t, up("windrose"))
 	defs := []games.GameDef{
 		{
 			ID: "windrose", DisplayName: "windrose", ContainerName: "windrose",
@@ -497,7 +503,7 @@ func TestHandleListGames_IncludesPlayerCount(t *testing.T) {
 }
 
 func TestHandlePlayers_Available(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	defs := []games.GameDef{{
 		ID: "windrose", DisplayName: "windrose", ContainerName: "windrose",
 		Players: fakePlayerCounter{count: 2, names: []string{"Alice", "Bob"}, ok: true},
@@ -517,7 +523,7 @@ func TestHandlePlayers_Available(t *testing.T) {
 }
 
 func TestHandlePlayers_Undeterminable(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	defs := []games.GameDef{{
 		ID: "windrose", DisplayName: "windrose", ContainerName: "windrose",
 		Players: fakePlayerCounter{ok: false},
@@ -537,7 +543,7 @@ func TestHandlePlayers_Undeterminable(t *testing.T) {
 }
 
 func TestHandlePlayers_NoPlayerCounterWired(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	// newHarness wires games.UnknownPlayerCounter{}, which always reports
 	// ok=false — confirm that surfaces as unavailable, not an error.
 	rec := httptest.NewRecorder()
@@ -553,7 +559,7 @@ func TestHandlePlayers_NoPlayerCounterWired(t *testing.T) {
 }
 
 func TestHandleInfo_Available(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	defs := []games.GameDef{{
 		ID: "windrose", DisplayName: "windrose", ContainerName: "windrose",
 		Info: fakeInfoProvider{data: map[string]any{"available": true, "uptime": "1h"}, ok: true},
@@ -576,7 +582,7 @@ func TestHandleInfo_Available(t *testing.T) {
 // key, and the dashboard (which keys off it) showed "no info" forever even
 // though the data was there. The handler now supplies it on success.
 func TestHandleInfo_MarksSuccessfulProviderAvailable(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	provider := fakeInfoProvider{data: map[string]any{"server_name": "Pals"}, ok: true}
 	defs := []games.GameDef{{ID: "palworld", DisplayName: "palworld", ContainerName: "palworld", Info: provider}}
 	h := newHarnessFromDefs(t, docker, defs)
@@ -597,7 +603,7 @@ func TestHandleInfo_MarksSuccessfulProviderAvailable(t *testing.T) {
 }
 
 func TestHandleInfo_NoInfoProviderWired(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/info", nil))
 
@@ -611,7 +617,7 @@ func TestHandleInfo_NoInfoProviderWired(t *testing.T) {
 }
 
 func TestHandleDashboard_RedirectsWhenUnauthenticated(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 
@@ -624,7 +630,7 @@ func TestHandleDashboard_RedirectsWhenUnauthenticated(t *testing.T) {
 }
 
 func TestHandleDashboard_Authenticated(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\n[ \"$1\" = ps ] && echo windrose\n")
+	h := newHarness(t, up("windrose"))
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/", nil))
 
@@ -643,7 +649,7 @@ func TestHandleDashboard_Authenticated(t *testing.T) {
 // renders the neutral "checking" badge without ever calling the status
 // checker (here a docker that would hang).
 func TestHandleDashboard_DoesNotBlockOnProbes(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nsleep 5\n")
+	h := newHarness(t, func(f *dockertest.Fake) { f.Delay = 5 * time.Second })
 	rec := httptest.NewRecorder()
 	start := time.Now()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/", nil))
@@ -657,7 +663,7 @@ func TestHandleDashboard_DoesNotBlockOnProbes(t *testing.T) {
 }
 
 func TestHandleLoginPage(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/login", nil))
 
@@ -667,7 +673,7 @@ func TestHandleLoginPage(t *testing.T) {
 }
 
 func TestLoginLogoutFlow(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\n[ \"$1\" = ps ] && echo windrose\n")
+	h := newHarness(t, up("windrose"))
 	hash, err := auth.HashPassword("s3cret-pw")
 	if err != nil {
 		t.Fatalf("HashPassword() error = %v", err)
@@ -705,15 +711,20 @@ func TestLoginLogoutFlow(t *testing.T) {
 // show the container running yet, and a failure surfaces on /api/games.
 func TestHandleStart_AsyncStatusAndError(t *testing.T) {
 	gate := filepath.Join(t.TempDir(), "gate")
-	t.Setenv("GATE", gate)
-	h := newHarness(t, `#!/bin/sh
-case "$1" in
-  ps) if [ "$2" = "-a" ]; then echo windrose; fi ;;
-  start)
-    while [ ! -e "$GATE" ]; do sleep 0.05; done
-    echo "pull access denied" >&2; exit 1 ;;
-esac
-`)
+	h := newHarness(t, func(f *dockertest.Fake) {
+		f.OnStart = func(ctx context.Context, _ string) (int, string) {
+			for {
+				if _, err := os.Stat(gate); err == nil {
+					return 500, "pull access denied"
+				}
+				select {
+				case <-ctx.Done():
+					return 500, "cancelled"
+				case <-time.After(50 * time.Millisecond):
+				}
+			}
+		}
+	})
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.authedReq(http.MethodPost, "/api/games/windrose/start", nil))
 	if rec.Code != http.StatusAccepted {
@@ -743,7 +754,7 @@ esac
 }
 
 func TestHandleDashboard_ConnectDetails(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	mk := func(id, addr, note string) games.GameDef {
 		return games.GameDef{
 			ID: id, DisplayName: id, ContainerName: id,
@@ -772,7 +783,7 @@ func TestHandleDashboard_ConnectDetails(t *testing.T) {
 }
 
 func TestHandleDashboard_ConnectSecrets(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	h := newHarnessFromDefs(t, docker, []games.GameDef{{
 		ID: "palworld", DisplayName: "Palworld", ContainerName: "palworld",
 		Status:         &games.DockerStatusChecker{Docker: docker},
@@ -789,7 +800,7 @@ func TestHandleDashboard_ConnectSecrets(t *testing.T) {
 
 // A user's start request reaches the notifier with their session username.
 func TestHandleStart_NotifiesWithActor(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	n := &chanNotifier{ch: make(chan string, 4)}
 	h.App.Exclusivity.Notifier = n
 
@@ -882,7 +893,7 @@ func (c *countingStatus) Check(context.Context, string) (games.Status, error) {
 // Many tabs polling at once must cost one status probe per game, not one
 // per request.
 func TestListGames_SharesProbesAcrossRequests(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	cs := &countingStatus{}
 	h := newHarnessFromDefs(t, docker, []games.GameDef{
 		{ID: "a", DisplayName: "a", ContainerName: "a", Status: cs},
@@ -921,7 +932,7 @@ func TestListGames_SharesProbesAcrossRequests(t *testing.T) {
 
 // An accepted stop must show immediately, not after the cache expires.
 func TestStop_ReportsStoppingImmediately(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\ncase \"$1\" in ps) echo windrose ;; stop) sleep 1 ;; esac\n")
+	h := newHarness(t, all(up("windrose"), func(f *dockertest.Fake) { f.OnStop = slow(time.Second) }))
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req("GET", "/api/games/windrose/status", nil)) // warm the cache: online
 	rec = httptest.NewRecorder()
@@ -938,13 +949,13 @@ func TestStop_ReportsStoppingImmediately(t *testing.T) {
 }
 
 func TestHealth_ReportsDockerReachability(t *testing.T) {
-	up := newHarness(t, "#!/bin/sh\necho 29.0.0\n")
+	up := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	up.mux().ServeHTTP(rec, up.req("GET", "/api/health", nil))
 	if !strings.Contains(rec.Body.String(), `"docker":true`) {
 		t.Fatalf("health with docker up = %s", rec.Body.String())
 	}
-	down := newHarness(t, "#!/bin/sh\necho 'secret path /var/run' >&2\nexit 1\n")
+	down := newHarness(t, func(f *dockertest.Fake) { f.Down(true) })
 	rec = httptest.NewRecorder()
 	down.mux().ServeHTTP(rec, down.req("GET", "/api/health", nil))
 	if !strings.Contains(rec.Body.String(), `"docker":false`) || strings.Contains(rec.Body.String(), "secret") {
@@ -958,7 +969,7 @@ func TestHealth_ReportsDockerReachability(t *testing.T) {
 }
 
 func TestRoles_PlayersCannotTouchSettingsButCanControlGames(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	// Production points both at one UserStore; the harness has plain maps.
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
 
@@ -998,7 +1009,7 @@ func TestRoles_PlayersCannotTouchSettingsButCanControlGames(t *testing.T) {
 }
 
 func TestActivity_FeedAndSettingsAudit(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	store, err := history.Open(filepath.Join(t.TempDir(), "events.jsonl"), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -1033,7 +1044,7 @@ func TestActivity_FeedAndSettingsAudit(t *testing.T) {
 }
 
 func TestHost_ReportsDisks(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.HostPaths = []string{t.TempDir()}
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req("GET", "/api/host", nil))
@@ -1046,7 +1057,7 @@ func TestHost_ReportsDisks(t *testing.T) {
 }
 
 func TestBackup_AdminOnlyAndPreconditions(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\ncase \"$1\" in ps) case \"$*\" in *'name=^g$'*) echo g ;; esac ;; exec) exit 0 ;; esac\n")
+	docker := fakeDockerClient(t, up("g"), "g", "plain")
 	h := newHarnessFromDefs(t, docker, []games.GameDef{
 		{ID: "g", DisplayName: "g", ContainerName: "g", Status: &games.DockerStatusChecker{Docker: docker},
 			Backup: &games.BackupSpec{Exec: []string{"backup"}}},
@@ -1079,7 +1090,7 @@ func TestBackup_AdminOnlyAndPreconditions(t *testing.T) {
 }
 
 func TestBackupsHealth_EndpointAndBanner(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	h := newHarnessFromDefs(t, docker, nil)
 	get := func(path string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -1104,7 +1115,7 @@ func TestBackupsHealth_EndpointAndBanner(t *testing.T) {
 }
 
 func TestRestore_AdminOnlyAndPreconditions(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	h := newHarnessFromDefs(t, docker, []games.GameDef{
 		{ID: "g", DisplayName: "g", ContainerName: "g", Status: &games.DockerStatusChecker{Docker: docker},
 			Backup: &games.BackupSpec{Exec: []string{"backup"}}},
@@ -1156,7 +1167,7 @@ func (f *fakeConsole) Raw(_ context.Context, cmd string) (string, error) {
 }
 
 func TestConsole_ActionsRawToggleAndAudit(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	fc := &fakeConsole{}
 	h := newHarnessFromDefs(t, docker, []games.GameDef{
 		{ID: "g", DisplayName: "g", ContainerName: "g", Status: &games.DockerStatusChecker{Docker: docker}, Console: fc, RawConsole: fc},
@@ -1260,7 +1271,7 @@ func (f *fakeManaged) SetAllowed(id string, on bool) error {
 }
 
 func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
 	do := func(method, path string, body []byte) int {
 		rec := httptest.NewRecorder()
@@ -1293,7 +1304,7 @@ func TestManagedAPI_AdminOnlyAndOptional(t *testing.T) {
 }
 
 func TestManagedAllowNeedsThePasswordAgain(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	hash, err := auth.HashPassword("s3cret-pw")
 	if err != nil {
 		t.Fatal(err)
@@ -1339,7 +1350,7 @@ func TestManagedAllowNeedsThePasswordAgain(t *testing.T) {
 }
 
 func TestGamesPageIsAdminOnly(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req("GET", "/games", nil))
@@ -1355,7 +1366,7 @@ func TestGamesPageIsAdminOnly(t *testing.T) {
 }
 
 func TestSettingsPageIsAdminOnly(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req("GET", "/settings", nil))
@@ -1371,7 +1382,7 @@ func TestSettingsPageIsAdminOnly(t *testing.T) {
 }
 
 func TestActivity_PlayersDoNotSeeAdminEvents(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	store, err := history.Open(filepath.Join(t.TempDir(), "events.jsonl"), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -1404,7 +1415,7 @@ func TestActivity_PlayersDoNotSeeAdminEvents(t *testing.T) {
 }
 
 func TestListGames_StartErrorDetailAdminOnly(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\ncase \"$1\" in ps) if [ \"$2\" = \"-a\" ]; then echo windrose; fi ;; start) echo 'boom: secret path' >&2; exit 1 ;; esac\n")
+	h := newHarness(t, func(f *dockertest.Fake) { f.OnStart = failWith("boom: secret path") })
 	if err := h.App.Exclusivity.RequestStart(context.Background(), "windrose"); err != nil {
 		t.Fatal(err)
 	}
@@ -1424,8 +1435,7 @@ func TestListGames_StartErrorDetailAdminOnly(t *testing.T) {
 }
 
 func TestHandleSwitch_CooldownIs429(t *testing.T) {
-	script := "#!/bin/sh\ncase \"$1\" in ps) if [ \"$2\" = \"-a\" ]; then echo windrose; echo valheim; else echo valheim; fi ;; esac\n"
-	docker := fakeDockerClient(t, script)
+	docker := fakeDockerClient(t, up("valheim"), "windrose", "valheim")
 	mk := func(id string, cd time.Duration) games.GameDef {
 		return games.GameDef{ID: id, DisplayName: id, ContainerName: id, RestartCooldown: cd,
 			Status: &games.DockerStatusChecker{Docker: docker}, Players: games.UnknownPlayerCounter{}}
@@ -1443,7 +1453,7 @@ func TestHandleSwitch_CooldownIs429(t *testing.T) {
 }
 
 func TestAudit_AdminFilteredFeed(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	store, err := history.Open(filepath.Join(t.TempDir(), "events.jsonl"), 0)
 	if err != nil {
 		t.Fatal(err)
@@ -1486,7 +1496,7 @@ func TestAudit_AdminFilteredFeed(t *testing.T) {
 
 // Deleting a game's data is irreversible: it needs the id typed and the password.
 func TestDisableDeletingDataAsksForIdAndPassword(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	hash, _ := auth.HashPassword("s3cret-pw")
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin, Hash: hash}}
 	h.App.Auth.Users = h.App.Auth.Sessions.Users
@@ -1519,7 +1529,7 @@ func TestDisableDeletingDataAsksForIdAndPassword(t *testing.T) {
 }
 
 func TestSignedInResponsesAreNotCached(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	for _, p := range []string{"/api/games", "/api/host", "/"} {
 		rec := httptest.NewRecorder()
 		h.mux().ServeHTTP(rec, h.authedReq("GET", p, nil))
@@ -1533,7 +1543,7 @@ func TestSignedInResponsesAreNotCached(t *testing.T) {
 }
 
 func TestBackupsOverview(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	mount := t.TempDir()
 	dir := filepath.Join(mount, "g")
 	os.MkdirAll(dir, 0o755)
@@ -1566,7 +1576,16 @@ func TestGameFiles_EditNeedsAdminPasswordAndFreshHash(t *testing.T) {
 	if err := os.WriteFile(file, []byte("motd=hi\nrcon.password=hunter2\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	docker := fakeDockerClient(t, "#!/bin/sh\nif [ \"$1\" = ps ]; then echo g; exit 0; fi\nif [ \"$1\" = exec ]; then\n  if [ \"$2\" = -i ]; then cat > '"+file+"'; exit 0; fi\n  cat '"+file+"'; exit 0\nfi\nexit 0\n")
+	docker := fakeDockerClient(t, all(up("g"), func(f *dockertest.Fake) {
+		f.Exec = func(_ string, _ []string, stdin string) (string, string, int) {
+			if stdin != "" {
+				_ = os.WriteFile(file, []byte(stdin), 0o600)
+				return "", "", 0
+			}
+			b, _ := os.ReadFile(file)
+			return string(b), "", 0
+		}
+	}), "g", "plain")
 	specs, err := gamefiles.Normalize([]gamefiles.Spec{{ID: "props", Label: "Server settings", Path: "/data/server.properties", Redact: []string{`^rcon\.password=(.*)$`}}})
 	if err != nil {
 		t.Fatal(err)
@@ -1647,5 +1666,21 @@ func TestGameFiles_EditNeedsAdminPasswordAndFreshHash(t *testing.T) {
 	}
 	if c, _ := save(edited, got.SHA, "whatever1"); c != http.StatusForbidden {
 		t.Errorf("player save = %d, want 403", c)
+	}
+}
+
+// failWith makes a start fail with msg.
+func failWith(msg string) func(context.Context, string) (int, string) {
+	return func(context.Context, string) (int, string) { return 500, msg }
+}
+
+// slow makes a stop take d (or until the client gives up).
+func slow(d time.Duration) func(context.Context, string) (int, string) {
+	return func(ctx context.Context, _ string) (int, string) {
+		select {
+		case <-time.After(d):
+		case <-ctx.Done():
+		}
+		return 0, ""
 	}
 }

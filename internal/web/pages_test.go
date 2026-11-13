@@ -20,7 +20,7 @@ import (
 // pagesHarness has two games: "rich" (info, console, accent) and "plain".
 func pagesHarness(t *testing.T) *testHarness {
 	t.Helper()
-	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	docker := fakeDockerClient(t, nil)
 	h := newHarnessFromDefs(t, docker, []games.GameDef{
 		{ID: "rich", DisplayName: "Rich", ContainerName: "rich", Status: &games.DockerStatusChecker{Docker: docker},
 			Info: fakeInfoProvider{ok: true}, Console: &fakeConsole{}, Accent: "#60a5fa"},
@@ -152,7 +152,7 @@ func TestTemplates_NoDuplicateIDs(t *testing.T) {
 }
 
 func TestEmptyDashboard_AdminsGetTheGamesPage(t *testing.T) {
-	h := newHarnessFromDefs(t, fakeDockerClient(t, "#!/bin/sh\nexit 0\n"), nil)
+	h := newHarnessFromDefs(t, fakeDockerClient(t, nil), nil)
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin}}
 	if body := h.get(t, "/"); !strings.Contains(body, `<a href="/games">`) || strings.Contains(body, "config.yaml") {
 		t.Error("an admin's empty dashboard should point at the Games page")
@@ -244,7 +244,7 @@ func TestAcceptsGzip(t *testing.T) {
 }
 
 func TestGetSettings_IncludesTimeZoneButPutRefusesIt(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	store, err := settings.New(settings.Values{IdleMinutes: 15, NightStartHour: 23, NightEndHour: 5, MaxActiveGames: 1}, "")
 	if err != nil {
 		t.Fatal(err)
@@ -271,7 +271,7 @@ func TestGetSettings_IncludesTimeZoneButPutRefusesIt(t *testing.T) {
 }
 
 func TestSettings_PerGameOverrides(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	store, err := settings.New(settings.Values{IdleMinutes: 15, NightStartHour: 23, NightEndHour: 5, MaxActiveGames: 1}, "")
 	if err != nil {
 		t.Fatal(err)

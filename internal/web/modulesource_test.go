@@ -26,7 +26,7 @@ type sourceEnv struct {
 
 func newSourceEnv(t *testing.T) *sourceEnv {
 	t.Helper()
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	hash, _ := auth.HashPassword("s3cret-pw")
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RoleAdmin, Hash: hash}}
 	h.App.Auth.Users = h.App.Auth.Sessions.Users

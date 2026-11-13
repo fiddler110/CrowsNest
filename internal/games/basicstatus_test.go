@@ -2,26 +2,15 @@ package games
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/fiddler110/crowsnest/internal/dockerctl"
+	"github.com/fiddler110/crowsnest/internal/dockerctl/dockertest"
 )
 
-func fakeDockerClient(t *testing.T, script string) *dockerctl.Client {
-	t.Helper()
-	dir := t.TempDir()
-	binPath := filepath.Join(dir, "docker")
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake docker: %v", err)
-	}
-	return &dockerctl.Client{DockerBin: binPath}
-}
-
 func TestDockerStatusChecker_Online(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\n[ \"$1\" = ps ] && echo windrose\n")
-	checker := &DockerStatusChecker{Docker: docker}
+	f := dockertest.New(t)
+	f.Add("windrose", true)
+	checker := &DockerStatusChecker{Docker: f.Client()}
 
 	status, err := checker.Check(context.Background(), "windrose")
 	if err != nil {
@@ -33,8 +22,9 @@ func TestDockerStatusChecker_Online(t *testing.T) {
 }
 
 func TestDockerStatusChecker_Offline(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\n[ \"$1\" = ps ] && :\n")
-	checker := &DockerStatusChecker{Docker: docker}
+	f := dockertest.New(t)
+	f.Add("windrose", false)
+	checker := &DockerStatusChecker{Docker: f.Client()}
 
 	status, err := checker.Check(context.Background(), "windrose")
 	if err != nil {
@@ -46,8 +36,9 @@ func TestDockerStatusChecker_Offline(t *testing.T) {
 }
 
 func TestDockerStatusChecker_Error(t *testing.T) {
-	docker := fakeDockerClient(t, "#!/bin/sh\necho boom >&2\nexit 1\n")
-	checker := &DockerStatusChecker{Docker: docker}
+	f := dockertest.New(t)
+	f.Down(true)
+	checker := &DockerStatusChecker{Docker: f.Client()}
 
 	if _, err := checker.Check(context.Background(), "windrose"); err == nil {
 		t.Fatal("Check() error = nil, want error")

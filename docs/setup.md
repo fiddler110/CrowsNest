@@ -22,13 +22,13 @@ The steps below are the longer, hand-configured setup, where games are defined i
    timezone and integrations, `compose.yaml` holds volumes and ports, and `.env` holds secrets and host-specific
    values (it's git-ignored).
 
-   CrowsNest runs `docker compose` against that same compose file from inside its own container (mounted at
-   `/data/compose.yaml`, with `.env` next to it as `/data/.env`). So keep the top-level `name:`, use absolute
-   `${USERDIR}/...` host paths in game services, and don't use `${VAR:?}` there: compose interpolates the whole
-   file, so one missing variable for one game would block every game from starting. The header of
-   `compose.yaml.example` explains each point.
+   CrowsNest no longer runs `docker compose` itself (there is no docker CLI or compose in its image): it starts
+   and stops existing containers through the Docker Engine API. Create each game's container once on the host,
+   without starting it: `docker compose --profile <game> up --no-start` (or `create`). After that CrowsNest
+   starts and stops them on demand. A game whose container does not exist fails to start with a message that
+   says so. Games you add from the dashboard are created by CrowsNest and need no compose file at all.
 2. Start only the controller: `docker compose up -d crowsnest`. It starts and stops the game containers itself, so
-   you never run `--profile <game> up` by hand.
+   you never run `--profile <game> up` by hand once they exist.
 3. Open `http://<host>:5000`. With no users yet you get the first-run setup page. Read the setup code from
    `docker compose logs crowsnest` (it's also saved as `setup-token` next to the session secret), then choose an
    admin username and passphrase. The page closes once the first account exists, and there are no default

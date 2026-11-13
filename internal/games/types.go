@@ -141,10 +141,6 @@ type GameDef struct {
 	ContainerName string
 	Image         string
 
-	ComposeFile    string
-	ComposeProfile string
-	ComposeService string
-
 	NightShutdown bool
 
 	// ConnectAddress/ConnectNote are optional, display-only connection

@@ -18,7 +18,7 @@ func (fakeCrashes) Total(id string) uint64 {
 func (fakeCrashes) Looping(id string) bool { return id == "windrose" }
 
 func TestMetrics_TokenGatedAndExposesGames(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n", "windrose")
+	h := newHarness(t, nil, "windrose")
 	h.App.HostPaths = []string{t.TempDir()}
 
 	// No token configured: the route does not exist.

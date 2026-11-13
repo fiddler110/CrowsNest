@@ -3,14 +3,13 @@ package exclusivity
 import (
 	"context"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
+	"github.com/fiddler110/crowsnest/internal/dockerctl/dockertest"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/memadmit"
 )
@@ -45,82 +44,29 @@ func newTestManager(t *testing.T, reg *games.Registry, docker *dockerctl.Client)
 	return m
 }
 
-// newStaticFakeDocker builds a docker replacement whose `ps -a`/`ps`
-// answers are fixed for the whole test (existing vs. running containers),
-// unaffected by start/stop calls. Good for scenarios that don't need a
-// stop to actually change what a later status check reports.
-func newStaticFakeDocker(t *testing.T, existing, running []string) *dockerctl.Client {
+// fakeEngine is an engine holding the containers in existing (stopped) and running (up).
+func fakeEngine(t *testing.T, existing, running []string) (*dockertest.Fake, *dockerctl.Client) {
 	t.Helper()
-	dir := t.TempDir()
-	binPath := filepath.Join(dir, "docker")
-	script := `#!/bin/sh
-case "$1" in
-  start) exit 0 ;;
-  stop) exit 0 ;;
-  ps)
-    if [ "$2" = "-a" ]; then
-      candidates="$EXISTING"
-    else
-      candidates="$RUNNING"
-    fi
-    for n in $candidates; do
-      case "$*" in *"name=^$n\$"*) echo "$n"; break ;; esac
-    done
-    ;;
-esac
-`
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake docker: %v", err)
+	f := dockertest.New(t)
+	for _, n := range existing {
+		f.Add(n, false)
 	}
-	t.Setenv("EXISTING", strings.Join(existing, " "))
-	t.Setenv("RUNNING", strings.Join(running, " "))
-	return &dockerctl.Client{DockerBin: binPath}
+	for _, n := range running {
+		f.Add(n, true)
+	}
+	return f, f.Client()
 }
 
-// newStatefulFakeDocker builds a docker replacement that tracks running
-// containers in a state file: `start`/`stop` actually mutate it, so a
-// later status check reflects prior calls. existing lists containers
-// start can bring up via `docker start` (vs. needing compose, which these
-// tests don't exercise); runningInitially seeds the state file.
+func newStaticFakeDocker(t *testing.T, existing, running []string) *dockerctl.Client {
+	t.Helper()
+	_, c := fakeEngine(t, existing, running)
+	return c
+}
+
 func newStatefulFakeDocker(t *testing.T, existing, runningInitially []string) *dockerctl.Client {
 	t.Helper()
-	dir := t.TempDir()
-	binPath := filepath.Join(dir, "docker")
-	statePath := filepath.Join(dir, "state")
-	if err := os.WriteFile(statePath, []byte(strings.Join(runningInitially, "\n")+"\n"), 0o644); err != nil {
-		t.Fatalf("seed state: %v", err)
-	}
-	script := `#!/bin/sh
-case "$1" in
-  start)
-    name="$2"
-    grep -qx "$name" "$FAKE_DOCKER_STATE" 2>/dev/null || echo "$name" >> "$FAKE_DOCKER_STATE"
-    exit 0
-    ;;
-  stop)
-    name="$2"
-    grep -vx "$name" "$FAKE_DOCKER_STATE" > "$FAKE_DOCKER_STATE.tmp" 2>/dev/null
-    mv "$FAKE_DOCKER_STATE.tmp" "$FAKE_DOCKER_STATE"
-    exit 0
-    ;;
-  ps)
-    if [ "$2" = "-a" ]; then
-      candidates="$EXISTING $(cat "$FAKE_DOCKER_STATE" 2>/dev/null)"
-    else
-      candidates="$(cat "$FAKE_DOCKER_STATE" 2>/dev/null)"
-    fi
-    for n in $candidates; do
-      case "$*" in *"name=^$n\$"*) echo "$n"; break ;; esac
-    done
-    ;;
-esac
-`
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake docker: %v", err)
-	}
-	t.Setenv("FAKE_DOCKER_STATE", statePath)
-	t.Setenv("EXISTING", strings.Join(existing, " "))
-	return &dockerctl.Client{DockerBin: binPath}
+	_, c := fakeEngine(t, existing, runningInitially)
+	return c
 }
 
 func TestActiveGame_None(t *testing.T) {
@@ -144,18 +90,12 @@ func TestActiveGame_Found(t *testing.T) {
 	}
 }
 
-// newFailingFakeDocker builds a docker replacement whose `ps` invocations
-// always fail (nonzero exit), simulating a docker daemon/socket-proxy
-// hiccup mid status-check.
+// newFailingFakeDocker is an engine that answers every request with a 500: a daemon or socket-proxy hiccup.
 func newFailingFakeDocker(t *testing.T) *dockerctl.Client {
 	t.Helper()
-	dir := t.TempDir()
-	binPath := filepath.Join(dir, "docker")
-	script := "#!/bin/sh\nexit 1\n"
-	if err := os.WriteFile(binPath, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fake docker: %v", err)
-	}
-	return &dockerctl.Client{DockerBin: binPath}
+	f := dockertest.New(t)
+	f.Down(true)
+	return f.Client()
 }
 
 func TestActiveGame_StatusCheckError(t *testing.T) {
@@ -255,7 +195,8 @@ func TestConfirmSwitch(t *testing.T) {
 }
 
 func TestConfirmSwitch_TimesOutIfNeverStops(t *testing.T) {
-	docker := newStaticFakeDocker(t, nil, []string{"stuck-game"})
+	f, docker := fakeEngine(t, nil, []string{"stuck-game"})
+	f.Stuck("stuck-game")
 	registry := newRegistry(t, docker, "stuck-game", "other")
 	mgr := newTestManager(t, registry, docker)
 	mgr.StopPollInterval = time.Millisecond
@@ -278,7 +219,7 @@ func TestConfirmSwitch_UnknownSource(t *testing.T) {
 }
 
 func TestRequestStart_RestartCooldown(t *testing.T) {
-	docker := newStaticFakeDocker(t, []string{"a"}, nil)
+	f, docker := fakeEngine(t, []string{"a"}, nil)
 	reg := newRegistry(t, docker, "a")
 	def, _ := reg.Get("a")
 	def.RestartCooldown = time.Hour
@@ -303,6 +244,7 @@ func TestRequestStart_RestartCooldown(t *testing.T) {
 	}
 
 	m.lastStop["a"] = time.Now().Add(-2 * time.Hour)
+	f.Add("a", false).Finished = time.Now().Add(-2 * time.Hour) // the engine's own record agrees
 	if err := m.RequestStart(context.Background(), "a"); err != nil {
 		t.Fatalf("start after cooldown elapsed = %v, want nil", err)
 	}
@@ -334,26 +276,12 @@ func TestRequestStart_MaxActive(t *testing.T) {
 	}
 }
 
-// newScriptDocker builds a fake docker from an arbitrary shell script body.
-func newScriptDocker(t *testing.T, body string) *dockerctl.Client {
-	t.Helper()
-	binPath := filepath.Join(t.TempDir(), "docker")
-	if err := os.WriteFile(binPath, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
-		t.Fatalf("write fake docker: %v", err)
-	}
-	return &dockerctl.Client{DockerBin: binPath}
-}
-
 // A start that is still in flight (e.g. pulling an image, container not
 // created yet) must count toward the limit, or a second game could start
 // alongside it.
 func TestRequestStart_PendingStartCountsAsActive(t *testing.T) {
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) if [ "$2" = "-a" ]; then echo x; fi ;;
-  start) sleep 2 ;;
-esac
-`)
+	f, docker := fakeEngine(t, []string{"a", "b"}, nil)
+	f.OnStart = func(ctx context.Context, _ string) (int, string) { sleepCtx(ctx, 2*time.Second); return 0, "" }
 	reg := newRegistry(t, docker, "a", "b")
 	m := newTestManager(t, reg, docker)
 	defer m.Wait()
@@ -380,14 +308,8 @@ esac
 // The background start must not be tied to the caller's context: a
 // request that ends (tab closed, proxy timeout) must not kill the start.
 func TestRequestStart_SurvivesCallerContextCancel(t *testing.T) {
-	marker := filepath.Join(t.TempDir(), "started")
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) if [ "$2" = "-a" ]; then echo a; fi ;;
-  start) sleep 0.3; touch "$MARKER" ;;
-esac
-`)
-	t.Setenv("MARKER", marker)
+	f, docker := fakeEngine(t, []string{"a"}, nil)
+	f.OnStart = func(_ context.Context, _ string) (int, string) { time.Sleep(300 * time.Millisecond); return 0, "" }
 	m := newTestManager(t, newRegistry(t, docker, "a"), docker)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -397,7 +319,7 @@ esac
 	cancel()
 	m.Wait()
 
-	if _, err := os.Stat(marker); err != nil {
+	if !f.Running("a") {
 		t.Fatal("start did not complete after the caller's context was cancelled")
 	}
 	if r, ok := m.LastStart("a"); !ok || r.Err != "" {
@@ -406,12 +328,8 @@ esac
 }
 
 func TestRequestStart_FailureIsRecorded(t *testing.T) {
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) if [ "$2" = "-a" ]; then echo a; fi ;;
-  start) echo "boom: no such image" >&2; exit 1 ;;
-esac
-`)
+	f, docker := fakeEngine(t, []string{"a"}, nil)
+	f.OnStart = func(context.Context, string) (int, string) { return 500, "boom: no such image" }
 	m := newTestManager(t, newRegistry(t, docker, "a"), docker)
 	if err := m.RequestStart(context.Background(), "a"); err != nil {
 		t.Fatalf("RequestStart = %v (failure should be async)", err)
@@ -429,13 +347,8 @@ esac
 // Stop on a game whose start is still in flight cancels that start before
 // stopping, so the start can't bring the container up afterwards.
 func TestStop_CancelsPendingStart(t *testing.T) {
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) if [ "$2" = "-a" ]; then echo a; fi ;;
-  start) sleep 30 ;;
-  stop) exit 0 ;;
-esac
-`)
+	f, docker := fakeEngine(t, []string{"a"}, nil)
+	f.OnStart = func(ctx context.Context, _ string) (int, string) { sleepCtx(ctx, 30*time.Second); return 0, "" }
 	m := newTestManager(t, newRegistry(t, docker, "a"), docker)
 	if err := m.RequestStart(context.Background(), "a"); err != nil {
 		t.Fatalf("RequestStart = %v", err)
@@ -460,14 +373,8 @@ esac
 // an external docker stop, or one from before a CrowsNest restart), read
 // from the container's State.FinishedAt.
 func TestRequestStart_CooldownFromFinishedAt(t *testing.T) {
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) if [ "$2" = "-a" ]; then echo a; fi ;;
-  inspect) echo "$FINISHED" ;;
-  start) exit 0 ;;
-esac
-`)
-	t.Setenv("FINISHED", time.Now().Add(-5*time.Second).UTC().Format(time.RFC3339Nano))
+	f, docker := fakeEngine(t, []string{"a"}, nil)
+	f.Add("a", false).Finished = time.Now().Add(-5 * time.Second)
 	def := games.GameDef{ID: "a", DisplayName: "a", ContainerName: "a",
 		Status: &games.DockerStatusChecker{Docker: docker}, RestartCooldown: time.Minute}
 	reg, err := games.NewRegistry([]games.GameDef{def})
@@ -482,23 +389,17 @@ esac
 		t.Fatalf("start 5s after an external stop = %v, want *CooldownError", err)
 	}
 
-	t.Setenv("FINISHED", time.Now().Add(-2*time.Minute).UTC().Format(time.RFC3339Nano))
+	f.Add("a", false).Finished = time.Now().Add(-2 * time.Minute)
 	if err := m.RequestStart(context.Background(), "a"); err != nil {
 		t.Fatalf("start after the cooldown elapsed = %v, want nil", err)
 	}
 }
 
-// Stop while a start is still pulling (no container created yet) is a
-// successful stop, and a switch away from such a game still goes ahead.
-func TestStop_DuringPullBeforeContainerExists(t *testing.T) {
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) : ;;
-  compose) sleep 30 ;;
-  stop) echo "Error response from daemon: No such container: $2" >&2; exit 1 ;;
-esac
-`)
-	def := games.GameDef{ID: "a", DisplayName: "a", ContainerName: "a", ComposeFile: "/x.yaml", ComposeService: "a",
+// Stop on a game whose container does not exist (its start failed, or it was never created) is a successful
+// stop, and the failed start is not left marked as starting.
+func TestStop_BeforeContainerExists(t *testing.T) {
+	_, docker := fakeEngine(t, nil, nil)
+	def := games.GameDef{ID: "a", DisplayName: "a", ContainerName: "a",
 		Status: &games.DockerStatusChecker{Docker: docker}}
 	reg, err := games.NewRegistry([]games.GameDef{def})
 	if err != nil {
@@ -509,8 +410,9 @@ esac
 		t.Fatalf("RequestStart = %v", err)
 	}
 	if err := m.Stop(context.Background(), "a"); err != nil {
-		t.Fatalf("Stop during pull = %v, want nil", err)
+		t.Fatalf("Stop with no container = %v, want nil", err)
 	}
+	m.Wait()
 	if m.Starting("a") {
 		t.Fatal("Starting(a) still true after Stop")
 	}
@@ -595,12 +497,10 @@ func TestNotify_SwitchIsOneMessage(t *testing.T) {
 }
 
 func TestNotify_StartFailureIsTrimmed(t *testing.T) {
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) if [ "$2" = "-a" ]; then echo a; fi ;;
-  start) i=0; while [ $i -lt 100 ]; do echo "noise line $i" >&2; i=$((i+1)); done; echo "boom: no such image" >&2; exit 1 ;;
-esac
-`)
+	f, docker := fakeEngine(t, []string{"a"}, nil)
+	f.OnStart = func(context.Context, string) (int, string) {
+		return 500, strings.Repeat("noise line\n", 100) + "boom: no such image"
+	}
 	m := newTestManager(t, newRegistry(t, docker, "a"), docker)
 	n := &recordingNotifier{}
 	m.Notifier = n
@@ -621,12 +521,8 @@ esac
 // A slow `docker stop` must not block the decision lock: other requests
 // return promptly while it runs, and RequestStop itself returns at once.
 func TestRequestStop_IsAsyncAndDoesNotBlockOtherGames(t *testing.T) {
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) echo a ;;
-  stop) sleep 1 ;;
-esac
-`)
+	f, docker := fakeEngine(t, nil, []string{"a"})
+	f.OnStop = func(ctx context.Context, _ string) (int, string) { sleepCtx(ctx, time.Second); return 0, "" }
 	reg := newRegistry(t, docker, "a", "b")
 	m := newTestManager(t, reg, docker)
 
@@ -652,12 +548,8 @@ esac
 }
 
 func TestRequestStop_FailureIsRecorded(t *testing.T) {
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) echo a ;;
-  stop) echo boom >&2; exit 1 ;;
-esac
-`)
+	f, docker := fakeEngine(t, nil, []string{"a"})
+	f.OnStop = func(context.Context, string) (int, string) { return 500, "boom" }
 	reg := newRegistry(t, docker, "a")
 	m := newTestManager(t, reg, docker)
 	if err := m.RequestStop(context.Background(), "a"); err != nil {
@@ -692,12 +584,8 @@ func TestRequestSwitch_AsyncAndReservesTarget(t *testing.T) {
 }
 
 func TestRequestSwitch_ReservationBlocksThirdGame(t *testing.T) {
-	docker := newScriptDocker(t, `
-case "$1" in
-  ps) case "$*" in *'name=^a$'*) echo a ;; esac ;;
-  stop) sleep 1 ;;
-esac
-`)
+	f, docker := fakeEngine(t, nil, []string{"a"})
+	f.OnStop = func(ctx context.Context, _ string) (int, string) { sleepCtx(ctx, time.Second); return 0, "" }
 	reg := newRegistry(t, docker, "a", "b", "c")
 	m := newTestManager(t, reg, docker)
 	m.StopPollInterval, m.StopPollTimeout = 10*time.Millisecond, 100*time.Millisecond
@@ -951,5 +839,13 @@ func TestRequestStart_CooldownFuncOverridesModule(t *testing.T) {
 	}
 	if err := m.RequestStart(context.Background(), "a"); err != nil {
 		t.Fatalf("start with cooldown overridden to 0 = %v, want nil", err)
+	}
+}
+
+// sleepCtx waits d, or until ctx ends.
+func sleepCtx(ctx context.Context, d time.Duration) {
+	select {
+	case <-time.After(d):
+	case <-ctx.Done():
 	}
 }

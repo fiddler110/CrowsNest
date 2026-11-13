@@ -107,8 +107,6 @@ type wiring struct {
 	ID              string
 	DisplayName     string
 	Container       string
-	ComposeProfile  string
-	ComposeService  string
 	Status          string
 	Players         string
 	Info            string
@@ -143,7 +141,6 @@ func TestGoldenGameWiring(t *testing.T) {
 	for _, d := range defs {
 		w := wiring{
 			ID: d.ID, DisplayName: d.DisplayName, Container: d.ContainerName,
-			ComposeProfile: d.ComposeProfile, ComposeService: d.ComposeService,
 			Status: typeName(d.Status), Players: typeName(d.Players), Info: typeName(d.Info),
 			PreStop: typeName(d.PreStop), Console: typeName(d.Console), RawConsole: typeName(d.RawConsole),
 			RestartCooldown: d.RestartCooldown.String(), NightShutdown: d.NightShutdown,

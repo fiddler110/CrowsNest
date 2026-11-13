@@ -8,20 +8,18 @@ import (
 	"github.com/fiddler110/crowsnest/internal/sse"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/fiddler110/crowsnest/internal/dockerctl/dockertest"
 	"github.com/fiddler110/crowsnest/internal/games"
 )
 
-const logsPrintTwoLines = `#!/bin/sh
-case "$1" in
-  logs) printf 'line one\nline two\n' ;;
-esac
-`
+func logsPrintTwoLines(f *dockertest.Fake) { f.Logs["windrose"] = "line one\nline two\n" }
 
 func TestHandleLogs_Passthrough(t *testing.T) {
 	h := newHarness(t, logsPrintTwoLines)
@@ -62,7 +60,7 @@ func TestHandleLogs_StreamCapExceeded(t *testing.T) {
 }
 
 func TestHandleLogs_UnknownGame(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/palworld/logs", nil))
 
@@ -72,7 +70,7 @@ func TestHandleLogs_UnknownGame(t *testing.T) {
 }
 
 func TestHandleLogs_Unauthenticated(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/api/games/windrose/logs", nil))
 
@@ -82,7 +80,7 @@ func TestHandleLogs_Unauthenticated(t *testing.T) {
 }
 
 func TestHandleStartupProgress_Unsupported(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/startup-progress", nil))
 
@@ -94,11 +92,9 @@ func TestHandleStartupProgress_Unsupported(t *testing.T) {
 	}
 }
 
-const logsPrintMilestoneLine = `#!/bin/sh
-case "$1" in
-  logs) printf 'booting...\nHost server is ready for owner to connect\n' ;;
-esac
-`
+func logsPrintMilestoneLine(f *dockertest.Fake) {
+	f.Logs["windrose"] = "booting...\nHost server is ready for owner to connect\n"
+}
 
 func TestHandleStartupProgress_MatchesMilestone(t *testing.T) {
 	docker := fakeDockerClient(t, logsPrintMilestoneLine)
@@ -135,19 +131,17 @@ func TestHandleStartupProgress_MatchesMilestone(t *testing.T) {
 	}
 }
 
-// Fake docker for the progress tests below: `inspect` reports a StartedAt,
-// and `logs` echoes its arguments to stderr-free stdout as a marker line so
-// the test can see whether --since was passed, then prints download lines
-// out of order to check progress only moves forward.
-const logsDownloadWithStartedAt = `#!/bin/sh
-case "$1" in
-  inspect) echo 2026-09-30T13:00:00.123456789Z ;;
-  logs) echo "ARGS: $*"; printf 'progress 40\nprogress 60\nprogress 50\nprogress 60\n' ;;
-esac
-`
+// The engine for the progress tests below: the container started at a known time, and logs echo the since they
+// were asked for as a marker line, then print download lines out of order to check progress only moves forward.
+func logsDownloadWithStartedAt(f *dockertest.Fake) {
+	f.SetStartedAt("palworld", time.Date(2026, 9, 30, 13, 0, 0, 123456789, time.UTC))
+	f.LogsFunc = func(_ string, q url.Values) string {
+		return "ARGS: --since " + q.Get("since") + "\nprogress 40\nprogress 60\nprogress 50\nprogress 60\n"
+	}
+}
 
 func TestHandleStartupProgress_ParseIsMonotonicAndScopedToCurrentRun(t *testing.T) {
-	docker := fakeDockerClient(t, logsDownloadWithStartedAt)
+	docker := fakeDockerClient(t, logsDownloadWithStartedAt, "palworld")
 	re := regexp.MustCompile(`^progress (\d+)$`)
 	defs := []games.GameDef{{
 		ID:            "palworld",
@@ -165,7 +159,7 @@ func TestHandleStartupProgress_ParseIsMonotonicAndScopedToCurrentRun(t *testing.
 				return n, "downloading", true
 			},
 			Milestones: []games.Milestone{
-				{Pattern: regexp.MustCompile(`ARGS: .*--since 2026-09-30T13:00:00\.123456789Z`), Pct: 5, Label: "scoped to current run"},
+				{Pattern: regexp.MustCompile(`ARGS: --since 1790773200\.123456789`), Pct: 5, Label: "scoped to current run"},
 			},
 		},
 	}}
@@ -227,7 +221,7 @@ func TestStreamLines_ReaderStopsOnCancel(t *testing.T) {
 }
 
 func TestLogs_PlayerForbidden(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
 	rec := httptest.NewRecorder()
 	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/games/windrose/logs", nil))
