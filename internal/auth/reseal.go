@@ -53,7 +53,7 @@ func ResealGoogleConf(path string, from, to *vault.Vault) (int, error) {
 		return 0, err
 	}
 	f.ClientSecret = out
-	nb, _ := json.MarshalIndent(f, "", "  ")
+	nb, _ := json.MarshalIndent(f, "", "  ") // #nosec G117 -- the field holds the sealed (encrypted) secret, not the plain one
 	return 1, writeFileAtomic(path, append(nb, '\n'))
 }
 

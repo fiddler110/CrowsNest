@@ -210,7 +210,7 @@ func runState(args []string, out io.Writer) error {
 		} else if len(args) != 1 {
 			return errors.New(stateUsage)
 		}
-		f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 -- chosen by the operator
+		f, err := os.OpenFile(dest, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600) // #nosec G304 G703 -- chosen by the operator
 		if err != nil {
 			return err
 		}
@@ -219,7 +219,7 @@ func runState(args []string, out io.Writer) error {
 			err = cerr
 		}
 		if err != nil {
-			_ = os.Remove(dest)
+			_ = os.Remove(dest) // #nosec G703 -- the file this command just created at the path the operator chose
 			return err
 		}
 		fmt.Fprintf(out, "wrote %s (%d files)\n", dest, len(names))
@@ -244,7 +244,7 @@ func runState(args []string, out io.Writer) error {
 		if file == "" {
 			return errors.New(stateUsage)
 		}
-		f, err := os.Open(file) // #nosec G304 -- chosen by the operator
+		f, err := os.Open(file) // #nosec G304 G703 -- chosen by the operator
 		if err != nil {
 			return err
 		}

@@ -32,7 +32,7 @@ func runAudit(args []string, out io.Writer) error {
 		path = cfg.Server.AuditFile
 	}
 	if args[0] == "export" {
-		f, err := os.Open(path) // #nosec G304 -- chosen by the operator
+		f, err := os.Open(path) // #nosec G304 G703 -- chosen by the operator
 		if err != nil {
 			return err
 		}

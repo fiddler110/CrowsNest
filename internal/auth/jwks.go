@@ -73,8 +73,15 @@ func (k jwk) public() (crypto.PublicKey, error) {
 		if err1 != nil || err2 != nil {
 			return nil, errors.New("bad EC key")
 		}
-		pub := &ecdsa.PublicKey{Curve: elliptic.P256(), X: new(big.Int).SetBytes(x), Y: new(big.Int).SetBytes(y)}
-		if !pub.Curve.IsOnCurve(pub.X, pub.Y) {
+		if len(x) > 32 || len(y) > 32 {
+			return nil, errors.New("bad EC key")
+		}
+		point := make([]byte, 65) // 0x04 || X || Y, each coordinate left-padded to 32 bytes
+		point[0] = 4
+		copy(point[33-len(x):33], x)
+		copy(point[65-len(y):], y)
+		pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), point) // also checks the point is on the curve
+		if err != nil {
 			return nil, errors.New("EC key is not on the curve")
 		}
 		return pub, nil
