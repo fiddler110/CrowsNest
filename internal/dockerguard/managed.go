@@ -106,9 +106,7 @@ func (s Sources) Load() (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	for _, pr := range problems {
-		res.Rejected = append(res.Rejected, pr)
-	}
+	res.Rejected = append(res.Rejected, problems...)
 	raw, err := os.ReadFile(s.ManagedFile)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return nil, err

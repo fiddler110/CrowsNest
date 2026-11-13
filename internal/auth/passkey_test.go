@@ -57,8 +57,11 @@ func (k *softKey) authData(flags byte, withKey bool) []byte {
 		out = append(out, make([]byte, 16)...) // aaguid
 		out = binary.BigEndian.AppendUint16(out, uint16(len(k.credID)))
 		out = append(out, k.credID...)
-		x := k.priv.PublicKey.X.FillBytes(make([]byte, 32))
-		y := k.priv.PublicKey.Y.FillBytes(make([]byte, 32))
+		pt, err := k.priv.PublicKey.Bytes() // 0x04 || X || Y
+		if err != nil {
+			panic(err)
+		}
+		x, y := pt[1:33], pt[33:65]
 		cose, _ := cbor.Marshal(map[int]any{1: 2, 3: -7, -1: 1, -2: x, -3: y})
 		out = append(out, cose...)
 	}
