@@ -312,7 +312,7 @@ h1, h2, h3, p { margin: 0; }
 .tab[aria-selected="true"] { color: var(--text); background: color-mix(in srgb, var(--vessel) 22%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--vessel) 45%, transparent); }
 
 /* ---------- panels ---------- */
-.log-panel, .stats-panel, .info-panel, .backups-panel, .console-panel { margin-top: 0.9rem; animation: rise 0.25s ease both; }
+.log-panel, .stats-panel, .info-panel, .backups-panel, .console-panel, .files-panel { margin-top: 0.9rem; animation: rise 0.25s ease both; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } }
 
 .log-panel {
@@ -669,3 +669,17 @@ fieldset.field legend { padding: 0; margin-bottom: 0.3rem; }
 .session-list { list-style: none; margin: 0.8rem 0 0; padding: 0; display: grid; gap: 0.5rem; }
 .session-row { display: flex; justify-content: space-between; align-items: center; gap: 1rem; padding: 0.7rem 0.9rem; border: 1px solid var(--line, rgba(255,255,255,0.12)); border-radius: 6px; }
 .session-row small { opacity: 0.75; }
+.dialog-password { width: 100%; margin: 0.75rem 0 0; box-sizing: border-box; }
+
+.schedule-rows { display: grid; gap: 0.5rem; }
+.schedule-row { flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+.schedule-days label { margin-right: 0.3rem; white-space: nowrap; }
+
+.files-pick { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-bottom: 0.5rem; }
+.files-pick .btn[aria-pressed="true"] { border-color: var(--cyan); color: var(--cyan); }
+.files-note { margin: 0 0 0.5rem; font: 0.72rem var(--mono); color: var(--muted); }
+.files-note:empty { display: none; }
+.files-text { width: 100%; box-sizing: border-box; min-height: 12rem; resize: vertical; padding: 0.6rem 0.75rem; font: 0.76rem/1.5 var(--mono); color: #cfe0ea; background: rgba(0, 0, 0, 0.25); border: 1px solid var(--border); border-radius: 8px; white-space: pre; overflow: auto; }
+.files-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.5rem; }
+.files-versions { max-width: 14rem; font: 0.72rem var(--mono); }
+.files-versions:empty, .files-versions:empty + .files-load-version { display: none; }

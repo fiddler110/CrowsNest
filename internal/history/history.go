@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/atomicfile"
 	"log"
 	"maps"
 	"os"
@@ -37,6 +38,7 @@ const (
 	KindBackup      = "backup"
 	KindRestore     = "restore"
 	KindConsole     = "console"
+	KindFiles       = "files"
 	KindCrash       = "crash"
 	KindCrashLoop   = "crash_loop"
 )
@@ -257,27 +259,15 @@ func (s *Store) Prune() error {
 	s.events = append([]Event(nil), s.events[keep:]...)
 	s.ptValid = false
 
-	tmp, err := os.CreateTemp(filepath.Dir(s.path), ".history-*")
+	err := atomicfile.WriteFunc(s.path, 0o600, func(f *os.File) error {
+		w := bufio.NewWriter(f)
+		for _, e := range s.events {
+			b, _ := json.Marshal(e)
+			_, _ = w.Write(append(b, '\n'))
+		}
+		return w.Flush()
+	})
 	if err != nil {
-		return fmt.Errorf("history: prune: %w", err)
-	}
-	defer os.Remove(tmp.Name())
-	w := bufio.NewWriter(tmp)
-	for _, e := range s.events {
-		b, _ := json.Marshal(e)
-		_, _ = w.Write(append(b, '\n'))
-	}
-	if err := w.Flush(); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("history: prune: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("history: prune: %w", err)
-	}
-	if err := os.Chmod(tmp.Name(), 0o600); err != nil {
-		return fmt.Errorf("history: prune: %w", err)
-	}
-	if err := os.Rename(tmp.Name(), s.path); err != nil {
 		return fmt.Errorf("history: prune: %w", err)
 	}
 	return nil

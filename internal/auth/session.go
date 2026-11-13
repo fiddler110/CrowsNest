@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 )
@@ -19,8 +20,20 @@ import (
 // re-login, not a real inconvenience.
 const DefaultSessionTTL = 3 * time.Hour
 
-// SessionCookieName is the cookie a signed session is carried in.
-const SessionCookieName = "crowsnest_session"
+// SessionCookieName is the cookie a signed session is carried in. With secure
+// cookies on it takes the __Host- prefix (see UseSecureCookieName), which makes
+// a browser refuse it unless it was set over HTTPS for exactly this host, so a
+// sibling subdomain cannot plant or overwrite it.
+var SessionCookieName = "crowsnest_session"
+
+// UseSecureCookieName switches the session cookie to its __Host- name (secure
+// true) or back. Call it once at startup, before serving.
+func UseSecureCookieName(secure bool) {
+	SessionCookieName = "crowsnest_session"
+	if secure {
+		SessionCookieName = "__Host-crowsnest_session"
+	}
+}
 
 var (
 	ErrInvalidSession = errors.New("auth: invalid session")
@@ -48,6 +61,12 @@ type Session struct {
 type SessionManager struct {
 	secret []byte
 	ttl    time.Duration
+
+	// AbsoluteMax, when longer than the idle time, turns on sliding sessions: activity renews a session's
+	// cookie for another idle period, but never past this long after sign-in. Zero keeps a fixed lifetime.
+	AbsoluteMax time.Duration
+	// Secure marks the renewed cookie Secure (server.secure_cookies).
+	Secure bool
 
 	// Users, when set, is consulted by Decode to reject sessions revoked via
 	// RevokeSessions. Left nil (the zero value) by default; nil-safe.
@@ -140,6 +159,38 @@ func (m *SessionManager) Decode(token string) (Session, error) {
 		return Session{}, ErrSessionRevoked
 	}
 	return s, nil
+}
+
+// Renew extends a session that has been used for a while: its cookie is re-issued with another idle period, capped
+// at AbsoluteMax after sign-in. It returns the session as it now stands. It does nothing unless sliding sessions are
+// on, and only acts once a quarter of the idle period has passed, so a busy page is not re-signed on every request.
+func (m *SessionManager) Renew(w http.ResponseWriter, s Session) Session {
+	if m.AbsoluteMax <= m.ttl || w == nil {
+		return s
+	}
+	now := time.Now().UTC()
+	if s.ExpiresAt.Sub(now) > m.ttl*3/4 {
+		return s
+	}
+	next := now.Add(m.ttl)
+	if limit := s.IssuedAt.Add(m.AbsoluteMax); next.After(limit) {
+		next = limit
+	}
+	if !next.After(s.ExpiresAt) {
+		return s
+	}
+	s.ExpiresAt = next
+	token, err := m.Encode(s)
+	if err != nil {
+		return s
+	}
+	if m.Registry != nil {
+		m.Registry.Extend(s.ID, next)
+	}
+	// #nosec G124 -- same attributes as the cookie set at sign-in; Secure follows server.secure_cookies
+	http.SetCookie(w, &http.Cookie{Name: SessionCookieName, Value: token, Path: "/", HttpOnly: true,
+		Secure: m.Secure, SameSite: http.SameSiteLaxMode, Expires: next})
+	return s
 }
 
 func (m *SessionManager) sign(encodedPayload string) []byte {

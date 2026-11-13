@@ -23,6 +23,7 @@ is a smaller decision than installing someone else's program; still, **read it f
 
 ```yaml
 api_version: 1          # always 1 for now
+version: 1              # optional release number; raise it on every published change (signed modules cannot go back)
 id: mygame              # lowercase letters, digits, dashes; also the folder name
 name: My Game
 description: "One or two sentences for the Games page."
@@ -73,6 +74,7 @@ players:
   join:  '\[INFO\] (\S+) connected'              # group 1 = a player id
   leave: '\[INFO\] (\S+) disconnected'
   world: 'Loading world "([^"]+)"'               # optional, group 1 = world name
+  name: 'Character (.+) spawned'                 # optional, group 1 = display name of the latest joiner
 
 startup:                                         # optional progress bar while it boots
   - {match: 'Loading config', pct: 30, label: Reading config}
@@ -122,10 +124,17 @@ else: a pattern that does not match real output is the usual bug.
   chosen file in `"$CROWSNEST_RESTORE_FILE"`. Remove the old saves, unpack the archive exactly as your `exec` made it,
   chown the result, and exit non-zero on any error (`set -e`). Test it on a copy of a real world first.
 - **Join details on the card:** `connect: [{label: Password, option: server_password}]` shows option values players
-  need.
+  need. `{label: Join code, log: 'join code (\d+)'}` instead shows a value the running server prints in its log
+  (group 1), for as long as it is online; it needs `players.type: log_markers`. `players.name` swaps a player's id
+  for their display name in the player list, giving each name to the most recent joiner that has none, so it
+  assumes the game logs the name right after the id.
+- **Editable files:** `files: [{id: props, label: Server settings, path: /data/server.properties, redact: ['^rcon\.password=(.*)$']}]`
+  puts a Files tab on the card for admins. Declare only files a person would edit by hand, mark secrets with
+  `redact` (group 1 is hidden), say in `restart:` what a change needs, and set `stop_first: true` if the game
+  rewrites the file on shutdown. The image needs `sh`, `head`, `cp`, `mv` and `cat`. See docs/modules.md, `files:`.
 - **Host steps:** `host_setup:` lists things only the operator can do (a firewall rule, a network), shown beside
   the form.
-- **Admin console, REST actions, pre-stop save:** see `palworld` (REST) and `minecraft` (RCON, in the modules repository).
+- **Admin console, REST actions, pre-stop save:** an action is either `request:` (REST) or `rcon:` (one RCON command line with `{field}` placeholders, needs `rcon.addr`); a module uses one kind for all its actions, so kick, ban, unban and whitelist add/remove/list can be declared for an RCON game. See see `palworld` (REST) and `minecraft` (RCON, in the modules repository).
 - **Card colour:** `accent: "#rrggbb"`.
 
 ## Memory
@@ -201,7 +210,7 @@ again. `crowsnest module list` shows what is installed and flags any file that n
 
 ## Sharing your module
 
-There is no central catalogue: you publish the file and people install it from your URL. A ready-made layout for
+There is no central catalogue: you publish the file and people install it from your URL (a repository can also publish an `index.json` list that operators point `managed.catalogue_url` at; see modules.md). A ready-made layout for
 a repository of modules (one folder each, signing and check scripts, a template) is
 [fiddler110/crowsnest-modules](https://github.com/fiddler110/crowsnest-modules).
 

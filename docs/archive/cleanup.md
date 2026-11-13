@@ -1,5 +1,7 @@
 # CrowsNest cleanup (review of 2026-11-10)
 
+> Archived: all of this review's items landed. Kept for history; open work is in [`roadmap.md`](../../roadmap.md), completed work in [`CHANGELOG.md`](../../CHANGELOG.md).
+
 Findings from a full-repo review of the `games-page` branch at `d8e57a6`. `go vet` was
 clean and `go test -race ./...` passed at the time. Check items off as they land. S3 decided: default to player. S8 decided: logs admin-only. IDs
 are stable so commits and agents can refer to them.

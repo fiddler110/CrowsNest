@@ -3,6 +3,7 @@ package modules
 import (
 	"bytes"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/gamefiles"
 	"io"
 	"log"
 	"os"
@@ -28,9 +29,12 @@ const APIVersion = 1
 // milestones and the probe type declaration; the probe engines themselves
 // (log_markers, http_json, source_rcon) land in step 3.
 type Manifest struct {
-	APIVersion int    `yaml:"api_version"`
-	ID         string `yaml:"id"`
-	Name       string `yaml:"name"`
+	APIVersion int `yaml:"api_version"`
+	// Version is the publisher's release number of this module (1, 2, 3...). It is covered by the signature, so
+	// an update that lowers it is refused: a source cannot serve an older signed copy. 0 means unversioned.
+	Version int    `yaml:"version"`
+	ID      string `yaml:"id"`
+	Name    string `yaml:"name"`
 	// Description is one or two sentences the dashboard shows in the catalogue.
 	Description string `yaml:"description"`
 	// Accent is an optional "#rrggbb" colour for the game's dashboard card.
@@ -44,6 +48,10 @@ type Manifest struct {
 	Connect []struct {
 		Label  string `yaml:"label"`
 		Option string `yaml:"option"`
+		// Log, instead of Option, is a regexp (group 1 = the value) matched
+		// against the running server's log, for a code the server prints
+		// itself. Needs players.type log_markers.
+		Log string `yaml:"log"`
 	} `yaml:"connect"`
 
 	// HostSetup lists the steps an operator must do on the host themselves for
@@ -70,6 +78,7 @@ type Manifest struct {
 		Join  string `yaml:"join"`  // regexp, group 1 = player id
 		Leave string `yaml:"leave"` // regexp, group 1 = player id
 		World string `yaml:"world"` // regexp, group 1 = world name (optional)
+		Name  string `yaml:"name"`  // regexp, group 1 = display name of the latest joiner (optional)
 
 		// http_json (needs the api block): Path is polled for the count
 		// (and, unless status_path is set, for online/starting). CountPath/
@@ -108,7 +117,11 @@ type Manifest struct {
 	} `yaml:"info"`
 
 	Actions []probes.Action `yaml:"actions"`
-	PreStop []probes.Step   `yaml:"pre_stop"`
+
+	// Files are config files admins may edit from the dashboard (read and written with docker exec in the game's
+	// container, so the image needs sh and head).
+	Files   []gamefiles.Spec `yaml:"files"`
+	PreStop []probes.Step    `yaml:"pre_stop"`
 
 	// RCON enables the admin-only raw console. Empty addr (after option
 	// substitution) leaves it off.
@@ -212,7 +225,11 @@ func (m *Manifest) validateREST() error {
 			return fmt.Errorf("module %q: %s needs a unique id [a-z0-9_] and a label", m.ID, w)
 		}
 		ids[a.ID] = true
-		if err := checkReq(w, a.Request); err != nil {
+		if a.RCON != "" {
+			if a.Request.Path != "" || a.List != nil || len(a.RCON) > 500 || strings.ContainsAny(a.RCON, "\x00\r\n") {
+				return fmt.Errorf("module %q: %s: rcon is one command line and excludes request and list", m.ID, w)
+			}
+		} else if err := checkReq(w, a.Request); err != nil {
 			return err
 		}
 		names := map[string]bool{}
@@ -273,6 +290,13 @@ func (m *Manifest) validate() error {
 			return fmt.Errorf("module %q: backup.list_dir must be an absolute path", m.ID)
 		}
 	}
+	if len(m.Files) > 0 {
+		fs, err := gamefiles.Normalize(m.Files)
+		if err != nil {
+			return fmt.Errorf("module %q: %w", m.ID, err)
+		}
+		m.Files = fs
+	}
 	if m.Runtime.RestartCooldown < 0 {
 		return fmt.Errorf("module %q: restart_cooldown must not be negative", m.ID)
 	}
@@ -308,7 +332,7 @@ func (m *Manifest) validate() error {
 		if m.Status.ReadyLog == "" || m.Players.Join == "" || m.Players.Leave == "" {
 			return fmt.Errorf("module %q: log_markers needs status.ready_log, players.join and players.leave", m.ID)
 		}
-		for name, re := range map[string]string{"status.ready_log": m.Status.ReadyLog, "players.join": m.Players.Join, "players.leave": m.Players.Leave, "players.world": m.Players.World} {
+		for name, re := range map[string]string{"status.ready_log": m.Status.ReadyLog, "players.join": m.Players.Join, "players.leave": m.Players.Leave, "players.world": m.Players.World, "players.name": m.Players.Name} {
 			if re == "" {
 				continue
 			}
@@ -319,6 +343,20 @@ func (m *Manifest) validate() error {
 			}
 		}
 	}
+	for i, c := range m.Connect {
+		if c.Label == "" || (c.Option == "") == (c.Log == "") {
+			return fmt.Errorf("module %q: connect[%d] needs a label and exactly one of option or log", m.ID, i)
+		}
+		if c.Log == "" {
+			continue
+		}
+		if m.Players.Type != "log_markers" {
+			return fmt.Errorf("module %q: connect[%d].log needs players.type log_markers", m.ID, i)
+		}
+		if re, err := regexp.Compile(c.Log); err != nil || re.NumSubexp() < 1 {
+			return fmt.Errorf("module %q: connect[%d].log must be a regexp with a capture group", m.ID, i)
+		}
+	}
 	seen := map[string]bool{}
 	for _, o := range m.Options {
 		if o.Key == "" || seen[o.Key] {
@@ -327,8 +365,21 @@ func (m *Manifest) validate() error {
 		seen[o.Key] = true
 	}
 	hasAPI := m.API.BaseURL != ""
-	if (len(m.Info.Fields) > 0 || len(m.Actions) > 0 || len(m.PreStop) > 0 || m.Players.Type == "http_json") && !hasAPI {
-		return fmt.Errorf("module %q: http_json, info, actions and pre_stop need api.base_url", m.ID)
+	rconActs := 0
+	for _, a := range m.Actions {
+		if a.RCON != "" {
+			rconActs++
+		}
+	}
+	if rconActs > 0 && rconActs != len(m.Actions) {
+		return fmt.Errorf("module %q: actions must either all use rcon or all use request", m.ID)
+	}
+	if rconActs > 0 && m.RCON.Addr == "" {
+		return fmt.Errorf("module %q: rcon actions need rcon.addr", m.ID)
+	}
+	restActs := len(m.Actions) - rconActs
+	if (len(m.Info.Fields) > 0 || restActs > 0 || len(m.PreStop) > 0 || m.Players.Type == "http_json") && !hasAPI {
+		return fmt.Errorf("module %q: http_json, info, request actions and pre_stop need api.base_url", m.ID)
 	}
 	if hasAPI && !strings.HasPrefix(m.API.BaseURL, "http://") && !strings.HasPrefix(m.API.BaseURL, "https://") && !strings.HasPrefix(m.API.BaseURL, "${") {
 		return fmt.Errorf("module %q: api.base_url must be http(s) or an ${option}", m.ID)
@@ -376,6 +427,7 @@ func (m *Manifest) Wire() WireFunc {
 		if m.Accent != "" {
 			def.Accent = m.Accent
 		}
+		def.Files = m.Files
 		if m.Players.Type == "log_markers" {
 			spec := logtrack.Spec{
 				Name:  m.ID,
@@ -386,8 +438,19 @@ func (m *Manifest) Wire() WireFunc {
 			if m.Players.World != "" {
 				spec.World = regexp.MustCompile(m.Players.World)
 			}
+			if m.Players.Name != "" {
+				spec.Player = regexp.MustCompile(m.Players.Name)
+			}
+			for _, c := range m.Connect {
+				if c.Log != "" {
+					spec.Codes = append(spec.Codes, logtrack.Code{Label: c.Label, Re: regexp.MustCompile(c.Log)})
+				}
+			}
 			tr := logtrack.New(env.Docker, def.ContainerName, spec)
 			def.Status, def.Players, def.Info = tr, tr, tr
+			if len(spec.Codes) > 0 {
+				def.Live = tr
+			}
 			runners = append(runners, tr)
 		}
 		opts := newOptions(m, env.Config.Options)
@@ -402,7 +465,7 @@ func (m *Manifest) Wire() WireFunc {
 					StatusPath: m.API.StatusPath, PlayersPath: m.Players.Path,
 					CountPath: m.Players.CountPath, NamesPath: m.Players.NamesPath, NameField: m.Players.NameField,
 					InfoSources: m.Info.Sources, InfoFields: m.Info.Fields,
-					ActionDefs: m.Actions, Steps: m.PreStop,
+					ActionDefs: restActions(m.Actions), Steps: m.PreStop,
 				}
 				def.Status = api
 				if m.Players.Type == "http_json" {
@@ -411,7 +474,7 @@ func (m *Manifest) Wire() WireFunc {
 				if len(m.Info.Fields) > 0 {
 					def.Info = api
 				}
-				if len(m.Actions) > 0 {
+				if len(api.ActionDefs) > 0 {
 					def.Console = api
 				}
 				if len(m.PreStop) > 0 {
@@ -420,6 +483,9 @@ func (m *Manifest) Wire() WireFunc {
 			}
 		}
 		if addr := opts.sub(m.RCON.Addr); addr != "" {
+			if len(m.Actions) > 0 && len(restActions(m.Actions)) == 0 {
+				def.Console = &probes.RCONActions{Addr: addr, Password: env.Secret(opts.sub(m.RCON.PasswordEnv)), Defs: m.Actions}
+			}
 			def.RawConsole = &probes.RawRCON{Addr: addr, Password: env.Secret(opts.sub(m.RCON.PasswordEnv))}
 		}
 		switch m.Players.Type {
@@ -574,4 +640,15 @@ func ramEstimate(m *Manifest, given map[string]string) uint64 {
 		return 0
 	}
 	return uint64(n)
+}
+
+// restActions are the actions that go through the REST API (the rest use RCON).
+func restActions(all []probes.Action) []probes.Action {
+	var out []probes.Action
+	for _, a := range all {
+		if a.RCON == "" {
+			out = append(out, a)
+		}
+	}
+	return out
 }

@@ -118,6 +118,28 @@ func TestSecurityHeaders(t *testing.T) {
 	if !strings.Contains(csp, gotNonce) {
 		t.Errorf("CSP header %q does not contain the request's nonce %q", csp, gotNonce)
 	}
+	for _, want := range []string{"frame-ancestors 'none'", "base-uri 'none'", "form-action 'self'"} {
+		if !strings.Contains(csp, want) {
+			t.Errorf("CSP %q lacks %s", csp, want)
+		}
+	}
+	for _, h := range []string{"Permissions-Policy", "Cross-Origin-Opener-Policy"} {
+		if rec.Header().Get(h) == "" {
+			t.Errorf("%s missing", h)
+		}
+	}
+}
+
+func TestUseSecureCookieName(t *testing.T) {
+	defer UseSecureCookieName(false)
+	UseSecureCookieName(true)
+	if SessionCookieName != "__Host-crowsnest_session" {
+		t.Errorf("secure name = %q", SessionCookieName)
+	}
+	UseSecureCookieName(false)
+	if SessionCookieName != "crowsnest_session" {
+		t.Errorf("plain name = %q", SessionCookieName)
+	}
 }
 
 func TestSecurityHeadersHSTS(t *testing.T) {
@@ -128,5 +150,28 @@ func TestSecurityHeadersHSTS(t *testing.T) {
 
 	if got := rec.Header().Get("Strict-Transport-Security"); got == "" {
 		t.Error("Strict-Transport-Security header missing, want set when hsts=true")
+	}
+}
+
+func TestRequireSession_RenewsAnAgedSessionKeepingCSRF(t *testing.T) {
+	mgr := NewSessionManager([]byte("secret"), time.Hour)
+	mgr.AbsoluteMax = 8 * time.Hour
+	s, _ := mgr.New("alice")
+	s.IssuedAt = time.Now().UTC().Add(-45 * time.Minute)
+	s.ExpiresAt = time.Now().UTC().Add(15 * time.Minute)
+	token, _ := mgr.Encode(s)
+
+	var seen Session
+	h := RequireSession(mgr, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { seen, _ = FromContext(r.Context()) }))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.AddCookie(&http.Cookie{Name: SessionCookieName, Value: token})
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if len(rec.Result().Cookies()) != 1 {
+		t.Fatalf("want one renewed cookie, got %v", rec.Result().Cookies())
+	}
+	if seen.CSRFToken != s.CSRFToken || !seen.ExpiresAt.After(s.ExpiresAt) {
+		t.Errorf("session after renewal: %+v", seen)
 	}
 }

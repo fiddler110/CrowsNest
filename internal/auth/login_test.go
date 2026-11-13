@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -193,5 +194,81 @@ func TestLoginWithSecondFactor(t *testing.T) {
 	f.enabled = false
 	if rec := post(svc.ServeLogin, `{"username":"ann","password":"correct horse"}`); !strings.Contains(rec.Body.String(), "csrf_token") {
 		t.Errorf("no-MFA login = %s", rec.Body.String())
+	}
+}
+
+func TestLoginThrottle_OnlyFailuresCountAndPerUser(t *testing.T) {
+	svc := newTestService(t)
+	svc.LoginLimiter = NewLimiter(3, time.Minute)
+	svc.UserLimiter = NewLimiter(3, time.Minute)
+	// Correct sign-ins never use the allowance up.
+	for i := 0; i < 10; i++ {
+		if rec := doLogin(t, svc, "alice", "s3cret-password"); rec.Code != http.StatusOK {
+			t.Fatalf("sign-in %d = %d", i, rec.Code)
+		}
+	}
+	// Three wrong guesses block the address, even for the right password.
+	for i := 0; i < 3; i++ {
+		if rec := doLogin(t, svc, "alice", "nope"); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("guess %d = %d", i, rec.Code)
+		}
+	}
+	if rec := doLogin(t, svc, "alice", "s3cret-password"); rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("after 3 failures = %d, want 429", rec.Code)
+	}
+
+	// Guesses from many addresses still add up against the one username.
+	svc = newTestService(t)
+	svc.LoginLimiter = NewLimiter(100, time.Minute)
+	svc.UserLimiter = NewLimiter(3, time.Minute)
+	from := func(ip, pw string) int {
+		body, _ := json.Marshal(loginRequest{Username: "alice", Password: pw})
+		req := httptest.NewRequest(http.MethodPost, "/login", bytes.NewReader(body))
+		req.RemoteAddr = ip + ":1234"
+		rec := httptest.NewRecorder()
+		svc.ServeLogin(rec, req)
+		return rec.Code
+	}
+	for i, ip := range []string{"192.0.2.1", "192.0.2.2", "192.0.2.3"} {
+		if got := from(ip, "nope"); got != http.StatusUnauthorized {
+			t.Fatalf("guess %d = %d", i, got)
+		}
+	}
+	if got := from("192.0.2.4", "s3cret-password"); got != http.StatusTooManyRequests {
+		t.Fatalf("a fourth address after 3 failures = %d, want 429", got)
+	}
+	// Another user is unaffected.
+	if got := doLogin(t, svc, "bob", "x"); got != nil && got.Code == http.StatusTooManyRequests {
+		t.Error("another username was throttled")
+	}
+}
+
+func TestLogin_UpgradesAWeakHash(t *testing.T) {
+	old := PasswordCost
+	defer func() { PasswordCost = old }()
+	PasswordCost = 4
+	path := filepath.Join(t.TempDir(), "users")
+	weak, _ := HashPassword("s3cret-password")
+	if err := SetUserHash(path, "alice", weak); err != nil {
+		t.Fatal(err)
+	}
+	store, err := NewUserStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc := &Service{Store: store, Sessions: NewSessionManager([]byte("test-secret"), time.Hour)}
+	PasswordCost = 5 // the cost goes up after the hash was made
+	if rec := doLogin(t, svc, "alice", "wrong"); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong password = %d", rec.Code)
+	}
+	if r, _ := store.Lookup("alice"); r.Hash != weak {
+		t.Fatal("hash changed on a failed sign-in")
+	}
+	if rec := doLogin(t, svc, "alice", "s3cret-password"); rec.Code != http.StatusOK {
+		t.Fatalf("sign-in = %d", rec.Code)
+	}
+	r, _ := store.Lookup("alice")
+	if r.Hash == weak || HashNeedsUpgrade(r.Hash) || !VerifyPassword(r.Hash, "s3cret-password") {
+		t.Fatalf("hash not upgraded: %q", r.Hash)
 	}
 }

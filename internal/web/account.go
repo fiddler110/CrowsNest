@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -33,6 +34,8 @@ type securityView struct {
 	TOTPEnabled  bool `json:"totp_enabled"`
 	Pending      bool `json:"totp_pending"`
 	RecoveryLeft int  `json:"recovery_left"`
+	// MFARequired: this admin must set up an authenticator app before anything else.
+	MFARequired bool `json:"mfa_required"`
 }
 
 func (a *App) securityView(user string) securityView {
@@ -42,6 +45,8 @@ func (a *App) securityView(user string) securityView {
 		_, v.Pending = a.MFA.PendingSecret(user)
 		v.RecoveryLeft = a.MFA.RecoveryLeft(user)
 	}
+	v.MFARequired = a.Settings != nil && a.MFA != nil && a.Settings.Get().RequireAdminMFA &&
+		a.Auth.Sessions.RoleFor(user) == auth.RoleAdmin && v.HasPassword && !v.TOTPEnabled
 	return v
 }
 
@@ -216,6 +221,56 @@ func (a *App) handleTOTPRecovery(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"recovery_codes": codes})
 }
 
+// handleChangePassword lets a signed-in user replace their own password. It asks for the
+// current one, and signs every other device out so a session held under the old password
+// ends. The session making the change stays.
+func (a *App) handleChangePassword(w http.ResponseWriter, r *http.Request) {
+	if a.Auth.Store == nil {
+		http.NotFound(w, r)
+		return
+	}
+	var b struct {
+		Current string `json:"current"`
+		New     string `json:"new"`
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	dec := json.NewDecoder(r.Body)
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&b); err != nil {
+		http.Error(w, "invalid request: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	user := actor(r)
+	if !a.confirmSelf(w, r, b.Current) {
+		return
+	}
+	if err := checkPassword(b.New); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if b.New == b.Current {
+		http.Error(w, "the new password must differ from the current one", http.StatusBadRequest)
+		return
+	}
+	hash, err := auth.HashPassword(b.New)
+	if err != nil {
+		http.Error(w, "could not save", http.StatusInternalServerError)
+		return
+	}
+	if err := auth.SetUserHash(a.Auth.Store.Path(), user, hash); err != nil {
+		http.Error(w, "could not save", http.StatusInternalServerError)
+		return
+	}
+	signedOut := 0
+	if reg := a.Auth.Sessions.Registry; reg != nil {
+		if session, ok := auth.FromContext(r.Context()); ok {
+			signedOut, _ = reg.RevokeAll(user, session.ID)
+		}
+	}
+	a.recordUser(r, fmt.Sprintf("changed their password (%d other session(s) signed out)", signedOut))
+	writeJSON(w, http.StatusOK, map[string]any{"signed_out": signedOut})
+}
+
 // confirmSelf checks the signed-in user's own password again.
 func (a *App) confirmSelf(w http.ResponseWriter, r *http.Request, password string) bool {
 	ok, have, limited := a.Auth.ConfirmPassword(r, actor(r), password)
@@ -256,10 +311,42 @@ type profileSession struct {
 	UserAgent string `json:"user_agent,omitempty"`
 }
 
+type signInNotice struct {
+	Device string `json:"device"`
+	IP     string `json:"ip,omitempty"`
+	At     string `json:"at"`
+}
+
+// NoteSignIn is wired to auth.Service.OnSignIn: a sign-in from a browser or system the person has not used before
+// goes in the activity log and becomes a notice on their Account page.
+func (a *App) NoteSignIn(rec auth.SessionRecord) {
+	if a.Profiles == nil {
+		return
+	}
+	device := describeDevice(rec.UserAgent)
+	isNew, err := a.Profiles.NoteSignIn(rec.User, device, rec.IP, rec.Created)
+	if err != nil {
+		log.Printf("web: remember %s's sign-in device: %v", rec.User, err)
+	}
+	if isNew && a.History != nil {
+		a.History.Record(history.KindUsers, "", rec.User, "new sign-in from "+device+" ("+rec.IP+")")
+	}
+}
+
+func (a *App) handleDismissSignIn(w http.ResponseWriter, r *http.Request) {
+	if err := a.Profiles.DismissSignInNotice(actor(r)); err != nil {
+		http.Error(w, "could not save", http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 type profileView struct {
 	Username    string           `json:"username"`
 	DisplayName string           `json:"display_name"`
 	Sessions    []profileSession `json:"sessions"`
+	// NewSignIn is the latest sign-in from a browser or system this person had not used before, until dismissed.
+	NewSignIn *signInNotice `json:"new_sign_in,omitempty"`
 	// PerDevice is false when the server keeps no session list, so only "sign out everywhere" is offered.
 	PerDevice bool `json:"per_device"`
 }
@@ -267,6 +354,9 @@ type profileView struct {
 func (a *App) handleGetProfile(w http.ResponseWriter, r *http.Request) {
 	session, _ := auth.FromContext(r.Context())
 	v := profileView{Username: session.Username, DisplayName: a.Profiles.DisplayName(session.Username), Sessions: []profileSession{}}
+	if n, ok := a.Profiles.SignInNotice(session.Username); ok {
+		v.NewSignIn = &signInNotice{Device: n.Device, IP: n.IP, At: n.At.Format(time.RFC3339)}
+	}
 	if reg := a.Auth.Sessions.Registry; reg != nil {
 		v.PerDevice = true
 		for _, rec := range reg.List(session.Username) {

@@ -37,6 +37,12 @@ function cardFor(id) {
 
 const isOffline = (card) => card.dataset.status === "offline";
 
+// applyButtons: Start makes sense only for a stopped/unknown game; Stop only for one that's running or coming up.
+function applyButtons(card, status) {
+  card.querySelector(".start-btn").disabled = ["online", "starting", "stopping"].includes(status);
+  card.querySelector(".stop-btn").disabled = status === "offline" || status === "stopping";
+}
+
 function setStatus(id, status) {
   const card = cardFor(id);
   if (!card) return;
@@ -53,8 +59,7 @@ function setStatus(id, status) {
   // Start makes sense only for a stopped/unknown game; Stop only for one
   // that's running or coming up. (A game that's up while a *different* one
   // is chosen still goes through the switch dialog on the server's 409.)
-  card.querySelector(".start-btn").disabled = ["online", "starting", "stopping"].includes(status);
-  card.querySelector(".stop-btn").disabled = status === "offline" || status === "stopping";
+  applyButtons(card, status);
 
   // While starting, (re)open the progress stream on every update: it ends
   // early while the image is still being pulled (no container yet), and
@@ -171,6 +176,37 @@ function stopProgressTracking(id) {
   closeProgressSource(id);
   const card = cardFor(id);
   if (card) card.querySelector(".progress-wrap").hidden = true;
+}
+
+// setJoinCodes shows values the running server printed itself (a crossplay
+// join code) in their own block under the card's connect details.
+function setJoinCodes(id, codes) {
+  const card = cardFor(id);
+  const box = card && card.querySelector(".connect-live");
+  if (!box) return;
+  const key = JSON.stringify(codes || []);
+  if (box.dataset.codes === key) return;
+  box.dataset.codes = key;
+  box.replaceChildren();
+  (codes || []).forEach((c) => {
+    const row = document.createElement("div");
+    row.className = "connect-row";
+    const label = document.createElement("span");
+    label.className = "connect-label";
+    label.textContent = c.label;
+    const code = document.createElement("code");
+    code.className = "connect-address";
+    code.textContent = c.value;
+    const btn = document.createElement("button");
+    btn.className = "btn btn-ghost copy-btn";
+    btn.type = "button";
+    btn.dataset.copy = c.value;
+    btn.textContent = "Copy";
+    btn.setAttribute("aria-label", `Copy ${card.dataset.name} ${c.label} to clipboard`);
+    row.append(label, code, btn);
+    box.append(row);
+  });
+  box.hidden = !(codes && codes.length);
 }
 
 function setPlayerCount(id, count) {
@@ -473,6 +509,10 @@ const TABS = {
     },
     stop: stopPanelTimer,
   },
+  files: {
+    start: (id) => loadFiles(id),
+    stop: () => {},
+  },
   console: {
     // Reload each time it opens so a Settings change takes effect.
     start: (id) => loadConsole(id),
@@ -510,17 +550,38 @@ function renderIdleTimer(card) {
 
 setInterval(() => document.querySelectorAll(".game-card").forEach(renderIdleTimer), 1000);
 
+// Keep the sign-in alive while the dashboard is open and looked at. The live stream cannot refresh the session
+// cookie, so an ordinary request does it (the server renews a session that has been used for a while).
+poll(() => { fetch("/api/health").catch(() => {}); }, 10 * 60 * 1000);
+
 // Docker reachability: pushed by the live stream, or (while polling) checked
 // every 30s, and straight away whenever the game list fails to load.
 function applyHealth(health) {
   document.getElementById("docker-banner").hidden = health.docker !== false;
   const bb = document.getElementById("backups-banner");
   if (bb) bb.hidden = health.backups !== false;
+  const nb = document.getElementById("notify-banner");
+  if (nb) {
+    const show = health.notify === false && document.body.hasAttribute("data-admin");
+    if (show && nb.hidden) showNotifyDetail();
+    nb.hidden = !show;
+  }
   const ob = document.getElementById("offsite-banner");
   if (ob) {
     const show = health.offsite === false && document.body.hasAttribute("data-admin");
     if (show && ob.hidden) showOffsiteDetail();
     ob.hidden = !show;
+  }
+}
+
+async function showNotifyDetail() {
+  try {
+    const res = await fetch("/api/notify/status");
+    if (!res.ok) return;
+    const f = (await res.json()).failing || [];
+    document.getElementById("notify-detail").textContent = f.map((c) => `${c.channel}: ${c.error}.`).join(" ");
+  } catch (err) {
+    // the banner still says something is wrong
   }
 }
 
@@ -549,6 +610,7 @@ function applyGames(games) {
   games.forEach((g) => {
     setStatus(g.id, g.status);
     setPlayerCount(g.id, g.player_count);
+    setJoinCodes(g.id, g.join_codes);
     setIdleTimer(g.id, g.idle_seconds_left);
     // Starts run in the background, so a failure arrives here rather than
     // as the Start button's HTTP response.
@@ -683,7 +745,12 @@ async function withBusy(btn, fn) {
     await fn();
   } finally {
     btn.classList.remove("busy");
-    await refreshStatuses(); // re-derives which buttons should be enabled
+    // Re-derive which buttons should be enabled. With the live stream open its next event carries the new state;
+    // fetching here too could paint a state the stream then never repeats (it only sends what changed), leaving the
+    // card stuck on it. Without the stream there is nothing else to carry it, so fetch.
+    const card = btn.closest(".game-card");
+    if (liveEvents && card) applyButtons(card, card.dataset.status);
+    else await refreshStatuses();
     if (window.refreshActivity) setTimeout(window.refreshActivity, 1500);
   }
 }
@@ -751,16 +818,17 @@ document.querySelectorAll(".game-card").forEach((card) => {
 
 connectLiveEvents(); // its first events paint every card and the health banner
 
-document.querySelectorAll(".copy-btn").forEach((btn) => {
-  btn.addEventListener("click", async () => {
-    try {
-      await navigator.clipboard.writeText(btn.dataset.copy);
-      btn.textContent = "Copied";
-      setTimeout(() => { btn.textContent = "Copy"; }, 1500);
-    } catch (err) {
-      toast("Couldn't copy automatically. Select the text and copy it by hand.", "info");
-    }
-  });
+// One delegated handler, so buttons added later (join codes) copy too.
+document.addEventListener("click", async (ev) => {
+  const btn = ev.target.closest(".copy-btn");
+  if (!btn) return;
+  try {
+    await navigator.clipboard.writeText(btn.dataset.copy);
+    btn.textContent = "Copied";
+    setTimeout(() => { btn.textContent = "Copy"; }, 1500);
+  } catch (err) {
+    toast("Couldn't copy automatically. Select the text and copy it by hand.", "info");
+  }
 });
 
 window.addEventListener("beforeunload", () => {
@@ -796,6 +864,7 @@ window.addEventListener("beforeunload", () => {
       case "settings": return [`${who} changed settings${note}`, false];
       case "users": return [`${who} ${e.detail || "changed users"}`, false];
       case "backup": return [`${who} backed up ${game}${note}`, false];
+      case "files": return [`${who} ${detail}`, false];
       case "console": return [`${who} used the ${game} console${note}`, false];
       default: return [`${e.kind} ${game}${note}`, false];
     }
@@ -934,21 +1003,34 @@ async function fetchBackups(id) {
 
 async function restoreGame(id, file, btn) {
   const name = cardFor(id).dataset.name;
-  const ok = await confirmAction({
+  const password = await confirmAction({
     title: `Restore ${name}?`,
     message: `This stops ${name}, replaces its current world with ${file}, and starts it again if it was running. ` +
-      "A fresh backup of the current world is taken first when the game keeps backups before stopping. Players will be disconnected.",
+      "A fresh backup of the current world is taken first. Players will be disconnected. Enter your password to confirm.",
     confirmLabel: "Restore",
     danger: true,
     eyebrow: "// restore",
+    askPassword: true,
   });
-  if (!ok) return;
+  if (!password) return;
   btn.disabled = true;
-  const res = await callAPI(`/api/games/${encodeURIComponent(id)}/restore`, {
+  const send = (withoutBackup) => callAPI(`/api/games/${encodeURIComponent(id)}/restore`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ file }),
+    body: JSON.stringify({ file, password, without_backup: withoutBackup }),
   });
+  let res = await send(false);
+  if (res.status === 428) { // a stopped game cannot be backed up first
+    const again = await confirmAction({
+      title: `${name} is stopped`,
+      message: "Its current world cannot be backed up while it is stopped, so restoring replaces it with no way back. Restore anyway?",
+      confirmLabel: "Restore without a backup",
+      danger: true,
+      eyebrow: "// restore",
+    });
+    if (!again) { btn.disabled = false; return; }
+    res = await send(true);
+  }
   if (res.status === 409 || res.status === 400) toast(await errorText(res), "info");
   else if (await checkOK(res, "Restore")) toast(`${name}: restoring ${file}.`, "ok");
   fetchBackups(id);
@@ -1066,4 +1148,130 @@ async function loadConsole(id) {
     consoleCall(id, "raw", { command }, command);
   };
   note.textContent = data.raw_available && !data.raw_enabled ? "The raw console is off. An admin can enable it in Settings." : "";
+}
+
+// ---- Files tab: edit the config files a module declares (admins).
+
+const filesState = {}; // game id -> { files, file, sha256, original }
+
+function filesNote(card, text) { card.querySelector(".files-note").textContent = text; }
+
+function lineDiff(a, b) {
+  const count = (lines) => lines.reduce((m, l) => m.set(l, (m.get(l) || 0) + 1), new Map());
+  const ca = count(a.split("\n")), cb = count(b.split("\n"));
+  let added = 0, removed = 0;
+  cb.forEach((n, l) => { added += Math.max(0, n - (ca.get(l) || 0)); });
+  ca.forEach((n, l) => { removed += Math.max(0, n - (cb.get(l) || 0)); });
+  return { added, removed };
+}
+
+async function loadFiles(id) {
+  const card = cardFor(id);
+  const pick = card.querySelector(".files-pick");
+  card.querySelector(".files-editor").hidden = true;
+  pick.replaceChildren();
+  let data;
+  try {
+    const res = await fetch(`/api/games/${encodeURIComponent(id)}/files`);
+    if (!res.ok) { filesNote(card, await errorText(res)); return; }
+    data = await res.json();
+  } catch (err) { filesNote(card, "Could not load the file list."); return; }
+  filesState[id] = { files: data.files };
+  const anyStopped = data.files.some((f) => f.when_stopped);
+  if (!data.running && !anyStopped) filesNote(card, "Start the game to edit its files: they are read and written inside its container.");
+  else if (!data.running) filesNote(card, "The game is stopped. Files it keeps in its data folders can be edited now; the rest need it running.");
+  else filesNote(card, "Pick a file.");
+  data.files.forEach((f) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "btn btn-ghost";
+    b.textContent = f.label;
+    b.title = f.path;
+    if (!data.running && !f.when_stopped) { b.disabled = true; b.title = `${f.path}: start the game to edit this file`; }
+    b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", () => {
+      pick.querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+      openFile(id, f);
+    });
+    pick.appendChild(b);
+  });
+  if (data.files.length === 1) pick.querySelector("button").click();
+}
+
+async function openFile(id, f) {
+  const card = cardFor(id);
+  const editor = card.querySelector(".files-editor");
+  const text = card.querySelector(".files-text");
+  const st = filesState[id];
+  editor.hidden = true;
+  filesNote(card, "Loading…");
+  let data;
+  try {
+    const res = await fetch(`/api/games/${encodeURIComponent(id)}/files/${encodeURIComponent(f.id)}`);
+    if (!res.ok) { filesNote(card, await errorText(res)); return; }
+    data = await res.json();
+  } catch (err) { filesNote(card, "Could not read the file."); return; }
+  st.file = f; st.sha256 = data.sha256; st.original = data.content;
+  text.value = data.content;
+  editor.hidden = false;
+  const hints = [f.path];
+  if (f.stop_first) hints.push(f.when_stopped ? "The game rewrites this file when it stops: edit it while the game is stopped." : "The game rewrites this file when it stops, so an edit made now may be lost.");
+  if (f.restart === "required") hints.push("Changes take effect after the game restarts.");
+  else if (f.restart && f.restart !== "none") hints.push(f.restart);
+  filesNote(card, hints.join(" · "));
+  card.querySelector(".files-reload").onclick = () => openFile(id, f);
+  card.querySelector(".files-save").onclick = () => saveFile(id, card);
+  await loadVersions(id, card, f);
+}
+
+async function loadVersions(id, card, f) {
+  const sel = card.querySelector(".files-versions");
+  sel.replaceChildren();
+  try {
+    const res = await fetch(`/api/games/${encodeURIComponent(id)}/files/${encodeURIComponent(f.id)}/history`);
+    if (!res.ok) return;
+    (await res.json()).versions.forEach((v) => {
+      const o = document.createElement("option");
+      o.value = v.id;
+      o.textContent = `${new Date(v.time).toLocaleString()} (${v.bytes} B)`;
+      sel.appendChild(o);
+    });
+  } catch (err) { return; }
+  card.querySelector(".files-load-version").onclick = async () => {
+    if (!sel.value) return;
+    const res = await fetch(`/api/games/${encodeURIComponent(id)}/files/${encodeURIComponent(f.id)}/history/${encodeURIComponent(sel.value)}`);
+    if (!res.ok) { toast(await errorText(res), "error"); return; }
+    card.querySelector(".files-text").value = (await res.json()).content;
+    toast("Loaded into the editor. Press Save to apply it.", "info");
+  };
+}
+
+async function saveFile(id, card) {
+  const st = filesState[id];
+  const text = card.querySelector(".files-text");
+  const f = st.file;
+  const d = lineDiff(st.original, text.value);
+  if (d.added === 0 && d.removed === 0) { toast("Nothing changed.", "info"); return; }
+  const name = card.dataset.name;
+  const password = await confirmAction({
+    title: `Save ${f.label} on ${name}?`,
+    message: `${d.added} line(s) added or changed, ${d.removed} removed or changed. The old version is kept so you can load it again. Enter your password to confirm.`,
+    confirmLabel: "Save",
+    eyebrow: "// files",
+    askPassword: true,
+  });
+  if (!password) return;
+  const btn = card.querySelector(".files-save");
+  btn.disabled = true;
+  try {
+    const res = await callAPI(`/api/games/${encodeURIComponent(id)}/files/${encodeURIComponent(f.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ content: text.value, base_sha256: st.sha256, password }),
+    });
+    if (!res.ok) { toast(await errorText(res), "error"); return; }
+    const out = await res.json();
+    toast(out.restart === "required" ? `${f.label} saved. Restart ${name} to apply it.` : `${f.label} saved.`, "info");
+    await openFile(id, f);
+  } finally { btn.disabled = false; }
 }

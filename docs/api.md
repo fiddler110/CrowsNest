@@ -26,6 +26,10 @@ CSRF token. The dashboard itself uses `GET /api/events`, one stream of state cha
 | `GET` | `/api/health` | Whether CrowsNest can reach Docker |
 | `GET` | `/api/games/{id}/logs` | SSE stream of `docker logs -f` (**admin only**) |
 | `GET`/`PUT` | `/api/settings` | Runtime settings (**admin only**) |
+| `GET` | `/api/games/{id}/files` | The config files the game's module declares, and whether it is running (**admin only**) |
+| `GET` | `/api/games/{id}/files/{file}` | One file's content (redacted values hidden) and its sha256 (**admin only**) |
+| `PUT` | `/api/games/{id}/files/{file}` | Save it: `{content, base_sha256, password}`; 409 if the file changed since `base_sha256` (**admin only**) |
+| `GET` | `/api/games/{id}/files/{file}/history[/{version}]` | Earlier versions the panel kept (**admin only**) |
 | `GET` | `/api/games/{id}/console` | Console actions and raw-console state (**admin only**) |
 | `POST` | `/api/games/{id}/console/action` | Run a fixed console action (**admin only**) |
 | `POST` | `/api/games/{id}/console/raw` | Send a raw RCON command, refused unless enabled in Settings (**admin only**) |

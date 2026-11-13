@@ -15,6 +15,8 @@
     <p class="hero-sub">Your name, your signed-in devices and your sign-in security.</p>
   </section>
 
+  <p id="mfa-required" class="banner" role="alert" hidden>Admins are required to use an authenticator app. Set one up below; the rest of the dashboard opens once it is on.</p>
+
   <section id="profile" class="pane-form">
     <h2 class="section-title">// display name</h2>
     <form id="profile-form" autocomplete="off">
@@ -26,6 +28,7 @@
 
   <section id="sessions" class="pane-form">
     <h2 class="section-title">// signed-in devices</h2>
+    <p id="signin-notice" class="banner" role="status" hidden><span id="signin-notice-text"></span> <button type="button" class="btn btn-ghost" id="signin-notice-dismiss">That was me</button></p>
     <p id="sessions-note" class="hero-sub"></p>
     <ul id="sessions-list" class="session-list"></ul>
     <div class="pane-actions">
@@ -33,6 +36,29 @@
       <button id="sessions-all" class="btn btn-ghost btn-danger" type="button" hidden>Sign out everywhere</button>
     </div>
     <p id="sessions-error" class="settings-error" role="alert" hidden></p>
+  </section>
+
+  <section id="mentions" class="pane-form" hidden>
+    <h2 class="section-title">// discord pings</h2>
+    <form id="mentions-form" autocomplete="off">
+      <p class="hero-sub">Get an <code>@mention</code> in the server's Discord channel when one of these games starts, stops, crashes or is stopped for being idle. Player joins and leaves never ping.</p>
+      <label class="field">Your Discord user id <small>Discord, Settings, Advanced, turn on Developer Mode, then right-click your name and Copy User ID. Leave empty to turn pings off.</small>
+        <input type="text" name="discord_id" inputmode="numeric" maxlength="22" pattern="[0-9]{15,22}"></label>
+      <fieldset class="field"><legend>Ping me about</legend><div id="mentions-games"></div></fieldset>
+      <div class="pane-actions"><button class="btn btn-primary" type="submit">Save</button></div>
+    </form>
+  </section>
+
+  <section id="password" class="pane-form" hidden>
+    <h2 class="section-title">// password</h2>
+    <p class="hero-sub">Changing it signs your other devices out. This one stays signed in.</p>
+    <form id="password-form" autocomplete="off">
+      <label class="field">Current password <input type="password" name="current" maxlength="72" autocomplete="current-password" required></label>
+      <label class="field">New password <small>At least 8 characters.</small> <input type="password" name="new" minlength="8" maxlength="72" autocomplete="new-password" required></label>
+      <label class="field">New password again <input type="password" name="again" minlength="8" maxlength="72" autocomplete="new-password" required></label>
+      <div class="pane-actions"><button class="btn btn-primary" type="submit">Change password</button></div>
+    </form>
+    <p id="password-error" class="settings-error" role="alert" hidden></p>
   </section>
 
   <section id="totp" class="pane-form" hidden>

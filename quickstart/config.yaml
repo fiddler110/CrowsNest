@@ -25,6 +25,13 @@ platform:
   # backups_confirm_new: true             # set once you have checked the drive is mounted: lets CrowsNest start using a folder it has not seen
   # backups_dir_mode: "0775"              # use "0777" if a game runs as a different user than the panel (uid 1000)
 
+# Notifications (optional): each names an environment variable (set it in .env and pass it to the panel in
+# compose.yaml). See "Notifications" in docs/operating.md.
+# notifications:
+#   discord_webhook_url_env: DISCORD_WEBHOOK_URL
+#   ntfy_url_env: NTFY_URL
+#   webhook_url_env: WEBHOOK_URL
+
 # Extra game modules (crowsnest module install ...) live here; restart after installing one.
 modules_dir: /app/data/modules
 

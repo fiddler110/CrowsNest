@@ -51,6 +51,7 @@ func RequireSession(sessions *SessionManager, next http.Handler) http.Handler {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+		session = sessions.Renew(w, session)
 		next.ServeHTTP(w, r.WithContext(WithSession(r.Context(), session)))
 	})
 }
@@ -97,11 +98,14 @@ func SecurityHeaders(hsts bool, next http.Handler) http.Handler {
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("Referrer-Policy", "same-origin")
+		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()")
+		w.Header().Set("Cross-Origin-Opener-Policy", "same-origin")
 		if hsts {
 			w.Header().Set("Strict-Transport-Security", "max-age=63072000; includeSubDomains")
 		}
 
-		csp := "default-src 'self'"
+		// No framing, no <base> rewriting, and forms only post back here.
+		csp := "default-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 		if nonce != "" {
 			csp += "; script-src 'self' 'nonce-" + nonce + "'; style-src 'self' 'nonce-" + nonce + "'"
 		} else {

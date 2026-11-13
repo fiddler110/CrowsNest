@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -10,8 +11,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fiddler110/crowsnest/internal/audit"
 	"github.com/fiddler110/crowsnest/internal/auth"
 	"github.com/fiddler110/crowsnest/internal/backup"
+	"github.com/fiddler110/crowsnest/internal/notify"
 )
 
 // profileHarness turns the registry on and signs the harness user in on two "devices".
@@ -152,7 +155,7 @@ func TestProfile_DisplayName(t *testing.T) {
 	if body := h.get(t, "/"); !strings.Contains(body, `data-username="tester">Captain Scotty`) {
 		t.Error("topbar does not show the display name")
 	}
-	for _, bad := range []string{strings.Repeat("x", 41), "a\x00b", "a‮b"} {
+	for _, bad := range []string{strings.Repeat("x", 41), "a\x00b", "a\u202eb"} {
 		if rec := save(bad); rec.Code != http.StatusBadRequest {
 			t.Errorf("name %q = %d", bad, rec.Code)
 		}
@@ -204,5 +207,87 @@ func TestHealthReportsOffsite(t *testing.T) {
 	h.App.Backups.OffsiteFile = ""
 	if _, has := get()["offsite"]; has {
 		t.Error("offsite shown while not configured")
+	}
+}
+
+func TestProfile_NewSignInNotice(t *testing.T) {
+	h, _, _ := profileHarness(t)
+	rec := func(ua string) auth.SessionRecord {
+		return auth.SessionRecord{ID: "x", User: "tester", Created: time.Now(), UserAgent: ua, IP: "203.0.113.5"}
+	}
+	view := func() profileView {
+		var v profileView
+		_ = json.Unmarshal(h.do(h.req(http.MethodGet, "/api/account/profile", nil)).Body.Bytes(), &v)
+		return v
+	}
+	firefox := "Mozilla/5.0 (X11; Linux x86_64) Firefox/130.0"
+	h.App.NoteSignIn(rec(firefox)) // the first device ever: not news
+	if view().NewSignIn != nil {
+		t.Fatal("a first sign-in raised a notice")
+	}
+	h.App.NoteSignIn(rec(firefox)) // the same device again
+	if view().NewSignIn != nil {
+		t.Fatal("a known device raised a notice")
+	}
+	h.App.NoteSignIn(rec("Mozilla/5.0 (iPhone; CPU iPhone OS 17) Safari/604.1"))
+	n := view().NewSignIn
+	if n == nil || !strings.Contains(n.Device, "Safari") || n.IP != "203.0.113.5" {
+		t.Fatalf("notice = %+v", n)
+	}
+	h.App.NoteSignIn(rec("Mozilla/5.0 (iPhone; CPU iPhone OS 17) Safari/604.1")) // seen now
+	if got := h.do(h.authedReq(http.MethodPost, "/api/account/sign-in-notice/dismiss", nil)); got.Code != http.StatusNoContent {
+		t.Fatalf("dismiss = %d", got.Code)
+	}
+	if view().NewSignIn != nil {
+		t.Error("notice still there after it was dismissed")
+	}
+}
+
+func TestHealthReportsFailingNotifications(t *testing.T) {
+	h := pagesHarness(t)
+	get := func() map[string]bool {
+		var m map[string]bool
+		if err := json.Unmarshal([]byte(h.get(t, "/api/health")), &m); err != nil {
+			t.Fatal(err)
+		}
+		return m
+	}
+	if _, has := get()["notify"]; has {
+		t.Error("notify shown while no channel is set up")
+	}
+	// A webhook that always answers 404 makes the channel fail.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(404) }))
+	defer srv.Close()
+	h.App.Notify, h.App.NotifyConfigured = &notify.Status{}, true
+	if m := get(); !m["notify"] {
+		t.Errorf("before any send the channel is not failing: %v", m)
+	}
+	(&notify.Webhook{URL: srv.URL, Status: h.App.Notify}).Notify(context.Background(), "x")
+	if m := get(); m["notify"] {
+		t.Errorf("a rejected send should show as unhealthy: %v", m)
+	}
+	if body := h.get(t, "/api/notify/status"); !strings.Contains(body, `"channel":"webhook"`) {
+		t.Errorf("status = %s", body)
+	}
+}
+
+func TestAuditExportServesTheFileToAdmins(t *testing.T) {
+	h := pagesHarness(t)
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.req(http.MethodGet, "/api/audit/export", nil))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("no audit file configured: status %d", rec.Code)
+	}
+	p := filepath.Join(t.TempDir(), "audit.jsonl")
+	l, err := audit.Open(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	l.Record("tester started rich")
+	l.Close()
+	h.App.AuditFile = p
+	body := h.get(t, "/api/audit/export")
+	if !strings.Contains(body, "tester started rich") || !strings.Contains(body, `"hash"`) {
+		t.Errorf("export = %q", body)
 	}
 }

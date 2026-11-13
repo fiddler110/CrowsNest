@@ -17,6 +17,8 @@ async function load() {
   const res = await callAPI("/api/account/security");
   if (!res.ok) { toast(await errorText(res, "Loading your account"), "error"); return; }
   const v = await res.json();
+  $("password").hidden = !v.has_password;
+  $("mfa-required").hidden = !v.mfa_required;
   if (!v.totp_available) return;
   $("totp").hidden = false;
   $("totp-nopw").hidden = v.has_password;
@@ -116,6 +118,11 @@ async function loadSessions() {
   const res = await callAPI("/api/account/profile");
   if (!res.ok) { showSessionsError(await errorText(res, "Loading your devices")); return; }
   const v = await res.json();
+  const notice = $("signin-notice");
+  notice.hidden = !v.new_sign_in;
+  if (v.new_sign_in) {
+    $("signin-notice-text").textContent = `New sign-in from ${v.new_sign_in.device}${v.new_sign_in.ip ? " (" + v.new_sign_in.ip + ")" : ""} on ${when(v.new_sign_in.at)}, a browser or system you had not used before. If it was not you, sign it out below and change your password.`;
+  }
   const list = $("sessions-list");
   list.replaceChildren();
   if (!v.per_device) {
@@ -146,6 +153,10 @@ async function loadSessions() {
   $("sessions-all").hidden = v.sessions.length < 1;
 }
 
+$("signin-notice-dismiss").addEventListener("click", async () => {
+  await callAPI("/api/account/sign-in-notice/dismiss", { method: "POST" });
+  $("signin-notice").hidden = true;
+});
 $("sessions-others").addEventListener("click", () => revoke({ others: true }, "Other devices signed out."));
 $("sessions-all").addEventListener("click", async () => {
   const ok = await confirmAction({ eyebrow: "// account", title: "Sign out everywhere?",
@@ -155,3 +166,48 @@ $("sessions-all").addEventListener("click", async () => {
 
 load();
 loadSessions();
+
+// ---- change password ----
+$("password-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const f = e.target.elements;
+  const err = $("password-error");
+  const fail = (m) => { err.textContent = m; err.hidden = !m; };
+  if (f.new.value !== f.again.value) { fail("The two new passwords don't match."); return; }
+  const res = await callAPI("/api/account/password", { method: "POST", body: JSON.stringify({ current: f.current.value, new: f.new.value }) });
+  if (!res.ok) { fail(await errorText(res)); return; }
+  fail("");
+  e.target.reset();
+  const v = await res.json();
+  toast(v.signed_out ? `Password changed. ${v.signed_out} other device${v.signed_out === 1 ? "" : "s"} signed out.` : "Password changed.", "ok");
+});
+
+// ---- Discord pings ----
+async function loadMentions() {
+  const res = await callAPI("/api/account/mentions");
+  if (!res.ok) return;
+  const v = await res.json();
+  $("mentions").hidden = !v.available;
+  $("mentions-form").elements.discord_id.value = v.discord_id || "";
+  const box = $("mentions-games");
+  box.replaceChildren();
+  v.games.forEach((g) => {
+    const label = document.createElement("label");
+    label.className = "check";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.value = g.id;
+    cb.checked = g.checked;
+    label.append(cb, " ", g.name);
+    box.append(label);
+  });
+}
+$("mentions-form").addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const games = [...$("mentions-games").querySelectorAll("input:checked")].map((c) => c.value);
+  const res = await callAPI("/api/account/mentions", { method: "PUT", body: JSON.stringify({ discord_id: e.target.elements.discord_id.value.trim(), games }) });
+  if (!res.ok) { toast(await errorText(res, "Saving Discord pings"), "error"); return; }
+  toast("Saved.", "ok");
+  loadMentions();
+});
+loadMentions();

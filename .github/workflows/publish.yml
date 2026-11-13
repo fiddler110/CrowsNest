@@ -140,9 +140,17 @@ jobs:
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          persist-credentials: false
       - env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ needs.version.outputs.tag }}
         run: |
           gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" --title "$TAG" --generate-notes \
             --notes "Image: \`ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/crowsnest:${TAG#v}\` (also \`:latest\`)"
+          # The quickstart, pinned to this release, so a download never drifts to whatever is newest.
+          ver=${TAG#v}
+          sed -i "s/^CROWSNEST_TAG=.*/CROWSNEST_TAG=${ver}/" quickstart/.env.example
+          tar -czf quickstart.tar.gz --transform 's,^quickstart,crowsnest-quickstart,' quickstart
+          gh release upload "$TAG" quickstart.tar.gz --repo "$GITHUB_REPOSITORY"

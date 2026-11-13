@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log"
+	"github.com/fiddler110/crowsnest/internal/audit"
 	"net/http"
 	"strings"
 	"time"
@@ -101,7 +101,7 @@ func (a *App) handleConsoleRaw(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !a.rawConsoleEnabled() {
-		log.Printf("audit: %s tried the raw console on %s while it is off", actor(r), d.ID)
+		audit.Printf("%s tried the raw console on %s while it is off", actor(r), d.ID)
 		if a.History != nil {
 			a.History.Record(history.KindConsole, d.ID, actor(r), "raw: refused, console is off")
 		}
@@ -144,7 +144,7 @@ func (a *App) finishConsole(w http.ResponseWriter, r *http.Request, d games.Game
 	if err != nil {
 		detail += " (failed)"
 	}
-	log.Printf("audit: %s console %s: %q", actor(r), d.ID, detail)
+	audit.Printf("%s console %s: %q", actor(r), d.ID, detail)
 	if a.History != nil {
 		a.History.Record(history.KindConsole, d.ID, actor(r), detail)
 	}

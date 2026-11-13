@@ -40,7 +40,7 @@ func TestDo_CachesWithinTTLAndRefreshesAfter(t *testing.T) {
 	fn := func(context.Context) int { n++; return n }
 	get := func() int { v, _ := m.Do(context.Background(), "k", 2*time.Second, fn); return v }
 
-	if get() != 1 || get() != 1 {
+	if a, b := get(), get(); a != 1 || b != 1 {
 		t.Fatal("second call inside the TTL should reuse the first value")
 	}
 	now = now.Add(3 * time.Second)

@@ -13,6 +13,7 @@ import (
 	"io"
 	"log"
 	"regexp"
+	"sort"
 	"sync"
 	"time"
 
@@ -35,6 +36,19 @@ type Spec struct {
 	Join, Leave *regexp.Regexp
 	// World captures a world name in group 1 (optional, display only).
 	World *regexp.Regexp
+	// Player (optional) captures a player's display name in group 1. It is
+	// given to the most recent joiner that has none yet, so a game that logs
+	// a bare id first and the name a line later shows names, not ids.
+	Player *regexp.Regexp
+	// Codes are labelled values to show on the card, each captured from the
+	// log in group 1 (a join code); they reset when the container restarts.
+	Codes []Code
+}
+
+// Code is one value to lift out of the log.
+type Code struct {
+	Label string
+	Re    *regexp.Regexp
 }
 
 // Tracker implements games.StatusChecker, and (when Join/Leave are set)
@@ -50,11 +64,14 @@ type Tracker struct {
 	attached  bool
 	ready     bool
 	world     string
+	names     map[string]string // player id -> display name
+	pending   string            // latest joiner still without a name
+	codes     map[string]string // label -> value
 }
 
 // New builds a Tracker for the named container.
 func New(docker *dockerctl.Client, containerName string, spec Spec) *Tracker {
-	return &Tracker{docker: docker, containerName: containerName, spec: spec, connected: map[string]struct{}{}}
+	return &Tracker{docker: docker, containerName: containerName, spec: spec, connected: map[string]struct{}{}, names: map[string]string{}, codes: map[string]string{}}
 }
 
 // Check implements games.StatusChecker: offline when the container isn't
@@ -87,8 +104,12 @@ func (t *Tracker) PlayerCount(ctx context.Context) (count int, names []string, o
 	}
 	names = make([]string, 0, len(t.connected))
 	for id := range t.connected {
+		if n := t.names[id]; n != "" {
+			id = n
+		}
 		names = append(names, id)
 	}
+	sort.Strings(names)
 	return len(names), names, true
 }
 
@@ -161,6 +182,9 @@ func (t *Tracker) reset() {
 	t.attached = false
 	t.ready = false
 	t.world = ""
+	t.names = map[string]string{}
+	t.pending = ""
+	t.codes = map[string]string{}
 	t.mu.Unlock()
 }
 
@@ -226,6 +250,19 @@ func (t *Tracker) handleLine(line string) {
 			t.world = m[1]
 		}
 	}
+	for _, c := range t.spec.Codes {
+		if m := c.Re.FindStringSubmatch(line); m != nil {
+			t.codes[c.Label] = m[1]
+		}
+	}
+	if t.spec.Player != nil && t.pending != "" {
+		if m := t.spec.Player.FindStringSubmatch(line); m != nil {
+			if _, here := t.connected[t.pending]; here {
+				t.names[t.pending] = m[1]
+			}
+			t.pending = ""
+		}
+	}
 	if t.spec.Ready.MatchString(line) {
 		t.ready = true
 		return
@@ -233,12 +270,31 @@ func (t *Tracker) handleLine(line string) {
 	if t.spec.Join != nil {
 		if m := t.spec.Join.FindStringSubmatch(line); m != nil {
 			t.connected[m[1]] = struct{}{}
+			t.pending = m[1]
 			return
 		}
 	}
 	if t.spec.Leave != nil {
 		if m := t.spec.Leave.FindStringSubmatch(line); m != nil {
 			delete(t.connected, m[1])
+			delete(t.names, m[1])
+			if t.pending == m[1] {
+				t.pending = ""
+			}
 		}
 	}
+}
+
+// ConnectValues implements games.ConnectLister: the codes found in this run's
+// log, in the order the module declared them.
+func (t *Tracker) ConnectValues() []games.ConnectSecret {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var out []games.ConnectSecret
+	for _, c := range t.spec.Codes {
+		if v := t.codes[c.Label]; v != "" {
+			out = append(out, games.ConnectSecret{Label: c.Label, Value: v})
+		}
+	}
+	return out
 }

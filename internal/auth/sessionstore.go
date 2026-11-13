@@ -107,6 +107,16 @@ func (s *SessionStore) Touch(id string, now time.Time) bool {
 	return true
 }
 
+// Extend moves a live session's end forward to expires (it never moves it back).
+func (s *SessionStore) Extend(id string, expires time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if r, ok := s.recs[id]; ok && expires.After(r.Expires) {
+		r.Expires = expires
+		s.dirty = true
+	}
+}
+
 // List is the user's live sessions, newest first.
 func (s *SessionStore) List(user string) []SessionRecord {
 	s.mu.Lock()

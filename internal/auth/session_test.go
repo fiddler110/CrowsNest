@@ -2,6 +2,8 @@ package auth
 
 import (
 	"errors"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -111,5 +113,53 @@ func TestDecode_Allowed(t *testing.T) {
 	m.Allowed = func(string) bool { return false }
 	if _, err := m.Decode(tok); !errors.Is(err, ErrSessionRevoked) {
 		t.Fatalf("user no longer allowed: Decode() error = %v, want ErrSessionRevoked", err)
+	}
+}
+
+func TestSessionRenew(t *testing.T) {
+	mgr := NewSessionManager([]byte("test-secret-32-bytes-long-enough"), time.Hour)
+	mgr.AbsoluteMax = 3 * time.Hour
+	renew := func(s Session) (Session, string) {
+		rec := httptest.NewRecorder()
+		out := mgr.Renew(rec, s)
+		return out, rec.Header().Get("Set-Cookie")
+	}
+	fresh, _ := mgr.New("alice")
+
+	if _, c := renew(fresh); c != "" {
+		t.Error("a session just issued was re-signed")
+	}
+
+	// Half way through its idle period: renewed for a full period, and the cookie decodes.
+	mid := fresh
+	mid.IssuedAt = time.Now().UTC().Add(-time.Hour)
+	mid.ExpiresAt = time.Now().UTC().Add(20 * time.Minute)
+	got, c := renew(mid)
+	if c == "" || got.ExpiresAt.Before(time.Now().Add(55*time.Minute)) {
+		t.Fatalf("not renewed: cookie=%q expires=%v", c, got.ExpiresAt)
+	}
+	val := strings.TrimPrefix(strings.SplitN(c, ";", 2)[0], SessionCookieName+"=")
+	if dec, err := mgr.Decode(val); err != nil || !dec.IssuedAt.Equal(mid.IssuedAt) {
+		t.Errorf("renewed cookie: %+v, %v (sign-in time must not move)", dec, err)
+	}
+
+	// Near the absolute limit the renewal is capped, and at the limit it stops.
+	old := mid
+	old.IssuedAt = time.Now().UTC().Add(-2*time.Hour - 50*time.Minute)
+	old.ExpiresAt = time.Now().UTC().Add(5 * time.Minute)
+	got, _ = renew(old)
+	if limit := old.IssuedAt.Add(3 * time.Hour); !got.ExpiresAt.Equal(limit) {
+		t.Errorf("expires %v, want the absolute limit %v", got.ExpiresAt, limit)
+	}
+	last := old
+	last.ExpiresAt = last.IssuedAt.Add(3 * time.Hour)
+	if _, c := renew(last); c != "" {
+		t.Error("renewed past the absolute limit")
+	}
+
+	// Off: no absolute limit beyond the idle time.
+	mgr.AbsoluteMax = time.Hour
+	if _, c := renew(mid); c != "" {
+		t.Error("renewed with sliding sessions off")
 	}
 }

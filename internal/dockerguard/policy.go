@@ -423,8 +423,12 @@ const RestoreSuffix = "-restore"
 // folders, <game>-clean; admitted by the game's own name like a restore.
 const CleanSuffix = "-clean"
 
+// FilesSuffix marks a game's one-shot container that edits a declared config file while the game is stopped,
+// <game>-files; admitted by the game's own name like a restore.
+const FilesSuffix = "-files"
+
 func restoreBase(name string) string {
-	for _, suf := range []string{RestoreSuffix, CleanSuffix} {
+	for _, suf := range []string{RestoreSuffix, CleanSuffix, FilesSuffix} {
 		if b, ok := strings.CutSuffix(name, suf); ok && b != "" {
 			return b
 		}

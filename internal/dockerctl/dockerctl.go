@@ -307,6 +307,28 @@ func (c *Client) ExecTimeout(ctx context.Context, name string, timeout time.Dura
 	return c.run(ctx, timeout, full...)
 }
 
+// ExecStdin runs `docker exec -i <name> <args...>` with stdin as the command's standard input and returns its
+// stdout. Used to write a file into a container; the exec guard allowlists the exact command.
+func (c *Client) ExecStdin(ctx context.Context, name string, stdin io.Reader, timeout time.Duration, args ...string) (string, error) {
+	full := append([]string{"exec", "-i", name}, args...)
+	if c.Timeout > 0 {
+		timeout = c.Timeout
+	}
+	runCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	cmd := c.newCmd(runCtx, full...)
+	cmd.Stdin = stdin
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	if err := cmd.Run(); err != nil {
+		if runCtx.Err() == context.DeadlineExceeded {
+			return "", fmt.Errorf("dockerctl: docker exec %s: timed out after %s", name, timeout)
+		}
+		return "", fmt.Errorf("dockerctl: docker exec %s: %w: %s", name, err, strings.TrimSpace(stderr.String()))
+	}
+	return stdout.String(), nil
+}
+
 // cliLogs is the CLI fallback for Logs: it streams `docker logs -f` for the named container. since and tail are
 // passed through to the docker CLI verbatim when non-empty (since accepts
 // docker's RFC3339 or relative syntax, e.g. "1h"). The caller must cancel

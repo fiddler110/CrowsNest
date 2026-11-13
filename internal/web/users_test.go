@@ -11,6 +11,8 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/auth"
 	"github.com/fiddler110/crowsnest/internal/mfa"
+	"github.com/fiddler110/crowsnest/internal/notify"
+	"github.com/fiddler110/crowsnest/internal/settings"
 	"github.com/fiddler110/crowsnest/internal/vault"
 )
 
@@ -60,20 +62,20 @@ func TestUsersAPI(t *testing.T) {
 		t.Fatalf("users = %+v", out.Users)
 	}
 
-	want(do("PUT", "/api/users/bob", `{"role":"admin","password":"newpassw0rd"}`), http.StatusOK)
+	want(do("PUT", "/api/users/bob", `{"role":"admin","password":"newpassw0rd","confirm_password":"whatever1"}`), http.StatusOK)
 	if r, _ := store.Lookup("bob"); r.EffectiveRole() != auth.RoleAdmin || !auth.VerifyPassword(r.Hash, "newpassw0rd") || r.ValidAfter.IsZero() {
 		t.Errorf("bob = %+v", r)
 	}
 
 	// Self-protection.
-	want(do("PUT", "/api/users/tester", `{"role":"player"}`), http.StatusBadRequest)
+	want(do("PUT", "/api/users/tester", `{"role":"player","confirm_password":"whatever1"}`), http.StatusBadRequest)
 	want(do("DELETE", "/api/users/tester", ""), http.StatusBadRequest)
 	want(do("PUT", "/api/users/tester", `{"revoke_sessions":true}`), http.StatusBadRequest)
 	want(do("PUT", "/api/users/ghost", `{"role":"admin"}`), http.StatusNotFound)
 
 	// Last-admin guard: demote bob back, then tester is the only admin.
-	want(do("PUT", "/api/users/bob", `{"role":"player"}`), http.StatusOK)
-	want(do("DELETE", "/api/users/bob", ""), http.StatusOK)
+	want(do("PUT", "/api/users/bob", `{"role":"player","confirm_password":"whatever1"}`), http.StatusOK)
+	want(do("DELETE", "/api/users/bob", `{"confirm_password":"whatever1"}`), http.StatusOK)
 	if _, ok := store.Lookup("bob"); ok {
 		t.Error("bob still present after delete")
 	}
@@ -135,13 +137,13 @@ func TestUsersAPI_GoogleOnly(t *testing.T) {
 	code(do("POST", "/api/users", `{"username":"x3","google_email":"env@example.com"}`), http.StatusBadRequest)
 
 	// A google-only user can't drop the link without a password.
-	code(do("PUT", "/api/users/gina", `{"google_email":""}`), http.StatusBadRequest)
-	code(do("PUT", "/api/users/gina", `{"password":"longenough1","google_email":""}`), http.StatusBadRequest) // email cleared before hash exists
-	code(do("PUT", "/api/users/gina", `{"google_email":"gina2@example.com"}`), http.StatusOK)
+	code(do("PUT", "/api/users/gina", `{"google_email":"","confirm_password":"whatever1"}`), http.StatusBadRequest)
+	code(do("PUT", "/api/users/gina", `{"password":"longenough1","google_email":"","confirm_password":"whatever1"}`), http.StatusBadRequest) // email cleared before hash exists
+	code(do("PUT", "/api/users/gina", `{"google_email":"gina2@example.com","confirm_password":"whatever1"}`), http.StatusOK)
 	if _, ok := h.App.Google.Lookup("gina@example.com"); ok {
 		t.Error("old email still allowed")
 	}
-	code(do("DELETE", "/api/users/gina", ""), http.StatusOK)
+	code(do("DELETE", "/api/users/gina", `{"confirm_password":"whatever1"}`), http.StatusOK)
 	if h.App.Google.Allows("gina") {
 		t.Error("deleted user still allowed")
 	}
@@ -442,10 +444,10 @@ func TestTOTPEnrolmentAPI(t *testing.T) {
 	secret, _ := ms.Begin("bob")
 	c, _ := mfa.Code(secret, time.Now())
 	ms.Confirm("bob", c)
-	if rec := call("PUT", "/api/users/bob", `{"reset_mfa":true}`); rec.Code != 200 || ms.Enabled("bob") {
+	if rec := call("PUT", "/api/users/bob", `{"reset_mfa":true,"confirm_password":"whatever1"}`); rec.Code != 200 || ms.Enabled("bob") {
 		t.Fatalf("reset = %d %s", rec.Code, rec.Body.String())
 	}
-	if rec := call("PUT", "/api/users/bob", `{"reset_mfa":true}`); rec.Code != http.StatusBadRequest {
+	if rec := call("PUT", "/api/users/bob", `{"reset_mfa":true,"confirm_password":"whatever1"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("reset with nothing to reset = %d, want 400", rec.Code)
 	}
 }
@@ -520,5 +522,167 @@ func TestOIDCProvidersAPI(t *testing.T) {
 	}
 	if len(ostore.List()) != 0 {
 		t.Fatal("provider still listed")
+	}
+}
+
+func TestUsersAPI_StepUp(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	path := filepath.Join(t.TempDir(), "users")
+	hash, _ := auth.HashPassword("whatever1")
+	if err := auth.SetUserHash(path, "tester", hash); err != nil {
+		t.Fatal(err)
+	}
+	store, err := auth.NewUserStore(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.Auth.Store = store
+	h.App.Auth.Sessions.Store = store
+	do := func(method, p, body string) int {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(method, p, []byte(body)))
+		return rec.Code
+	}
+	ok, bad := `"confirm_password":"whatever1"`, `"confirm_password":"nope"`
+	// Creating a player needs no step-up; an admin does.
+	if got := do("POST", "/api/users", `{"username":"bob","password":"hunter22x","role":"player"}`); got != http.StatusCreated {
+		t.Fatalf("create player = %d", got)
+	}
+	for _, body := range []string{
+		`{"username":"eve","password":"hunter22x","role":"admin"}`,
+		`{"username":"eve","password":"hunter22x","role":"admin",` + bad + `}`,
+	} {
+		if got := do("POST", "/api/users", body); got != http.StatusForbidden {
+			t.Errorf("create admin %s = %d, want 403", body, got)
+		}
+	}
+	if _, found := store.Lookup("eve"); found {
+		t.Fatal("admin was created without the password")
+	}
+	if got := do("POST", "/api/users", `{"username":"eve","password":"hunter22x","role":"admin",`+ok+`}`); got != http.StatusCreated {
+		t.Errorf("create admin with the password = %d", got)
+	}
+	// Each of these changes who can sign in as bob, so each is refused without it.
+	for _, body := range []string{
+		`{"role":"admin"}`, `{"password":"newpassw0rd"}`, `{"reset_mfa":true}`, `{"role":"admin",` + bad + `}`,
+	} {
+		if got := do("PUT", "/api/users/bob", body); got != http.StatusForbidden {
+			t.Errorf("PUT %s = %d, want 403", body, got)
+		}
+	}
+	if r, _ := store.Lookup("bob"); r.EffectiveRole() != auth.RolePlayer || !auth.VerifyPassword(r.Hash, "hunter22x") {
+		t.Errorf("bob changed without the password: %+v", r)
+	}
+	// An admin changing their own password is asked for the current one too.
+	if got := do("PUT", "/api/users/tester", `{"password":"another-pass1"}`); got != http.StatusForbidden {
+		t.Errorf("own password change without the current one = %d, want 403", got)
+	}
+	if got := do("PUT", "/api/users/tester", `{"password":"another-pass1",`+ok+`}`); got != http.StatusOK {
+		t.Errorf("own password change with the current one = %d, want 200", got)
+	}
+	// Games and sign-outs stay a single click.
+	if got := do("PUT", "/api/users/bob", `{"revoke_sessions":true}`); got != http.StatusOK {
+		t.Errorf("revoke sessions = %d, want 200", got)
+	}
+	if got := do("DELETE", "/api/users/bob", ``); got != http.StatusBadRequest && got != http.StatusForbidden {
+		t.Errorf("delete without the password = %d, want refusal", got)
+	}
+	if _, found := store.Lookup("bob"); !found {
+		t.Fatal("bob was deleted without the password")
+	}
+}
+
+func TestChangeOwnPassword(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	users := filepath.Join(t.TempDir(), "users")
+	hash, _ := auth.HashPassword("whatever1")
+	auth.SetUserHash(users, "tester", hash)
+	store, _ := auth.NewUserStore(users)
+	h.App.Auth.Store, h.App.Auth.Sessions.Store = store, store
+	call := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("POST", "/api/account/password", []byte(body)))
+		return rec
+	}
+	for name, c := range map[string]struct {
+		body string
+		want int
+	}{
+		"wrong current": {`{"current":"nope","new":"another-pass"}`, http.StatusForbidden},
+		"too short":     {`{"current":"whatever1","new":"short"}`, http.StatusBadRequest},
+		"same":          {`{"current":"whatever1","new":"whatever1"}`, http.StatusBadRequest},
+	} {
+		if rec := call(c.body); rec.Code != c.want {
+			t.Errorf("%s = %d %s, want %d", name, rec.Code, rec.Body.String(), c.want)
+		}
+	}
+	if rec := call(`{"current":"whatever1","new":"another-pass"}`); rec.Code != 200 {
+		t.Fatalf("change = %d %s", rec.Code, rec.Body.String())
+	}
+	store.Reload()
+	rec, _ := store.Lookup("tester")
+	if !auth.VerifyPassword(rec.Hash, "another-pass") || auth.VerifyPassword(rec.Hash, "whatever1") {
+		t.Error("the stored hash was not replaced")
+	}
+}
+
+func TestMentionsAPI(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h.App.Mentions, _ = notify.OpenMentions("")
+	h.App.DiscordOn = true
+	put := func(body string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("PUT", "/api/account/mentions", []byte(body)))
+		return rec
+	}
+	if rec := put(`{"discord_id":"abc","games":["windrose"]}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("bad id = %d", rec.Code)
+	}
+	rec := put(`{"discord_id":"12345678901234567","games":["windrose","nosuch"]}`)
+	if rec.Code != 200 {
+		t.Fatalf("save = %d %s", rec.Code, rec.Body.String())
+	}
+	var v mentionView
+	json.Unmarshal(rec.Body.Bytes(), &v)
+	if !v.Available || v.DiscordID == "" || len(v.Games) != 1 || !v.Games[0].Checked {
+		t.Fatalf("view = %+v", v)
+	}
+	if ids := h.App.Mentions.IDsFor("nosuch"); len(ids) != 0 {
+		t.Errorf("an unknown game was kept: %v", ids)
+	}
+}
+
+func TestMFAGate(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	dir := t.TempDir()
+	users := filepath.Join(dir, "users")
+	hash, _ := auth.HashPassword("whatever1")
+	auth.SetUserHash(users, "tester", hash)
+	store, _ := auth.NewUserStore(users)
+	h.App.Auth.Store, h.App.Auth.Sessions.Store = store, store
+	vlt, _ := vault.New("", filepath.Join(dir, "k"))
+	h.App.MFA, _ = mfa.NewStore(filepath.Join(dir, "mfa.json"), vlt)
+	h.App.Settings, _ = settings.New(settings.Values{IdleMinutes: 15, NightStartHour: 23, NightEndHour: 5, MaxActiveGames: 1}, "")
+	gate := h.App.MFAGate(h.mux())
+	get := func(path string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		gate.ServeHTTP(rec, h.authedReq("GET", path, nil))
+		return rec
+	}
+	if rec := get("/api/games"); rec.Code != 200 {
+		t.Fatalf("gate off: games = %d", rec.Code)
+	}
+	h.App.Settings.Modify(func(v *settings.Values) error { v.RequireAdminMFA = true; return nil })
+	if rec := get("/api/games"); rec.Code != http.StatusForbidden {
+		t.Errorf("gate on, no app: api = %d, want 403", rec.Code)
+	}
+	if rec := get("/settings"); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/account#totp" {
+		t.Errorf("gate on: page = %d %s, want a redirect to the account page", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := get("/api/account/security"); rec.Code != 200 || !strings.Contains(rec.Body.String(), `"mfa_required":true`) {
+		t.Errorf("account security = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := get("/account"); rec.Code != 200 {
+		t.Errorf("account page = %d, want it reachable", rec.Code)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/gamefiles"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1117,10 +1118,18 @@ func TestRestore_AdminOnlyAndPreconditions(t *testing.T) {
 		t.Errorf("restore not configured = %d, want 404", got)
 	}
 	h.App.Restore = &restore.Manager{Docker: docker}
+	hash, _ := auth.HashPassword("whatever1")
+	h.App.Auth.Users = auth.Users{"tester": {Role: auth.RoleAdmin, Hash: hash}}
+	if got := post(`{"file":"a.tgz"}`); got != http.StatusForbidden {
+		t.Errorf("restore without the password = %d, want 403", got)
+	}
+	if got := post(`{"file":"a.tgz","password":"wrong"}`); got != http.StatusForbidden {
+		t.Errorf("restore with a wrong password = %d, want 403", got)
+	}
 	if got := post(`not json`); got != http.StatusBadRequest {
 		t.Errorf("bad body = %d, want 400", got)
 	}
-	if got := post(`{"file":"a.tgz"}`); got != http.StatusNotFound { // the game has no restore command
+	if got := post(`{"file":"a.tgz","password":"whatever1"}`); got != http.StatusNotFound { // the game has no restore command
 		t.Errorf("game without a restore command = %d, want 404", got)
 	}
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
@@ -1506,5 +1515,137 @@ func TestDisableDeletingDataAsksForIdAndPassword(t *testing.T) {
 	// A plain disable needs neither, and deletes nothing.
 	if c := do(""); c != http.StatusNoContent || fm.disabled[1] != "minecraft data=false backups=false" {
 		t.Errorf("plain disable: %d %v", c, fm.disabled)
+	}
+}
+
+func TestSignedInResponsesAreNotCached(t *testing.T) {
+	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	for _, p := range []string{"/api/games", "/api/host", "/"} {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq("GET", p, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET %s = %d", p, rec.Code)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "no-store" {
+			t.Errorf("GET %s Cache-Control = %q, want no-store", p, got)
+		}
+	}
+}
+
+func TestBackupsOverview(t *testing.T) {
+	docker := fakeDockerClient(t, "#!/bin/sh\nexit 0\n")
+	mount := t.TempDir()
+	dir := filepath.Join(mount, "g")
+	os.MkdirAll(dir, 0o755)
+	os.WriteFile(filepath.Join(dir, "old.tgz"), []byte("a"), 0o644)
+	os.Chtimes(filepath.Join(dir, "old.tgz"), time.Now().Add(-48*time.Hour), time.Now().Add(-48*time.Hour))
+	os.WriteFile(filepath.Join(dir, "new.tgz"), []byte("bb"), 0o644)
+	h := newHarnessFromDefs(t, docker, []games.GameDef{
+		{ID: "g", DisplayName: "G", ContainerName: "g", Status: &games.DockerStatusChecker{Docker: docker},
+			Backup: &games.BackupSpec{Exec: []string{"backup"}, LocalDir: dir}},
+		{ID: "none", DisplayName: "None", ContainerName: "none", Status: &games.DockerStatusChecker{Docker: docker}},
+	})
+	h.App.Backups = &backup.Manager{Docker: docker, Root: &backup.Root{Mount: mount, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state"), ConfirmNew: true}}
+	rec := httptest.NewRecorder()
+	h.mux().ServeHTTP(rec, h.authedReq("GET", "/api/backups/overview", nil))
+	if rec.Code != 200 {
+		t.Fatalf("overview = %d %s", rec.Code, rec.Body.String())
+	}
+	var v struct {
+		Games []backupOverviewGame `json:"games"`
+	}
+	json.Unmarshal(rec.Body.Bytes(), &v)
+	if len(v.Games) != 1 || v.Games[0].Count != 2 || v.Games[0].Latest == nil || v.Games[0].Latest.Name != "new.tgz" {
+		t.Fatalf("games = %+v", v.Games)
+	}
+}
+
+func TestGameFiles_EditNeedsAdminPasswordAndFreshHash(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "server.properties")
+	if err := os.WriteFile(file, []byte("motd=hi\nrcon.password=hunter2\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	docker := fakeDockerClient(t, "#!/bin/sh\nif [ \"$1\" = ps ]; then echo g; exit 0; fi\nif [ \"$1\" = exec ]; then\n  if [ \"$2\" = -i ]; then cat > '"+file+"'; exit 0; fi\n  cat '"+file+"'; exit 0\nfi\nexit 0\n")
+	specs, err := gamefiles.Normalize([]gamefiles.Spec{{ID: "props", Label: "Server settings", Path: "/data/server.properties", Redact: []string{`^rcon\.password=(.*)$`}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := newHarnessFromDefs(t, docker, []games.GameDef{
+		{ID: "g", DisplayName: "g", ContainerName: "g", Status: &games.DockerStatusChecker{Docker: docker}, Files: specs},
+		{ID: "plain", DisplayName: "plain", ContainerName: "plain", Status: &games.DockerStatusChecker{Docker: docker}},
+	})
+	hist, err := history.Open(filepath.Join(t.TempDir(), "e.jsonl"), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	h.App.History = hist
+	h.App.Files = &gamefiles.Service{Docker: docker, HistoryDir: t.TempDir()}
+	hash, _ := auth.HashPassword("whatever1")
+	h.App.Auth.Users = auth.Users{"tester": {Role: auth.RoleAdmin, Hash: hash}}
+	call := func(method, path, body string) (int, string) {
+		rec := httptest.NewRecorder()
+		h.mux().ServeHTTP(rec, h.authedReq(method, path, []byte(body)))
+		return rec.Code, rec.Body.String()
+	}
+
+	code, body := call("GET", "/api/games/g/files/props", "")
+	if code != 200 || strings.Contains(body, "hunter2") || !strings.Contains(body, gamefiles.Mask) {
+		t.Fatalf("read = %d %s (the secret must be hidden)", code, body)
+	}
+	var got struct {
+		Content string `json:"content"`
+		SHA     string `json:"sha256"`
+	}
+	_ = json.Unmarshal([]byte(body), &got)
+	save := func(content, base, pw string) (int, string) {
+		b, _ := json.Marshal(map[string]string{"content": content, "base_sha256": base, "password": pw})
+		return call("PUT", "/api/games/g/files/props", string(b))
+	}
+	edited := strings.Replace(got.Content, "motd=hi", "motd=hello", 1)
+
+	if c, _ := save(edited, got.SHA, ""); c != http.StatusForbidden {
+		t.Errorf("save without the password = %d, want 403", c)
+	}
+	if c, _ := save(edited, got.SHA, "wrong"); c != http.StatusForbidden {
+		t.Errorf("save with a wrong password = %d, want 403", c)
+	}
+	if b, _ := os.ReadFile(file); !strings.Contains(string(b), "motd=hi") {
+		t.Fatal("file changed without a valid password")
+	}
+	if c, b := save(edited, got.SHA, "whatever1"); c != 200 {
+		t.Fatalf("save = %d %s", c, b)
+	}
+	if b, _ := os.ReadFile(file); string(b) != "motd=hello\nrcon.password=hunter2\n" {
+		t.Fatalf("file = %q: the hidden value must be kept", b)
+	}
+	// The same (now stale) hash is refused.
+	if c, _ := save("motd=again\n", got.SHA, "whatever1"); c != http.StatusConflict {
+		t.Errorf("stale save = %d, want 409", c)
+	}
+	// History keeps the old version, and unknown files or games are 404.
+	if c, b := call("GET", "/api/games/g/files/props/history", ""); c != 200 || !strings.Contains(b, `"bytes"`) {
+		t.Errorf("history = %d %s", c, b)
+	}
+	for _, p := range []string{"/api/games/g/files/nope", "/api/games/plain/files", "/api/games/plain/files/props"} {
+		if c, _ := call("GET", p, ""); c != 404 {
+			t.Errorf("GET %s = %d, want 404", p, c)
+		}
+	}
+	var saw bool
+	for _, e := range hist.Recent(20, "g") {
+		saw = saw || e.Kind == history.KindFiles
+	}
+	if !saw {
+		t.Error("the edit was not recorded in the activity feed")
+	}
+
+	// Players can do none of it.
+	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
+	if c, _ := call("GET", "/api/games/g/files/props", ""); c != http.StatusForbidden {
+		t.Errorf("player read = %d, want 403", c)
+	}
+	if c, _ := save(edited, got.SHA, "whatever1"); c != http.StatusForbidden {
+		t.Errorf("player save = %d, want 403", c)
 	}
 }

@@ -45,8 +45,11 @@ type Action struct {
 	Danger  bool    `yaml:"danger"`
 	Fields  []Field `yaml:"fields"`
 	Request Request `yaml:"request"`
-	Result  string  `yaml:"result"` // template over the arguments
-	List    *List   `yaml:"list"`
+	// RCON, instead of Request, is one command line sent over RCON, with
+	// {field} placeholders filled from the validated arguments.
+	RCON   string `yaml:"rcon"`
+	Result string `yaml:"result"` // template over the arguments
+	List   *List  `yaml:"list"`
 }
 
 // InfoSource is one GET whose reply feeds the info panel. Fields address it
@@ -112,17 +115,7 @@ func (p *HTTPJSON) Info(ctx context.Context) (map[string]any, bool) {
 // ---- games.Console ----
 
 // Actions implements games.Console.
-func (p *HTTPJSON) Actions() []games.ConsoleAction {
-	out := make([]games.ConsoleAction, 0, len(p.ActionDefs))
-	for _, a := range p.ActionDefs {
-		ca := games.ConsoleAction{ID: a.ID, Label: a.Label, Danger: a.Danger}
-		for _, f := range a.Fields {
-			ca.Fields = append(ca.Fields, games.ConsoleField{Name: f.Name, Label: f.Label, Optional: f.Optional})
-		}
-		out = append(out, ca)
-	}
-	return out
-}
+func (p *HTTPJSON) Actions() []games.ConsoleAction { return consoleActions(p.ActionDefs) }
 
 // Run implements games.Console. Only declared actions run; arguments are
 // validated before anything is sent.
@@ -136,25 +129,9 @@ func (p *HTTPJSON) Run(ctx context.Context, action string, args map[string]strin
 	if a == nil {
 		return "", fmt.Errorf("unknown action %q", action)
 	}
-	vals := map[string]string{}
-	for _, f := range a.Fields {
-		v := strings.TrimSpace(args[f.Name])
-		max := f.Max
-		if max == 0 {
-			max = 200
-		}
-		if len([]rune(v)) > max {
-			return "", fmt.Errorf("%w: %s is longer than %d characters", games.ErrBadInput, f.Name, max)
-		}
-		for _, r := range v {
-			if unicode.IsControl(r) {
-				return "", fmt.Errorf("%w: %s contains control characters", games.ErrBadInput, f.Name)
-			}
-		}
-		if v == "" && !f.Optional {
-			return "", fmt.Errorf("%w: %s is required", games.ErrBadInput, f.Name)
-		}
-		vals[f.Name] = v
+	vals, err := actionArgs(a, args)
+	if err != nil {
+		return "", err
 	}
 	doc, err := p.send(ctx, a.Request, vals)
 	if err != nil {
@@ -167,6 +144,43 @@ func (p *HTTPJSON) Run(ctx context.Context, action string, args map[string]strin
 		return s, nil
 	}
 	return "Done.", nil
+}
+
+// actionArgs validates the admin's arguments against the action's declared fields.
+func actionArgs(a *Action, args map[string]string) (map[string]string, error) {
+	vals := map[string]string{}
+	for _, f := range a.Fields {
+		v := strings.TrimSpace(args[f.Name])
+		max := f.Max
+		if max == 0 {
+			max = 200
+		}
+		if len([]rune(v)) > max {
+			return nil, fmt.Errorf("%w: %s is longer than %d characters", games.ErrBadInput, f.Name, max)
+		}
+		for _, r := range v {
+			if unicode.IsControl(r) {
+				return nil, fmt.Errorf("%w: %s contains control characters", games.ErrBadInput, f.Name)
+			}
+		}
+		if v == "" && !f.Optional {
+			return nil, fmt.Errorf("%w: %s is required", games.ErrBadInput, f.Name)
+		}
+		vals[f.Name] = v
+	}
+	return vals, nil
+}
+
+func consoleActions(defs []Action) []games.ConsoleAction {
+	out := make([]games.ConsoleAction, 0, len(defs))
+	for _, a := range defs {
+		ca := games.ConsoleAction{ID: a.ID, Label: a.Label, Danger: a.Danger}
+		for _, f := range a.Fields {
+			ca.Fields = append(ca.Fields, games.ConsoleField{Name: f.Name, Label: f.Label, Optional: f.Optional})
+		}
+		out = append(out, ca)
+	}
+	return out
 }
 
 func (p *HTTPJSON) send(ctx context.Context, r Request, vals map[string]string) (any, error) {

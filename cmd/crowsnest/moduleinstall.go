@@ -247,10 +247,13 @@ func (t *moduleTool) update(id, wantHash string, yes bool) error {
 		return err
 	}
 	if e.SignedBy != "" && by == "" && wantHash == "" {
-		return fmt.Errorf("%q was installed under a signature from %q and this version is not signed by a trusted key; refusing (pass --sha256 if you checked it by hand)", id, e.SignedBy)
+		return fmt.Errorf("%q was installed under a signature from %q and this version is not signed by a trusted key; refusing (to trust a different source of it, remove the module and install it again)", id, e.SignedBy)
 	}
 	if m.ID != id {
 		return fmt.Errorf("the source now serves module %q, not %q; refusing", m.ID, id)
+	}
+	if err := modules.CheckUpdate(e, m, body, by); err != nil {
+		return err
 	}
 	if modules.Hash(body) == e.SHA256 {
 		// Same bytes as approved. If the file on disk was edited, this restores it.

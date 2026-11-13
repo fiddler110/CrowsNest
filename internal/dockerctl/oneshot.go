@@ -14,6 +14,13 @@ import (
 // timeout passes. A non-zero exit returns an error carrying the last lines of
 // its output. poll is the polling interval (default 1 second).
 func (c *Client) RunOnce(ctx context.Context, spec CreateSpec, timeout, poll time.Duration) error {
+	_, err := c.RunOnceOutput(ctx, spec, timeout, poll, 0)
+	return err
+}
+
+// RunOnceOutput is RunOnce that also returns what the container printed (stdout and stderr together), up to
+// maxOut bytes, when it succeeds. maxOut 0 returns nothing.
+func (c *Client) RunOnceOutput(ctx context.Context, spec CreateSpec, timeout, poll time.Duration, maxOut int64) (string, error) {
 	if poll <= 0 {
 		poll = time.Second
 	}
@@ -23,28 +30,37 @@ func (c *Client) RunOnce(ctx context.Context, spec CreateSpec, timeout, poll tim
 		_ = c.Remove(rctx, spec.Name)
 	}
 	if ok, err := c.Exists(ctx, spec.Name); err != nil {
-		return err
+		return "", err
 	} else if ok {
 		if err := c.Remove(ctx, spec.Name); err != nil {
-			return fmt.Errorf("clearing an old %s container: %w", spec.Name, err)
+			return "", fmt.Errorf("clearing an old %s container: %w", spec.Name, err)
 		}
 	}
 	if err := c.Create(ctx, spec); err != nil {
-		return fmt.Errorf("creating %s: %w", spec.Name, err)
+		return "", fmt.Errorf("creating %s: %w", spec.Name, err)
 	}
 	defer remove()
 	if err := c.Start(ctx, Target{ContainerName: spec.Name}); err != nil {
-		return fmt.Errorf("starting %s: %w", spec.Name, err)
+		return "", fmt.Errorf("starting %s: %w", spec.Name, err)
 	}
 	deadline := time.Now().Add(timeout)
 	for {
 		st, err := c.State(ctx, spec.Name)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if !st.Running && !st.FinishedAt.IsZero() {
 			if st.ExitCode == 0 {
-				return nil
+				if maxOut <= 0 {
+					return "", nil
+				}
+				rc, err := c.Logs(ctx, spec.Name, "", "")
+				if err != nil {
+					return "", fmt.Errorf("reading the output of %s: %w", spec.Name, err)
+				}
+				defer rc.Close()
+				b, err := io.ReadAll(io.LimitReader(rc, maxOut))
+				return string(b), err
 			}
 			out := "(no output)"
 			if rc, err := c.Logs(ctx, spec.Name, "", "20"); err == nil {
@@ -52,14 +68,14 @@ func (c *Client) RunOnce(ctx context.Context, spec CreateSpec, timeout, poll tim
 				_ = rc.Close()
 				out = strings.TrimSpace(string(b))
 			}
-			return fmt.Errorf("%s exited with status %d: %s", spec.Name, st.ExitCode, out)
+			return "", fmt.Errorf("%s exited with status %d: %s", spec.Name, st.ExitCode, out)
 		}
 		if time.Now().After(deadline) {
-			return fmt.Errorf("%s did not finish within %s", spec.Name, timeout)
+			return "", fmt.Errorf("%s did not finish within %s", spec.Name, timeout)
 		}
 		select {
 		case <-ctx.Done():
-			return ctx.Err()
+			return "", ctx.Err()
 		case <-time.After(poll):
 		}
 	}

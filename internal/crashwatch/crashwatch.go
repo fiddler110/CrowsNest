@@ -19,6 +19,7 @@ import (
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/notify"
 )
 
 // Defaults for a Watcher's thresholds.
@@ -213,7 +214,7 @@ func (w *Watcher) check(ctx context.Context, d games.GameDef) {
 		if w.Notifier != nil {
 			nctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 			defer cancel()
-			w.Notifier.Notify(nctx, fmt.Sprintf(
+			w.Notifier.Notify(notify.WithGame(nctx, d.ID), fmt.Sprintf(
 				"⚠️ **%s** is crash-looping: %d crashes in %s. It will keep restarting until someone stops it or fixes it.",
 				d.DisplayName, n, w.window()))
 		}

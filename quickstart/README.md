@@ -23,7 +23,22 @@ then pick the admin username and passphrase. Then open **Games**, choose a game,
 | `compose.yaml` | two containers: the panel, and the `guard` (a scoped Docker API filter that also runs the exec allowlist) |
 | `config.yaml` | the panel's settings; no games, dashboard games switched on |
 | `policy/policy.yaml` | what the dashboard may create: host ports, exec, where game data lives (images and networks come from the modules) |
-| `.env.example` | timezone, the docker group id, where the panel listens |
+| `.env.example` | the release to run, timezone, the docker group id, where the panel listens |
+
+## Upgrading
+
+`.env` pins the release (`CROWSNEST_TAG`), so nothing changes under you. Read the
+[release notes](https://github.com/fiddler110/crowsnest/releases), then:
+
+```sh
+sed -i 's/^CROWSNEST_TAG=.*/CROWSNEST_TAG=0.10.0/' .env     # the new version
+docker compose pull && docker compose up -d
+docker compose exec crowsnest crowsnest doctor
+```
+
+Back up first with `crowsnest state export` (see the [backups guide](../docs/backups.md)). To roll back, put the old
+version in `.env` and run the same two compose commands. The release page's `quickstart.tar.gz` is this folder with
+`CROWSNEST_TAG` already set to that release.
 
 ## Things to know
 

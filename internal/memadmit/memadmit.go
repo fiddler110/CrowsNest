@@ -12,6 +12,7 @@ package memadmit
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/fiddler110/crowsnest/internal/atomicfile"
 	"os"
 	"path/filepath"
 	"sync"
@@ -83,10 +84,7 @@ func (b *Budget) Observe(id string, used uint64) {
 	raw, _ := json.Marshal(b.peaks)
 	b.mu.Unlock()
 	if b.file != "" {
-		tmp := b.file + ".tmp"
-		if os.WriteFile(tmp, raw, 0o600) == nil {
-			_ = os.Rename(tmp, b.file)
-		}
+		_ = atomicfile.Write(b.file, raw, 0o600) // a lost peak is measured again
 	}
 }
 

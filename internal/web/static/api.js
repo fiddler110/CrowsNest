@@ -110,7 +110,9 @@ function openModal(dialog, focusEl, onCancel) {
 
 // confirmAction asks a yes/no question in the themed dialog. Resolves true
 // when confirmed. danger styles the confirm button as destructive.
-function confirmAction({ title, message = "", confirmLabel = "Confirm", danger = false, eyebrow = "// confirm" }) {
+// With askPassword the dialog also asks for the signed-in user's password and
+// resolves to it (a non-empty string) instead of true; cancelling gives false.
+function confirmAction({ title, message = "", confirmLabel = "Confirm", danger = false, eyebrow = "// confirm", askPassword = false }) {
   const dialog = document.getElementById("confirm-dialog");
   if (!dialog) return Promise.resolve(false);
   const ok = document.getElementById("confirm-ok");
@@ -120,20 +122,27 @@ function confirmAction({ title, message = "", confirmLabel = "Confirm", danger =
   document.getElementById("confirm-message").textContent = message;
   ok.textContent = confirmLabel;
   ok.className = danger ? "btn btn-danger" : "btn btn-primary";
+  const pw = document.getElementById("confirm-password");
+  if (pw) { pw.value = ""; pw.hidden = !askPassword; }
   return new Promise((resolve) => {
     let close;
     const done = (answer) => {
       ok.removeEventListener("click", onOK);
       cancel.removeEventListener("click", onCancel);
       close();
-      resolve(answer);
+      const typed = pw ? pw.value : "";
+      if (pw) pw.value = "";
+      resolve(answer && askPassword ? typed : answer);
     };
-    const onOK = () => done(true);
+    const onOK = () => {
+      if (askPassword && pw && !pw.value) { pw.focus(); return; }
+      done(true);
+    };
     const onCancel = () => done(false);
     ok.addEventListener("click", onOK);
     cancel.addEventListener("click", onCancel);
     // Destructive actions start on Cancel so a stray Enter does no harm.
-    close = openModal(dialog, danger ? cancel : ok, onCancel);
+    close = openModal(dialog, askPassword && pw ? pw : danger ? cancel : ok, onCancel);
   });
 }
 

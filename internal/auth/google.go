@@ -36,6 +36,7 @@ const (
 	GoogleCallbackPath = "/auth/google/callback"
 
 	googleAuthURL  = "https://accounts.google.com/o/oauth2/v2/auth"
+	googleJWKSURL  = "https://www.googleapis.com/oauth2/v3/certs"
 	googleTokenURL = "https://oauth2.googleapis.com/token" // #nosec G101 -- an endpoint URL, not a credential
 
 	oauthStateCookie = "crowsnest_oauth"
@@ -133,6 +134,7 @@ type GoogleLogin struct {
 	// Overridable for tests; default to Google's endpoints.
 	AuthURL  string
 	TokenURL string
+	JWKSURL  string // overridable for tests; "" means Google's own
 }
 
 // creds returns the current client settings.
@@ -167,7 +169,7 @@ func (g *GoogleLogin) Provider() OIDCProvider {
 	id, secret, redirect := g.creds()
 	p := OIDCProvider{
 		ID: GoogleProviderID, Name: "Google", Issuer: "https://accounts.google.com",
-		AuthURL: googleAuthURL, TokenURL: googleTokenURL,
+		AuthURL: googleAuthURL, TokenURL: googleTokenURL, JWKSURL: googleJWKSURL,
 		ClientID: id, ClientSecret: secret, RedirectURL: redirect, Enabled: g.Active(),
 	}
 	if g.AuthURL != "" {
@@ -175,6 +177,7 @@ func (g *GoogleLogin) Provider() OIDCProvider {
 	}
 	if g.TokenURL != "" {
 		p.TokenURL = g.TokenURL
+		p.JWKSURL = g.JWKSURL // a test server stands in for Google: its keys, or none
 	}
 	return p
 }

@@ -17,6 +17,10 @@
     <svg class="icon"><use href="#i-alert"/></svg>
     <span>The backups folder has a problem, so backups are paused. Check that the drive is mounted (the activity log and Discord say what is wrong, and <code>crowsnest doctor</code> checks it).</span>
   </div>
+  <div id="notify-banner" class="banner" role="alert" hidden>
+    <svg class="icon"><use href="#i-alert"/></svg>
+    <span>The last notification failed to send, so alerts may not be reaching you. <b id="notify-detail"></b> The panel retried before giving up; the activity log has the reason.</span>
+  </div>
   <div id="offsite-banner" class="banner" role="alert" hidden>
     <svg class="icon"><use href="#i-alert"/></svg>
     <span>The offsite backup copy has a problem or has stopped reporting, so your backups may not be leaving this machine. <b id="offsite-detail"></b> See <code>docker compose logs crowsnest-offsite</code>.</span>
@@ -69,6 +73,8 @@
       </div>
       {{end}}
 
+      <div class="connect connect-live" hidden></div>
+
       <p class="crew" hidden><svg class="icon"><use href="#i-users"/></svg><span class="player-count"></span></p>
 
       <p class="idle-timer" hidden><svg class="icon"><use href="#i-clock"/></svg><span class="idle-text"></span></p>
@@ -86,6 +92,7 @@
           <button class="tab" type="button" role="tab" data-tab="stats" id="tab-{{.ID}}-stats" aria-controls="panel-{{.ID}}-stats" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-chart"/></svg>Stats</button>
           {{if .HasInfo}}<button class="tab" type="button" role="tab" data-tab="info" id="tab-{{.ID}}-info" aria-controls="panel-{{.ID}}-info" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-info"/></svg>Info</button>{{end}}
           {{if .HasBackup}}<button class="tab" type="button" role="tab" data-tab="backups" id="tab-{{.ID}}-backups" aria-controls="panel-{{.ID}}-backups" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-archive"/></svg>Backups</button>{{end}}
+          {{if .HasFiles}}<button class="tab" type="button" role="tab" data-tab="files" id="tab-{{.ID}}-files" aria-controls="panel-{{.ID}}-files" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-file"/></svg>Files</button>{{end}}
           {{if .HasConsole}}<button class="tab" type="button" role="tab" data-tab="console" id="tab-{{.ID}}-console" aria-controls="panel-{{.ID}}-console" aria-selected="false"><svg class="icon" aria-hidden="true"><use href="#i-prompt"/></svg>Console</button>{{end}}
         </div>
       </div>
@@ -111,6 +118,21 @@
           <span class="backups-note"></span>
         </div>
         <ul class="backups-list"></ul>
+      </div>
+      {{end}}
+      {{if .HasFiles}}
+      <div class="files-panel" role="tabpanel" data-panel="files" id="panel-{{.ID}}-files" aria-labelledby="tab-{{.ID}}-files" tabindex="0" hidden>
+        <div class="files-pick" role="group" aria-label="Files"></div>
+        <p class="files-note"></p>
+        <div class="files-editor" hidden>
+          <textarea class="files-text" rows="14" spellcheck="false" autocomplete="off" autocapitalize="off" aria-label="File contents"></textarea>
+          <div class="files-bar">
+            <button class="btn btn-primary files-save" type="button">Save</button>
+            <button class="btn btn-ghost files-reload" type="button">Reload</button>
+            <select class="files-versions" aria-label="Earlier versions"></select>
+            <button class="btn btn-ghost files-load-version" type="button">Load that version</button>
+          </div>
+        </div>
       </div>
       {{end}}
       {{if .HasConsole}}

@@ -19,9 +19,12 @@ user's very next request.
 
 ## Sessions
 
-A session is a signed cookie, valid for 3 hours after login, and the server also keeps a list of live sessions
+A session is a signed cookie that lasts 3 hours without activity (`server.session_idle_minutes`, default 180).
+Using the panel renews it (an open, visible dashboard counts: it checks in every 10 minutes), but never past
+`server.session_max_hours` after sign-in (default 12), so everyone signs in again at least that often. Set the
+maximum to no more than the idle time to turn renewal off and get a fixed lifetime. The server also keeps a list of live sessions
 (`sessions.json` next to `settings.json`: an id, device, address and times; nothing in it can sign anyone in). There's
-no "remember me": you log in again once it expires. Every signed-in person can see their own devices on the
+no "remember me": you log in again once it expires. Anyone with a password can change it on the **Account** page (it asks for the current one and signs their other devices out). Every signed-in person can see their own devices on the
 **Account** page, sign out one device, every other device, or everywhere, and set a display name (shown in the top
 bar; the sign-in name stays what the audit log and permissions use). A restart keeps people signed in. Sessions
 made before this list existed (a cookie with no session id) are ended once on upgrade. An admin can still revoke all
@@ -64,8 +67,14 @@ the saved secret can't be read and has to be entered again.
 Addresses must be plain ASCII and match the Google
 account's exactly (case aside), so `j.doe@gmail.com` and `jdoe@gmail.com` are different entries.
 
+The first sign-in with a listed, verified address binds that person to the Google account's own subject id. After
+that the subject decides, so Google reporting a different address for the account changes nothing, and a different
+Google account that ends up with the same address is refused. Changing or removing the person's Google email under
+Users drops the binding, and the next sign-in binds whoever the new address belongs to.
+
 The flow uses a signed 10 minute state cookie (state, nonce and PKCE) and exchanges the code with Google's token
-endpoint directly over TLS. Once signed in, it's the same 3 hour session as a password login. Requests to Google
+endpoint directly over TLS. The ID token's signature is also checked against the keys Google publishes
+(RS256 or ES256; other algorithms are refused). Once signed in, it's the same 3 hour session as a password login. Requests to Google
 need outbound HTTPS from the container.
 
 ## Sign-in options, and protecting what CrowsNest stores
@@ -74,7 +83,10 @@ Everything below is managed from the dashboard (Settings, Sign-in, Users; Accoun
 
 **Methods.** Password, Google, and any number of other OpenID Connect providers (Authentik, Keycloak, Entra, Okta,
 Auth0…). Add a provider with its issuer URL, client ID and secret; CrowsNest reads the provider's discovery document,
-refuses one that names a different issuer or lacks PKCE (S256), and always uses state, nonce and PKCE. Link a person
+refuses one that names a different issuer or lacks PKCE (S256), and always uses state, nonce and PKCE. When the
+discovery document names a `jwks_uri`, each ID token's signature (RS256 or ES256) is verified against those keys;
+a provider saved before this was added has no key address stored, so open it in Settings and save it again to
+switch the check on. Link a person
 with their **SSO email** under Users. The first sign-in with a *verified* matching email binds them to the provider's
 own subject id; after that the subject decides, so a changed or reused email can't take the account over, and a second
 provider account with the same email is refused.
@@ -88,7 +100,10 @@ code, enter a code, get 10 one-time recovery codes shown once). It is asked afte
 be reused, five wrong codes lock that account for 15 minutes, and turning it off or making new recovery codes needs the
 password plus a code. An admin can reset someone's app from Users (a lost phone), which signs them out. It applies to
 password sign-in only: Google and OIDC sign-ins rely on the provider's own protections. It stays optional for each
-person. Not built: forcing people to enrol, and WebAuthn/passkeys.
+person unless an admin turns on **Settings, General, Require admins to set up an authenticator app**: then an admin who
+signs in with a password and has no app yet can reach only their Account page (pages redirect there, API calls get a
+403) until they enrol. Admins who sign in through Google or another provider are not asked. Not built: forcing
+players, and WebAuthn/passkeys.
 
 **What is encrypted on disk.** The Google and OIDC client secrets, TOTP secrets, game secrets (`secrets.json`) and the
 session-signing key are sealed with AES-256-GCM, each bound to its own field so a copied value won't open elsewhere.
@@ -100,3 +115,13 @@ Lose the key and the sealed secrets can't be read: re-enter the client secrets a
 their authenticator app. Secrets are never sent back to the browser (fields show "set"), and recovery codes and QR
 codes are served uncacheable. Not encrypted: the users file (bcrypt hashes and emails), the settings, and the activity
 log. Game join passwords shown on a card are shown on purpose.
+
+**Setting the key, and changing it.** Setting `CROWSNEST_MASTER_KEY` is the recommended setup (the key file works, but
+sits in the folder it protects). The AES key is derived from it with Argon2id (a typed passphrase) or HKDF (the random
+key file); sealed values read `enc:v2:`. Values written by older versions (`enc:v1:`) still open and are moved to v2 the
+next time they are saved. To move every file at once, or to change the key (a leak, a leaver, a move from the key file to
+the environment), stop the panel, run `crowsnest state export` for a snapshot, then
+`CROWSNEST_NEW_MASTER_KEY=<new> crowsnest rekey` with the current key set as usual. It re-seals the session secret, the
+Google and SSO client secrets, authenticator apps and the dashboard games' passwords, and is safe to run again if it was
+interrupted. Then set `CROWSNEST_MASTER_KEY` to the new value, remove `CROWSNEST_NEW_MASTER_KEY`, delete `master.key` if
+you had one, and start the panel. With no new key, `crowsnest rekey` just brings every value to the newest scheme.

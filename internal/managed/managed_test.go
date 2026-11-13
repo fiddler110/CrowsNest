@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/fiddler110/crowsnest/internal/backup"
+	"github.com/fiddler110/crowsnest/internal/gamefiles"
 	"net"
 	"net/http"
 	"os"
@@ -1331,5 +1332,63 @@ func TestEnableCopyFrom(t *testing.T) {
 	}
 	if err := m.Enable(Request{ID: "pal-2", Module: "palworld", CopyFrom: "minecraft"}); err == nil || !strings.Contains(err.Error(), "one module") {
 		t.Errorf("copied across modules: %v", err)
+	}
+}
+
+func TestFileRules_ExactlyTheReadAndWriteCommands(t *testing.T) {
+	specs, err := gamefiles.Normalize([]gamefiles.Spec{{ID: "a", Path: "/data/a.cfg"}, {ID: "b", Path: "/data/b.cfg"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rules := FileRules("mc", specs)
+	if len(rules) != 4 {
+		t.Fatalf("rules = %+v", rules)
+	}
+	for i, sp := range specs {
+		if rules[2*i].Container != "mc" || !slices.Equal(rules[2*i].Cmd, sp.ReadArgs()) || !slices.Equal(rules[2*i+1].Cmd, sp.WriteArgs()) {
+			t.Errorf("rules for %s are not its read and write commands: %+v", sp.ID, rules[2*i:2*i+2])
+		}
+	}
+	if FileRules("mc", nil) != nil {
+		t.Error("a game with no files must allowlist nothing")
+	}
+}
+
+// A stopped dashboard game's declared file is reached through the <id>-files helper, and only inside its data folders.
+func TestStoppedGameFilesGoThroughTheHelper(t *testing.T) {
+	m, _ := newManager(t)
+	pol, _ := os.ReadFile(m.PolicyFile)
+	if err := os.WriteFile(m.PolicyFile, []byte(strings.Replace(string(pol), `ports: [`, `ports: ["2456-2458/udp", `, 1)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	req := Request{ID: "minecraft", Module: "valheim", Secrets: map[string]string{"server_pass": "hunter22"}}
+	if err := m.Enable(req); err != nil {
+		t.Fatal(err)
+	}
+	waitState(t, m, "minecraft", StateReady)
+	var got []dockerctl.CreateSpec
+	busy := false
+	m.Busy = func(string) bool { return busy }
+	m.RunHelperOutput = func(_ context.Context, s dockerctl.CreateSpec, max int64) (string, error) {
+		got = append(got, s)
+		return "76561198000000000\n", nil
+	}
+	sp := gamefiles.Spec{ID: "admins", Path: "/config/adminlist.txt", MaxBytes: 100}
+	if !m.CanEditStopped("minecraft", sp) {
+		t.Fatal("a file in the data folder should be editable while stopped")
+	}
+	if m.CanEditStopped("minecraft", gamefiles.Spec{ID: "x", Path: "/etc/passwd"}) || m.CanEditStopped("nope", sp) {
+		t.Error("a file outside the data folders, or an unknown game, was offered")
+	}
+	out, err := m.ReadStopped(context.Background(), "minecraft", sp)
+	if err != nil || out != "76561198000000000\n" || got[0].Name != "minecraft-files" || got[0].Env != nil {
+		t.Fatalf("read: %q %v %+v", out, err, got)
+	}
+	if err := m.WriteStopped(context.Background(), "minecraft", sp, "new\n"); err != nil || got[1].Env[0] != gamefiles.ContentEnv+"=new\n" {
+		t.Fatalf("write: %v %+v", err, got)
+	}
+	busy = true // mid start or stop: never touch the data folder then
+	if _, err := m.ReadStopped(context.Background(), "minecraft", sp); err == nil || len(got) != 2 {
+		t.Fatalf("helper ran while the game was starting: %v", err)
 	}
 }

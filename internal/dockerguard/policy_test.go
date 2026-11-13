@@ -268,3 +268,13 @@ func TestPolicyAdmitsCleanContainerByTheGamesName(t *testing.T) {
 		t.Error("a clean container of an unlisted game was admitted")
 	}
 }
+
+func TestPolicyAdmitsFilesContainerByTheGamesName(t *testing.T) {
+	p, _ := ParsePolicy([]byte(testPolicy))
+	if err := p.Admit(mustScope(t, scopeJSON("valheim-files", "lloesche/valheim-server", ""))); err != nil {
+		t.Errorf("<game>-files of a listed game was refused: %v", err)
+	}
+	if err := p.Admit(mustScope(t, scopeJSON("other-files", "lloesche/valheim-server", ""))); err == nil {
+		t.Error("a files container of an unlisted game was admitted")
+	}
+}

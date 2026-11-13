@@ -41,9 +41,18 @@ func (a *App) moduleClient() *http.Client {
 }
 
 type sourceView struct {
-	Enabled   bool           `json:"enabled"`
-	Keys      []string       `json:"keys,omitempty"`
+	Enabled bool `json:"enabled"`
+	// Keys are the trusted publisher keys with the modules each one signed. Rotating a key is done in
+	// config.yaml (the dashboard cannot change who it trusts); this shows where a rotation stands.
+	Keys      []keyView      `json:"keys,omitempty"`
+	Catalogue bool           `json:"catalogue"`
 	Installed []installedMod `json:"installed"`
+}
+
+type keyView struct {
+	Name        string   `json:"name"`
+	Fingerprint string   `json:"fingerprint"`
+	Modules     []string `json:"modules"`
 }
 
 type installedMod struct {
@@ -54,6 +63,9 @@ type installedMod struct {
 	SHA256      string `json:"sha256"`
 	InstalledAt string `json:"installed_at"`
 	InUse       bool   `json:"in_use"`
+	// SignerRetired is set when the key that signed the installed copy is no longer in trusted_keys. An update
+	// signed by a trusted key may take over; until then the module keeps running as installed.
+	SignerRetired bool `json:"signer_retired,omitempty"`
 }
 
 func (a *App) handleModuleSources(w http.ResponseWriter, r *http.Request) {
@@ -63,9 +75,7 @@ func (a *App) handleModuleSources(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	v.Enabled = true
-	for _, k := range a.TrustedKeys {
-		v.Keys = append(v.Keys, k.Name)
-	}
+	v.Catalogue = a.CatalogueURL != ""
 	lock, err := modules.ReadLock(a.ModulesDir)
 	if err != nil {
 		http.Error(w, "reading the module lock: "+err.Error(), http.StatusInternalServerError)
@@ -75,8 +85,17 @@ func (a *App) handleModuleSources(w http.ResponseWriter, r *http.Request) {
 	for _, g := range a.Managed.List() {
 		inUse[g.Module] = true
 	}
+	signed := map[string][]string{}
 	for _, e := range lock.Modules {
-		im := installedMod{ID: e.ID, Source: e.Source, SignedBy: e.SignedBy, SHA256: e.SHA256, InstalledAt: e.InstalledAt.Format(time.RFC3339), InUse: inUse[e.ID]}
+		if e.SignedBy != "" {
+			signed[e.SignedBy] = append(signed[e.SignedBy], e.ID)
+		}
+	}
+	for _, k := range a.TrustedKeys {
+		v.Keys = append(v.Keys, keyView{Name: k.Name, Fingerprint: k.Fingerprint(), Modules: signed[k.Name]})
+	}
+	for _, e := range lock.Modules {
+		im := installedMod{SignerRetired: modules.SignerRetired(e, a.TrustedKeys), ID: e.ID, Source: e.Source, SignedBy: e.SignedBy, SHA256: e.SHA256, InstalledAt: e.InstalledAt.Format(time.RFC3339), InUse: inUse[e.ID]}
 		if m, ok := a.Modules.Manifest(e.ID); ok {
 			im.Name = m.Name
 		}
@@ -260,6 +279,10 @@ func (a *App) updateTarget(w http.ResponseWriter, r *http.Request) (e modules.Lo
 		http.Error(w, "the source now serves module "+m.ID+", not "+id+"; refusing", http.StatusConflict)
 		return
 	}
+	if err := modules.CheckUpdate(modules.AcceptRetiredSigner(e, a.TrustedKeys, by), m, body, by); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	return e, body, m, by, true
 }
 
@@ -282,8 +305,9 @@ func (a *App) handleRemoteUpdatePreview(w http.ResponseWriter, r *http.Request) 
 	}
 	added, removed := modules.DiffLines(old, m.Review())
 	writeJSON(w, http.StatusOK, map[string]any{
-		"id": m.ID, "name": m.Name, "sha256": sum, "was_sha256": e.SHA256, "signed_by": by,
-		"added": added, "removed": removed, "review": m.Review(),
+		"id": m.ID, "name": m.Name, "sha256": sum, "was_sha256": e.SHA256, "signed_by": by, "was_signed_by": e.SignedBy,
+		"rekeyed": modules.SignerRetired(e, a.TrustedKeys) && by != e.SignedBy,
+		"added":   added, "removed": removed, "review": m.Review(),
 	})
 }
 
@@ -310,7 +334,7 @@ func (a *App) handleRemoteUpdate(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "the module changed since you previewed it; preview it again", http.StatusConflict)
 		return
 	}
-	installed, err := modules.Install(a.ModulesDir, e.Source, body, b.SHA256, true, by)
+	installed, err := modules.InstallRekeying(a.ModulesDir, e.Source, body, b.SHA256, by, a.TrustedKeys)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -322,4 +346,48 @@ func (a *App) handleRemoteUpdate(w http.ResponseWriter, r *http.Request) {
 	a.record(r, m.ID, "updated the "+m.ID+" module from "+e.Source+", signed by "+by+" (sha256 "+modules.Hash(body)[:12]+", was "+e.SHA256[:12]+")")
 	writeJSON(w, http.StatusOK, map[string]any{"id": m.ID, "signed_by": by,
 		"note": "Games already set up from it keep their old wiring until you save their settings or restart CrowsNest."})
+}
+
+type catalogueItem struct {
+	modules.CatalogueEntry
+	// Installed is the release number installed (0 = unversioned or unknown); State is "available", "installed",
+	// "update" (the catalogue lists a newer release) or "loaded" (a module with this id is loaded but was not
+	// installed from a source, so it cannot be installed over).
+	State string `json:"state"`
+}
+
+func (a *App) handleModuleCatalogue(w http.ResponseWriter, r *http.Request) {
+	if !a.remoteOn(w) {
+		return
+	}
+	if a.CatalogueURL == "" {
+		http.Error(w, "no catalogue is set: managed.catalogue_url in config.yaml", http.StatusNotFound)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 30*time.Second)
+	defer cancel()
+	cat, err := modules.FetchCatalogue(ctx, a.CatalogueURL, a.moduleClient())
+	if err != nil {
+		http.Error(w, "reading the catalogue: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	lock, err := modules.ReadLock(a.ModulesDir)
+	if err != nil {
+		http.Error(w, "reading the module lock: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	out := make([]catalogueItem, 0, len(cat.Modules))
+	for _, e := range cat.Modules {
+		it := catalogueItem{CatalogueEntry: e, State: "available"}
+		if le, ok := lock.Find(e.ID); ok {
+			it.State = "installed"
+			if e.Version > le.Version {
+				it.State = "update"
+			}
+		} else if _, loaded := a.Modules.Manifest(e.ID); loaded {
+			it.State = "loaded"
+		}
+		out = append(out, it)
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"modules": out})
 }

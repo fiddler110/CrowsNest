@@ -24,10 +24,11 @@ import (
 
 // Errors a caller can map to a response.
 var (
-	ErrNotConfigured = errors.New("restore: this game has no restore command (or no shared backups folder)")
-	ErrBadFile       = errors.New("restore: that is not a backup file of this game")
-	ErrBusy          = errors.New("restore: a restore or backup of this game is already running")
-	ErrWouldPrune    = errors.New("restore: the safety backup taken before the restore would delete that file under backup.keep")
+	ErrNotConfigured  = errors.New("restore: this game has no restore command (or no shared backups folder)")
+	ErrBadFile        = errors.New("restore: that is not a backup file of this game")
+	ErrBusy           = errors.New("restore: a restore or backup of this game is already running")
+	ErrNoSafetyBackup = errors.New("restore: the game is stopped, so no safety backup of its current world can be taken first")
+	ErrWouldPrune     = errors.New("restore: the safety backup taken before the restore would delete that file under backup.keep")
 )
 
 // Controller starts and stops games; satisfied by *exclusivity.Manager.
@@ -99,7 +100,12 @@ func (m *Manager) release(id string) {
 // Request checks a restore can go ahead and starts it in the background. Every
 // refusal comes back here, before anything is stopped; the outcome of the run
 // itself is recorded and notified.
-func (m *Manager) Request(ctx context.Context, d games.GameDef, file, actor string) error {
+//
+// A running game always gets a safety backup of its current world first (even
+// when its module does not back up before every stop). A stopped game cannot be
+// backed up from outside, so that is refused with ErrNoSafetyBackup unless
+// withoutBackup says the caller accepted losing the current world.
+func (m *Manager) Request(ctx context.Context, d games.GameDef, file, actor string, withoutBackup bool) error {
 	if d.Backup == nil || !d.Backup.CanRestore || d.Backup.LocalDir == "" || m.Spec == nil {
 		return ErrNotConfigured
 	}
@@ -120,9 +126,12 @@ func (m *Manager) Request(ctx context.Context, d games.GameDef, file, actor stri
 	if err != nil {
 		return err
 	}
-	// Stopping a running game takes a new backup, and keep then prunes the
-	// oldest files: refuse rather than delete the very file being restored.
-	if up && d.Backup.BeforeStop && d.Backup.Keep > 0 && idx+1 >= d.Backup.Keep {
+	if !up && !withoutBackup {
+		return ErrNoSafetyBackup
+	}
+	// The safety backup is a new file, and keep then prunes the oldest ones:
+	// refuse rather than delete the very file being restored.
+	if up && d.Backup.Keep > 0 && idx+1 >= d.Backup.Keep {
 		return fmt.Errorf("%w (it is number %d of %d kept)", ErrWouldPrune, idx+1, d.Backup.Keep)
 	}
 	if m.Backups.Running(d.ID) || !m.claim(d.ID) {
@@ -174,7 +183,7 @@ func (m *Manager) run(ctx context.Context, d games.GameDef, file, actor string, 
 	began := time.Now()
 	fail := func(stage string, err error) {
 		msg := fmt.Sprintf("restore of %s failed %s: %s", file, stage, tail(err.Error()))
-		if stage != "before the game was stopped" {
+		if !strings.HasPrefix(stage, "before the game was stopped") {
 			msg += ". The game is left stopped and its data may be partly restored; the backup file itself is untouched"
 		}
 		log.Printf("restore: %s: %q", d.ID, msg)
@@ -182,6 +191,13 @@ func (m *Manager) run(ctx context.Context, d games.GameDef, file, actor string, 
 		m.notify(fmt.Sprintf("⚠️ Restore of **%s** from %s failed (requested by %s): %s", d.DisplayName, file, actor, tail(err.Error())))
 	}
 	if wasUp {
+		// Stop backs up first only when the module asks for it; a restore always does.
+		if !d.Backup.BeforeStop && len(d.Backup.Exec) > 0 {
+			if err := m.Backups.RunBackup(ctx, d, actor); err != nil {
+				fail("before the game was stopped (the safety backup)", err)
+				return
+			}
+		}
 		if err := m.Control.Stop(ctx, d.ID); err != nil {
 			fail("before the game was stopped", err)
 			return

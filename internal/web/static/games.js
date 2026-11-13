@@ -684,14 +684,25 @@ async function loadSources() {
   const v = await res.json();
   $("sources").hidden = !v.enabled;
   if (!v.enabled) return;
-  $("sources-keys").textContent = (v.keys || []).join(", ");
+  const keys = $("sources-keys");
+  keys.replaceChildren();
+  (v.keys || []).forEach((k) => {
+    const li = el("li", "session-row");
+    const info = el("div");
+    info.append(el("b", "", k.name), document.createElement("br"),
+      el("small", "", `fingerprint ${k.fingerprint} · ${k.modules && k.modules.length ? "signed " + k.modules.join(", ") : "no installed module is signed by it"}`));
+    li.append(info);
+    keys.append(li);
+  });
+  $("mod-catalogue").hidden = !v.catalogue;
+  if (v.catalogue) loadCatalogue();
   const list = $("source-installed");
   list.replaceChildren();
   v.installed.forEach((m) => {
     const li = el("li", "session-row");
     const info = el("div");
     info.append(el("b", "", `${m.name || m.id} (${m.id})`), document.createElement("br"),
-      el("small", "", `${m.signed_by ? "signed by " + m.signed_by : "pinned by hash"} · sha256 ${m.sha256.slice(0, 12)} · ${m.source}`));
+      el("small", "", `${m.signed_by ? "signed by " + m.signed_by + (m.signer_retired ? " (key no longer trusted: update to re-sign it under a trusted key)" : "") : "pinned by hash"} · sha256 ${m.sha256.slice(0, 12)} · ${m.source}`));
     li.append(info);
     const rm = el("button", "btn btn-ghost btn-danger", "Remove");
     rm.type = "button";
@@ -729,7 +740,7 @@ async function checkUpdate(m) {
   if (v.up_to_date) { toast(`${m.id} is up to date.`, "ok"); return; }
   updating = { id: m.id, sha256: v.sha256 };
   $("update-title").textContent = `${v.name || m.id} (${m.id})`;
-  $("update-signer").textContent = v.signed_by;
+  $("update-signer").textContent = v.rekeyed ? `${v.signed_by} (takes over from ${v.was_signed_by}, a key you no longer trust)` : v.signed_by;
   $("update-sha").textContent = v.sha256.slice(0, 16) + "…";
   for (const [id, lines] of [["update-added", v.added], ["update-removed", v.removed]]) {
     const ul = $(id);
@@ -756,6 +767,30 @@ $("update-apply").addEventListener("click", async () => {
   await reloadModules();
   loadSources();
 });
+
+async function loadCatalogue() {
+  const list = $("catalogue-list");
+  const res = await callAPI("/api/managed/modules/catalogue");
+  list.replaceChildren();
+  if (!res.ok) { list.append(el("li", "hero-sub", await errorText(res, "Catalogue"))); return; }
+  const v = await res.json();
+  if (!v.modules.length) list.append(el("li", "hero-sub", "The catalogue is empty."));
+  const label = { available: "", installed: "installed", update: "newer release listed", loaded: "already loaded (not from a source)" };
+  v.modules.forEach((m) => {
+    const li = el("li", "session-row");
+    const info = el("div");
+    info.append(el("b", "", `${m.name || m.id} (${m.id})`), document.createElement("br"),
+      el("small", "", [m.description, m.version ? "release " + m.version : "", label[m.state]].filter(Boolean).join(" · ")));
+    li.append(info);
+    if (m.state === "available") {
+      const b = el("button", "btn btn-ghost", "Look at it");
+      b.type = "button";
+      b.addEventListener("click", () => { $("source-form").elements.url.value = m.url; $("source-form").requestSubmit(); $("source-form").scrollIntoView({ behavior: "smooth" }); });
+      li.append(b);
+    }
+    list.append(li);
+  });
+}
 
 $("source-form").addEventListener("submit", async (e) => {
   e.preventDefault();

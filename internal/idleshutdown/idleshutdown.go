@@ -17,6 +17,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/history"
+	"github.com/fiddler110/crowsnest/internal/notify"
 	"github.com/fiddler110/crowsnest/internal/statehub"
 )
 
@@ -293,7 +294,7 @@ func (m *Manager) checkGame(ctx context.Context, d games.GameDef, idleDuration t
 		m.History.Record(history.KindAutoStop, d.ID, "", fmt.Sprintf("idle: no players for %s", idleDuration))
 	}
 	if m.Notifier != nil {
-		m.Notifier.Notify(ctx, fmt.Sprintf(
+		m.Notifier.Notify(notify.WithGame(ctx, d.ID), fmt.Sprintf(
 			"\U0001f634 **%s** stopped automatically after %s with no players.",
 			d.DisplayName, idleDuration,
 		))

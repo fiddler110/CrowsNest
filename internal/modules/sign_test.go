@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
@@ -133,5 +134,54 @@ func TestPublicClientRefusesPrivateAddresses(t *testing.T) {
 	_, err := Fetch(context.Background(), srv.URL+"/m.yaml", PublicClient())
 	if err == nil || !strings.Contains(err.Error(), "private") {
 		t.Fatalf("fetch from loopback = %v", err)
+	}
+}
+
+func TestInstallUpdate_NoDowngradeAndSignerPinned(t *testing.T) {
+	base, err := os.ReadFile(filepath.Join("..", "..", "docs", "examples", "mygame", "module.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	withVersion := func(v int) []byte {
+		return []byte(fmt.Sprintf("version: %d\n%s", v, base))
+	}
+	dir := t.TempDir()
+	v2 := withVersion(2)
+	if _, err := Install(dir, "https://x/m.yaml", v2, "", false, "alice"); err != nil {
+		t.Fatal(err)
+	}
+	l, _ := ReadLock(dir)
+	if e, _ := l.Find("mygame"); e.Version != 2 {
+		t.Fatalf("lock version = %d, want 2", e.Version)
+	}
+	for name, tc := range map[string]struct {
+		body []byte
+		by   string
+		ok   bool
+	}{
+		"newer release, same signer":      {withVersion(3), "alice", true},
+		"same bytes restored":             {v2, "alice", true},
+		"older signed release (rollback)": {withVersion(1), "alice", false},
+		"unversioned replaces versioned":  {base, "alice", false},
+		"different bytes, same release":   {append(withVersion(2), '\n'), "alice", false},
+		"another trusted key signs it":    {withVersion(3), "bob", false},
+		"newer release but no signature":  {withVersion(3), "", false},
+	} {
+		d := t.TempDir()
+		if _, err := Install(d, "https://x/m.yaml", v2, "", false, "alice"); err != nil {
+			t.Fatal(err)
+		}
+		_, err := Install(d, "https://x/m.yaml", tc.body, "", true, tc.by)
+		if (err == nil) != tc.ok {
+			t.Errorf("%s: err = %v, want ok=%v", name, err, tc.ok)
+		}
+	}
+	// Hash-pinned (never signed) installs are the operator's own review each time: no pin applies.
+	d := t.TempDir()
+	if _, err := Install(d, "https://x/m.yaml", v2, "", false, ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Install(d, "https://x/m.yaml", withVersion(1), "", true, "alice"); err != nil {
+		t.Errorf("update of an unsigned install: %v", err)
 	}
 }

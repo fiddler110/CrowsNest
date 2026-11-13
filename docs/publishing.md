@@ -22,14 +22,15 @@ Tags on every release: `:X.Y.Z`, `:X.Y`, `:latest`, `:sha-<short>`, and `:dev`
 ## Running a released image
 
 Point your compose file at
-`ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG:-latest}`. To update:
+`ghcr.io/fiddler110/crowsnest:${CROWSNEST_TAG}`. The quickstart requires `CROWSNEST_TAG` (its `.env.example` pins a
+release, and each release's `quickstart.tar.gz` pins itself). To update:
 
 ```sh
 docker compose pull crowsnest && docker compose up -d crowsnest
 ```
 
-Pin `CROWSNEST_TAG=0.2.0` in your `.env` to stay on one version. Set it
-back to `latest` to follow releases. Watchtower is fine for CrowsNest itself,
+Keep `CROWSNEST_TAG=0.2.0`-style pins in your `.env` to stay on one version. Set it
+to `latest` to follow releases. Watchtower is fine for CrowsNest itself,
 but keep it off the game containers. Their labels already opt them out.
 
 Verify a pulled image:
