@@ -19,13 +19,17 @@ func (m *Manager) Allowed() ([]string, error) {
 	return dockerguard.ReadAllowed(m.path(allowedFile))
 }
 
-// gated is a module installed from a URL or by hand, whose ports the guard cannot know. Its switch only lets the dashboard
-// offer it; the guard ignores the id, so its image and ports must still be in
-// policy.yaml. That is deliberate: the panel can write module files, so the
-// guard must not take ports or images from them.
+// gated is a module installed from a URL or by hand that the guard cannot vouch for. Its switch only lets the
+// dashboard offer it; the guard ignores the id, so its image and ports must be in policy.yaml. That is deliberate:
+// the panel can write module files, so the guard must not take ports or images from them. The exception is a module
+// that carries a signature from a key listed in policy.yaml's trusted_keys: the guard checks that signature itself
+// (modules.SignedAllowances), so for those the switch is as good as a bundled module's.
 func (m *Manager) gated(id string) bool {
-	_, bundled := modules.Bundled().Manifest(id)
-	return !bundled
+	if _, bundled := modules.Bundled().Manifest(id); bundled {
+		return false
+	}
+	p, err := m.filePolicy()
+	return err != nil || !modules.ModuleSigned(m.ModulesDir, id, p.TrustedKeys)
 }
 
 // SetAllowed switches a module on or off. For a bundled module with ports, what

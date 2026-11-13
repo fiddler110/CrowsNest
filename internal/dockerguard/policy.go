@@ -68,8 +68,19 @@ type Policy struct {
 	// security options listed. Only the policy file can add one; the dashboard
 	// shows them but cannot create or change them.
 	Exceptions []Exception `yaml:"exceptions,omitempty"`
+	// TrustedKeys are publisher keys (ed25519, base64). A module installed from a URL that one of them signed may
+	// be switched on from the dashboard, and then the guard admits the image and ports its manifest declares. Only
+	// the policy file can list a key: it is what keeps the panel, which can write module files, from widening the
+	// guard by itself.
+	TrustedKeys []PolicyKey `yaml:"trusted_keys,omitempty"`
 
 	ports []portRange
+}
+
+// PolicyKey is one trusted publisher key.
+type PolicyKey struct {
+	Name      string `yaml:"name" json:"name"`
+	PublicKey string `yaml:"public_key" json:"public_key"`
 }
 
 // Exception is one container's allowance beyond the envelope.
@@ -145,6 +156,41 @@ type Defaults struct {
 	// the panel can widen is bounded by what the bundled modules declare.
 	ModulePorts map[string][]string
 	Allowed     []string
+	// ExtraImages are repositories the policy admits beyond its own list: the images of allowed modules that were
+	// installed from a URL and are signed by one of the policy's trusted keys (see SignedFunc).
+	ExtraImages []string
+}
+
+// SignedFunc finds what the allowed modules installed from a URL declare, for those signed by one of keys: their
+// image repositories, and their ports by module id. A module it cannot vouch for adds nothing and is reported.
+// The guard and the panel pass the same function, so a game the panel says fits is a game the guard admits.
+type SignedFunc func(allowed []string, keys []PolicyKey) (images []string, ports map[string][]string, problems []error)
+
+// LoadPolicyDefaults is LoadPolicyWith for a policy whose trusted keys can admit signed modules: signed may be nil.
+func LoadPolicyDefaults(file string, d Defaults, signed SignedFunc) (*Policy, []error, error) {
+	p, err := LoadPolicy(file)
+	if err != nil {
+		return nil, nil, err
+	}
+	var problems []error
+	if signed != nil && len(d.Allowed) > 0 && len(p.TrustedKeys) > 0 {
+		var imgs []string
+		var ports map[string][]string
+		imgs, ports, problems = signed(d.Allowed, p.TrustedKeys)
+		d.ExtraImages = append(slices.Clone(d.ExtraImages), imgs...)
+		mp := map[string][]string{}
+		for k, v := range d.ModulePorts {
+			mp[k] = v
+		}
+		for k, v := range ports {
+			mp[k] = v // bundled ids are never returned by signed, so this never overrides a bundled module's ports
+		}
+		d.ModulePorts = mp
+	}
+	if err := p.Resolve(d); err != nil {
+		return nil, nil, err
+	}
+	return p, problems, nil
 }
 
 // Resolve fills in what the policy left out and expands "@modules". The guard
@@ -170,6 +216,13 @@ func (p *Policy) Resolve(d Defaults) error {
 	}
 	if len(imgs) == 0 {
 		return errors.New("policy: no images are allowed: list some, or use @modules once a bundled module declares one")
+	}
+	for _, r := range d.ExtraImages {
+		repo, tag, digest, err := parseRef(r)
+		if err != nil || tag != "" || digest != "" {
+			return fmt.Errorf("policy: a module declares the image %q, which is not a repository without a tag", r)
+		}
+		imgs = append(imgs, repo)
 	}
 	p.Images = dedupe(imgs)
 	if len(p.Networks) == 0 {

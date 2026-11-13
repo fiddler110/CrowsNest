@@ -67,6 +67,9 @@ type Service struct {
 	// every user who has one. Google sign-in skips it: the identity provider
 	// is the authenticator there.
 	MFA SecondFactor
+
+	// Passkeys, when set, adds sign-in with a passkey (WebAuthn).
+	Passkeys *Passkeys
 }
 
 // SecondFactor is the TOTP store as the login code sees it.

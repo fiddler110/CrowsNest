@@ -38,7 +38,8 @@ func (m *Manager) loadPolicy(withAllowed bool) (*dockerguard.Policy, error) {
 			return nil, err
 		}
 	}
-	return dockerguard.LoadPolicyWith(m.PolicyFile, d)
+	p, _, err := dockerguard.LoadPolicyDefaults(m.PolicyFile, d, modules.SignedFunc(m.ModulesDir))
+	return p, err
 }
 
 // ExecRules is the exec allowlist for the dashboard-enabled games in dir: for
@@ -116,6 +117,8 @@ type PolicyDoc struct {
 	PinDigests *bool `json:"pin_digests,omitempty" yaml:"pin_digests"`
 	// Exceptions are shown, never edited here: SetPolicy keeps whatever the file has.
 	Exceptions []dockerguard.Exception `json:"exceptions,omitempty" yaml:"exceptions,omitempty"`
+	// TrustedKeys are shown, never edited here: they decide what the guard will take from a module's own manifest.
+	TrustedKeys []dockerguard.PolicyKey `json:"trusted_keys,omitempty" yaml:"trusted_keys,omitempty"`
 }
 
 // PolicyState is the current policy and whether the dashboard may change it.
@@ -206,10 +209,10 @@ func (m *Manager) SetPolicy(d PolicyDoc) error {
 		return errors.New("the policy is read-only here: it is edited in policy.yaml on the host")
 	}
 	// An exception loosens the guard for one container, so only the file on the host can add or change one.
-	d.Exceptions = nil
+	d.Exceptions, d.TrustedKeys = nil, nil
 	cur, curErr := m.filePolicy()
 	if curErr == nil {
-		d.Exceptions = cur.Exceptions
+		d.Exceptions, d.TrustedKeys = cur.Exceptions, cur.TrustedKeys
 	}
 	if d.PinDigests == nil { // not sent: keep the file's setting
 		keep := curErr == nil && cur.PinDigests

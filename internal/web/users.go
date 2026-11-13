@@ -523,6 +523,9 @@ func (a *App) handleDeleteUser(w http.ResponseWriter, r *http.Request) {
 	if !a.stepUp(w, r, b.ConfirmPassword, "delete user "+name) {
 		return
 	}
+	if a.Auth.Passkeys != nil {
+		_ = a.Auth.Passkeys.Store.RemoveAll(name)
+	}
 	if a.MFA != nil {
 		_ = a.MFA.Remove(name)
 	}

@@ -235,7 +235,16 @@ max_scopes: 64
   that game. `ports` in `policy.yaml` is only for ports beyond those: a game installed from a URL, or a different host port. An admin with no
   stored password (Google sign-in only) sees a banner on every page and is refused until they set one in Settings,
   Users: the password is only used to confirm this, so a hijacked session alone cannot widen the guard.
-- **A module installed from a URL has a switch too, but a weaker one.** The panel can write module files and the
+- **A module installed from a URL, and signed by a key in `policy.yaml`, is admitted like a bundled one.** List the
+  publisher's key in the policy (the dashboard shows these keys and never edits them):
+  `trusted_keys: [{name: me, public_key: <base64>}]`, and mount the modules folder read-only into the guard
+  (`GUARD_MODULES_DIR`; the quickstart does). When you switch such a module on, the guard checks the saved signature
+  (`module.yaml.sig`, kept at install) against those keys itself, then admits the image and ports its manifest
+  declares. Edit the installed file, delete the signature, or remove the key and it falls back to the weaker case
+  below. The key must be in the policy, not only in `managed.trusted_keys` in config.yaml, because the panel can
+  write module files and config but not the policy. A module installed before this existed has no saved signature:
+  update it (or remove and install it again) once. Hash-pinned installs never qualify.
+- **A module installed from a URL that nothing vouches for has a switch too, but a weaker one.** The panel can write module files and the
   lock file, so the guard never takes a port or an image from them. The switch only makes the dashboard offer the
   game; the card shows the `images:` and `ports:` lines to paste into `policy.yaml`, and until they are there the
   plan says the game falls outside the policy. Install as many as you like and switch them on when you want them.

@@ -309,6 +309,15 @@ func serve() error {
 		return err
 	}
 	authSvc.MFA = mfaStore
+	if pk := cfg.Auth.Passkeys; pk != nil {
+		pkStore, err := auth.NewPasskeyStore(filepath.Join(filepath.Dir(cfg.Server.SettingsFile), "passkeys.json"))
+		if err != nil {
+			return err
+		}
+		if authSvc.Passkeys, err = auth.NewPasskeys(pkStore, pk.RPID, pk.Origins); err != nil {
+			return fmt.Errorf("auth.passkeys: %w", err)
+		}
+	}
 	stateDir := filepath.Dir(cfg.Server.SettingsFile)
 	sessionStore, err := auth.NewSessionStore(filepath.Join(stateDir, "sessions.json"))
 	if err != nil {
@@ -439,7 +448,7 @@ func serve() error {
 		mgr := &managed.Manager{
 			Vault:   vlt,
 			Backups: backupRoot,
-			Dir:     cfg.Managed.Dir, PolicyFile: cfg.Managed.PolicyFile, PolicyEditable: cfg.Managed.PolicyEditable, Platform: modules.PlatformFrom(cfg.Platform),
+			Dir:     cfg.Managed.Dir, ModulesDir: cfg.ModulesDir, PolicyFile: cfg.Managed.PolicyFile, PolicyEditable: cfg.Managed.PolicyEditable, Platform: modules.PlatformFrom(cfg.Platform),
 			Modules: mods, Config: cfg, Docker: docker, Wire: docker, Registry: registry,
 			Busy: func(id string) bool { return exclusivityMgr.Starting(id) || exclusivityMgr.Stopping(id) },
 		}

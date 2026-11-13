@@ -178,9 +178,9 @@ func (t *moduleTool) list() error {
 
 // fetchAndReview downloads source (and, when trusted keys are configured, its signature) and prints what the
 // module would do. by is the trusted key that signed it, "" when none did.
-func (t *moduleTool) fetchAndReview(source, wantHash string) (body []byte, m *modules.Manifest, by string, err error) {
+func (t *moduleTool) fetchAndReview(source, wantHash string) (body, sig []byte, m *modules.Manifest, by string, err error) {
 	if len(t.keys) > 0 {
-		body, by, err = modules.FetchSigned(context.Background(), source, t.client, t.keys)
+		body, sig, by, err = modules.FetchSignedSig(context.Background(), source, t.client, t.keys)
 		if errors.Is(err, modules.ErrNotSigned) && body != nil {
 			fmt.Fprintf(t.out, "not signed by a trusted key (%v)\n", err)
 			err = nil
@@ -189,17 +189,17 @@ func (t *moduleTool) fetchAndReview(source, wantHash string) (body []byte, m *mo
 		body, err = modules.Fetch(context.Background(), source, t.client)
 	}
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, nil, "", err
 	}
 	m, err = modules.Parse(bytes.NewReader(body))
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, nil, "", err
 	}
 	fmt.Fprintf(t.out, "%s (%s)\n  %s\n  sha256 %s\n", m.Name, m.ID, m.Description, modules.Hash(body))
 	if by != "" {
 		fmt.Fprintf(t.out, "  signed by the trusted key %q\n", by)
 	}
-	return body, m, by, nil
+	return body, sig, m, by, nil
 }
 
 func (t *moduleTool) confirm(id string, yes bool) bool {
@@ -212,7 +212,7 @@ func (t *moduleTool) confirm(id string, yes bool) bool {
 }
 
 func (t *moduleTool) install(source, wantHash string, yes, replace bool) error {
-	body, m, by, err := t.fetchAndReview(source, wantHash)
+	body, sig, m, by, err := t.fetchAndReview(source, wantHash)
 	if err != nil {
 		return err
 	}
@@ -229,6 +229,9 @@ func (t *moduleTool) install(source, wantHash string, yes, replace bool) error {
 	if _, err := modules.Install(t.dir, source, body, wantHash, replace, by); err != nil {
 		return err
 	}
+	if err := modules.SaveSignature(t.dir, m.ID, sig); err != nil {
+		return err
+	}
 	fmt.Fprintf(t.out, "installed %s, pinned to sha256:%.12s. Restart CrowsNest to load it.\n", m.ID, modules.Hash(body))
 	return nil
 }
@@ -242,7 +245,7 @@ func (t *moduleTool) update(id, wantHash string, yes bool) error {
 	if !ok {
 		return fmt.Errorf("%q was not installed by crowsnest", id)
 	}
-	body, m, by, err := t.fetchAndReview(e.Source, wantHash)
+	body, sig, m, by, err := t.fetchAndReview(e.Source, wantHash)
 	if err != nil {
 		return err
 	}
@@ -258,8 +261,10 @@ func (t *moduleTool) update(id, wantHash string, yes bool) error {
 	if modules.Hash(body) == e.SHA256 {
 		// Same bytes as approved. If the file on disk was edited, this restores it.
 		fmt.Fprintln(t.out, "the source is unchanged since it was approved; restoring that copy")
-		_, err = modules.Install(t.dir, e.Source, body, "", true, by)
-		return err
+		if _, err = modules.Install(t.dir, e.Source, body, "", true, by); err != nil {
+			return err
+		}
+		return modules.SaveSignature(t.dir, id, sig)
 	}
 	var old []string
 	if b, err := os.ReadFile(filepath.Join(t.dir, id, "module.yaml")); err == nil { // #nosec G304 G703 -- id is in the lock
@@ -282,6 +287,9 @@ func (t *moduleTool) update(id, wantHash string, yes bool) error {
 		return fmt.Errorf("not approved; the old version stays")
 	}
 	if _, err := modules.Install(t.dir, e.Source, body, wantHash, true, by); err != nil {
+		return err
+	}
+	if err := modules.SaveSignature(t.dir, id, sig); err != nil {
 		return err
 	}
 	fmt.Fprintf(t.out, "updated %s, now pinned to sha256:%.12s. Restart CrowsNest to load it.\n", id, modules.Hash(body))

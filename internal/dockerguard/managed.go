@@ -27,6 +27,11 @@ type Sources struct {
 	// AllowedFile lists the modules the operator switched on (see AllowedPath).
 	// Empty means none are.
 	AllowedFile string
+	// Signed, when set, admits the image and ports of allowed modules that were installed from a URL and are signed
+	// by one of the policy's trusted keys.
+	Signed SignedFunc
+	// ModulesDir is where those modules' files are; only used to notice when one changes.
+	ModulesDir string
 }
 
 // AllowedPath is where the allowed-modules file sits, beside the managed scopes file.
@@ -97,9 +102,12 @@ func (s Sources) Load() (*Result, error) {
 		return nil, err
 	}
 	d.Allowed = allowed
-	pol, err := LoadPolicyWith(s.PolicyFile, d)
+	pol, problems, err := LoadPolicyDefaults(s.PolicyFile, d, s.Signed)
 	if err != nil {
 		return nil, err
+	}
+	for _, pr := range problems {
+		res.Rejected = append(res.Rejected, pr)
 	}
 	raw, err := os.ReadFile(s.ManagedFile)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
@@ -173,6 +181,19 @@ func (s Sources) signature() [sha256.Size]byte {
 		}
 		h.Write([]byte(f))
 		h.Write(b)
+	}
+	if allowed, err := ReadAllowed(s.AllowedFile); err == nil && s.ModulesDir != "" {
+		for _, id := range allowed {
+			for _, name := range []string{"module.yaml", "module.yaml.sig"} {
+				f := filepath.Join(s.ModulesDir, filepath.Base(id), name)
+				b, err := os.ReadFile(f) // #nosec G304 -- Base keeps id inside the operator's modules folder
+				if err != nil {
+					b = []byte("missing:" + f)
+				}
+				h.Write([]byte(f))
+				h.Write(b)
+			}
+		}
 	}
 	var out [sha256.Size]byte
 	copy(out[:], h.Sum(nil))

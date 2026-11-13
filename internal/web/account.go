@@ -36,6 +36,9 @@ type securityView struct {
 	RecoveryLeft int  `json:"recovery_left"`
 	// MFARequired: this admin must set up an authenticator app before anything else.
 	MFARequired bool `json:"mfa_required"`
+	// Passkeys: the feature is on, and how many this user has.
+	PasskeysAvail bool `json:"passkeys_available"`
+	PasskeyCount  int  `json:"passkey_count"`
 }
 
 func (a *App) securityView(user string) securityView {
@@ -45,8 +48,12 @@ func (a *App) securityView(user string) securityView {
 		_, v.Pending = a.MFA.PendingSecret(user)
 		v.RecoveryLeft = a.MFA.RecoveryLeft(user)
 	}
+	if a.Auth.Passkeys != nil {
+		v.PasskeysAvail = true
+		v.PasskeyCount = a.Auth.Passkeys.Store.Count(user)
+	}
 	v.MFARequired = a.Settings != nil && a.MFA != nil && a.Settings.Get().RequireAdminMFA &&
-		a.Auth.Sessions.RoleFor(user) == auth.RoleAdmin && v.HasPassword && !v.TOTPEnabled
+		a.Auth.Sessions.RoleFor(user) == auth.RoleAdmin && v.HasPassword && !v.TOTPEnabled && v.PasskeyCount == 0
 	return v
 }
 

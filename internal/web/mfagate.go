@@ -41,5 +41,6 @@ func (a *App) mfaEnrolmentNeeded(r *http.Request) bool {
 		return false // not signed in: the normal sign-in flow applies
 	}
 	user := session.Username
-	return a.Auth.Sessions.RoleFor(user) == auth.RoleAdmin && a.Auth.HasPassword(user) && !a.MFA.Enabled(user)
+	return a.Auth.Sessions.RoleFor(user) == auth.RoleAdmin && a.Auth.HasPassword(user) && !a.MFA.Enabled(user) &&
+		(a.Auth.Passkeys == nil || a.Auth.Passkeys.Store.Count(user) == 0)
 }

@@ -33,6 +33,7 @@ type ModuleInfo struct {
 	// Gated: the switch only lets the dashboard offer the module; its image and
 	// ports still have to be in policy.yaml. PolicyLines are those lines, ready to paste.
 	Gated       bool   `json:"gated,omitempty"`
+	Signed      bool   `json:"signed,omitempty"` // installed from a URL and signed by a key in policy.yaml trusted_keys
 	PolicyLines string `json:"policy_lines,omitempty"`
 	HasBackup   bool   `json:"has_backup,omitempty"`
 	// ConnectHint is the address players most likely use (published host address
@@ -93,6 +94,9 @@ func (m *Manager) Catalogue() []ModuleInfo {
 		if m.gated(mf.ID) {
 			mi.Gated = true
 			mi.PolicyLines = policyLines(mf)
+		} else if len(mf.Runtime.Ports) > 0 {
+			mi.Bundled = true // not compiled in, but signed by a key the policy trusts: the guard vouches for it the same way
+			mi.Signed = !slices.Contains(modules.Bundled().IDs(), mf.ID)
 		}
 		if len(mf.Runtime.Ports) > 0 && m.Platform.HostIP != "" && m.Platform.HostIP != "0.0.0.0" {
 			mi.ConnectHint = fmt.Sprintf("%s:%d", m.Platform.HostIP, mf.Runtime.Ports[0].Port)

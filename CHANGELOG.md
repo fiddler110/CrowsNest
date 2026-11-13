@@ -6,6 +6,21 @@ Newest first within each part. Design detail for the modular-games rework is in
 
 ## Accounts (P3)
 
+- [x] **Allow switch for signed URL-installed modules (done 2026-11-12).** A module installed from a URL and signed
+  by a key listed in `policy.yaml` (`trusted_keys`) is admitted like a bundled one: switching it on makes the guard
+  check the saved signature (`module.yaml.sig`, written at install) and take the image and ports from the
+  manifest, so no `policy.yaml` lines are pasted. The guard reads the modules folder read-only
+  (`GUARD_MODULES_DIR`), re-checks on every reload, and ignores anything unsigned, edited, signed by another key, or
+  filed under another id. Tested in the modules, guard and managed packages; **not run against a real guard
+  container or a published signed module.** Modules installed before this have no saved signature and need one
+  update.
+
+- [x] **Passkeys (done 2026-11-12).** Sign in with WebAuthn passkeys (`auth.passkeys.rp_id` and `origins`),
+  added and removed on the Account page, usernameless on the login page. User verification is required, a
+  ceremony is single-use, and a passkey counts as the second step. Tested end to end with a software
+  authenticator (register, sign in, wrong origin, no user verification, replay, removed user); **not tried with
+  a real browser or device.**
+
 - [x] **Mod and config file editing (done 2026-11-12).** A module can declare `files:` (id, label, absolute path,
   size limit, restart hint, `stop_first`, `redact`). Admins get a Files tab on the card: edit, then Save with the
   password. Files are read and written with `docker exec` in the game's container; the exec guard allowlists exactly

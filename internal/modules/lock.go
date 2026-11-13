@@ -146,19 +146,42 @@ const maxSigBytes = 1 << 10
 // with no signature file, or none a trusted key made, is an error wrapping ErrNotSigned (the body is still
 // returned so a caller can offer a hash-pinned install instead).
 func FetchSigned(ctx context.Context, rawURL string, client *http.Client, keys []TrustedKey) (body []byte, signedBy string, err error) {
+	body, _, signedBy, err = FetchSignedSig(ctx, rawURL, client, keys)
+	return body, signedBy, err
+}
+
+// FetchSignedSig is FetchSigned that also returns the signature file, so an install can keep it (SaveSignature).
+func FetchSignedSig(ctx context.Context, rawURL string, client *http.Client, keys []TrustedKey) (body, sig []byte, signedBy string, err error) {
 	body, err = Fetch(ctx, rawURL, client)
 	if err != nil {
-		return nil, "", err
+		return nil, nil, "", err
 	}
-	sig, err := fetchCapped(ctx, rawURL+SigSuffix, client, maxSigBytes)
+	sig, err = fetchCapped(ctx, rawURL+SigSuffix, client, maxSigBytes)
 	if err != nil {
-		return body, "", fmt.Errorf("%w: no signature at %s (%v)", ErrNotSigned, rawURL+SigSuffix, err)
+		return body, nil, "", fmt.Errorf("%w: no signature at %s (%v)", ErrNotSigned, rawURL+SigSuffix, err)
 	}
 	by, err := VerifySignature(keys, body, sig)
 	if err != nil {
-		return body, "", err
+		return body, nil, "", err
 	}
-	return body, by, nil
+	return body, sig, by, nil
+}
+
+// SaveSignature keeps the signature an install was verified under, beside module.yaml, so the guard can check the
+// same bytes again. A nil sig (a hash-pinned install) removes any older one: the guard takes nothing from a module
+// that has no signature.
+func SaveSignature(dir, id string, sig []byte) error {
+	if !idRe.MatchString(id) {
+		return fmt.Errorf("%q is not a module id", id)
+	}
+	path := filepath.Join(dir, id, "module.yaml"+SigSuffix)
+	if sig == nil {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return err
+		}
+		return nil
+	}
+	return writeAtomic(path, sig)
 }
 
 func fetchCapped(ctx context.Context, rawURL string, client *http.Client, limit int) ([]byte, error) {

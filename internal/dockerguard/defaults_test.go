@@ -90,3 +90,39 @@ func TestAllowedFileIsReadStrictly(t *testing.T) {
 		t.Error("AllowedPath")
 	}
 }
+
+func TestLoadPolicyDefaults_SignedModulesNeedTrustedKeys(t *testing.T) {
+	write := func(extra string) string {
+		f := t.TempDir() + "/policy.yaml"
+		if err := os.WriteFile(f, []byte(bareYAML+extra), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return f
+	}
+	called := 0
+	signed := func(allowed []string, keys []PolicyKey) ([]string, map[string][]string, []error) {
+		called++
+		return []string{"example/mygame-server"}, map[string][]string{"mygame": {"7777/udp"}}, nil
+	}
+	d := Defaults{Images: []string{"lloesche/valheim-server"}, Network: "games-net", Allowed: []string{"mygame"}}
+
+	// No trusted keys in the file: the hook is never asked, so the panel cannot talk its way in.
+	p, _, err := LoadPolicyDefaults(write(""), d, signed)
+	if err != nil || called != 0 || slices.Contains(p.Images, "docker.io/example/mygame-server") || p.PortAllowed("", "7777", "udp") {
+		t.Fatalf("without keys: err=%v called=%d images=%v", err, called, p.Images)
+	}
+	// With a trusted key the module's image and port are admitted.
+	p, _, err = LoadPolicyDefaults(write("trusted_keys:\n  - {name: me, public_key: AAAA}\n"), d, signed)
+	if err != nil || called != 1 || !slices.Contains(p.Images, "docker.io/example/mygame-server") || !p.PortAllowed("", "7777", "udp") {
+		t.Fatalf("with a key: err=%v called=%d images=%v", err, called, p.Images)
+	}
+	// A bundled module's compiled-in ports are never overridden by what the hook returns for the same id.
+	d.ModulePorts = map[string][]string{"mygame": {"9999/udp"}}
+	d.Allowed = []string{"mygame"}
+	p, _, _ = LoadPolicyDefaults(write("trusted_keys:\n  - {name: me, public_key: AAAA}\n"), d, func([]string, []PolicyKey) ([]string, map[string][]string, []error) {
+		return nil, nil, nil
+	})
+	if !p.PortAllowed("", "9999", "udp") {
+		t.Error("compiled-in ports were lost")
+	}
+}
