@@ -113,9 +113,6 @@ func (s CreateSpec) body() ([]byte, error) {
 
 // send issues a request and returns the response for 2xx; otherwise an *apiError.
 func (c *Client) send(ctx context.Context, method, path string, q url.Values, body []byte) (*http.Response, error) {
-	if c.useCLI() {
-		return nil, fmt.Errorf("dockerctl: %s needs the Engine API, but this client is configured for the docker CLI (TLS or an explicit binary)", path)
-	}
 	base, _, _ := c.target()
 	u := base + path
 	if len(q) > 0 {
@@ -218,9 +215,6 @@ func (c *Client) Pull(ctx context.Context, image string) error {
 // ImageDigests is the RepoDigests of a local image ("repo@sha256:..." as the
 // engine writes them): what a pulled tag resolved to.
 func (c *Client) ImageDigests(ctx context.Context, image string) ([]string, error) {
-	if c.useCLI() {
-		return nil, fmt.Errorf("dockerctl: image inspect needs the Engine API, but this client is configured for the docker CLI")
-	}
 	ctx, cancel := c.opCtx(ctx, 30*time.Second)
 	defer cancel()
 	resp, err := c.get(ctx, "/images/"+image+"/json", nil) // the engine reads the repository's slashes as part of the name

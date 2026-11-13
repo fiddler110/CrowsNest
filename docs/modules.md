@@ -34,15 +34,12 @@ untouched. A Minecraft game from the dashboard also needs `docker.io/itzg/minecr
 
 ## Using a module
 
-Add a game to `config.yaml` (container and compose entries as for any game), then give it options:
+Add a game to `config.yaml` (its container must already exist on the host), then give it options:
 
 ```yaml
 - id: minecraft            # module "minecraft" is picked by id
   display_name: Minecraft
   container_name: minecraft
-  compose_file: /data/compose.yaml
-  compose_profile: minecraft
-  compose_service: minecraft
   options:                 # optional: enables the admin raw console
     rcon_addr: "minecraft:25575"
     rcon_password_env: MINECRAFT_RCON_PASSWORD
@@ -60,9 +57,6 @@ settings; only the RCON address and password differ:
   display_name: Team Fortress 2
   container_name: tf2
   module: source
-  compose_file: /data/compose.yaml
-  compose_profile: tf2
-  compose_service: tf2
   connect_address: "10.0.0.2:27015"
   options:
     rcon_addr: "tf2:27015"            # container name and RCON port on the games network
@@ -72,7 +66,7 @@ settings; only the RCON address and password differ:
   display_name: Counter-Strike 2
   container_name: cs2
   module: source
-  # ... compose fields ...
+  # ... container name and options ...
   options:
     rcon_addr: "cs2:27015"
     rcon_password_env: CS2_RCON_PASSWORD
@@ -335,8 +329,9 @@ secrets and state → write `scopes.json` → pull the image and create the cont
 403 for up to 30s while the guard picks up the new scope) → the game appears on the dashboard. This is idempotent,
 so a game that did not finish installing is finished on the next start.
 
-- The panel creates containers itself over the Docker API: no compose CLI is involved. Games from `config.yaml`
-  keep working as before and win any id clash.
+- The panel creates containers itself over the Docker API: and so does everything else now (the image has
+  no docker CLI or compose). Games from `config.yaml` start an existing container (create it on the host first) and
+  win any id clash.
 - Secrets are kept in `secrets.json` (mode 0600) in the panel's state directory and are never in `games.json`,
   `scopes.json`, a preview or a list. A module option such as `rcon_password_env` next to a secret `rcon_password`
   is pointed at the stored value automatically. Modules receive them through a lookup, not the process environment.

@@ -183,18 +183,6 @@ func TestHTTP_UnixSocket(t *testing.T) {
 	}
 }
 
-func TestHTTP_TLSFallsBackToCLI(t *testing.T) {
-	t.Setenv("DOCKER_TLS_VERIFY", "1")
-	c, _ := newFakeDocker(t, "#!/bin/sh\necho 29.0.0\n")
-	c.Host = "tcp://somewhere:2376"
-	if !c.useCLI() {
-		t.Fatal("useCLI = false with TLS env and tcp host")
-	}
-	if err := c.Ping(context.Background()); err != nil {
-		t.Fatalf("Ping via CLI: %v", err)
-	}
-}
-
 func readLogs(t *testing.T, rc io.ReadCloser, n int) string {
 	t.Helper()
 	buf := make([]byte, n)

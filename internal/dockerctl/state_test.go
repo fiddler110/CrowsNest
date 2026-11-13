@@ -18,14 +18,3 @@ func TestHTTP_State(t *testing.T) {
 		t.Fatal("State of a missing container should error")
 	}
 }
-
-func TestCLI_State(t *testing.T) {
-	c, _ := newFakeDocker(t, "#!/bin/sh\n"+logInvocation+`
-echo '{"running":false,"exit":137,"oom":true,"finished":"2026-11-11T09:59:00.5Z","restarts":2}'
-`)
-	st, err := c.cliState(context.Background(), "x")
-	if err != nil || st.Running || st.ExitCode != 137 || !st.OOMKilled || st.RestartCount != 2 ||
-		st.FinishedAt.UTC().Format(time.RFC3339) != "2026-11-11T09:59:00Z" {
-		t.Fatalf("cliState = %+v, %v", st, err)
-	}
-}

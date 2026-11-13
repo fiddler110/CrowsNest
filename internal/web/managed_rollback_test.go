@@ -13,7 +13,7 @@ import (
 func (f *fakeManaged) Rollback(string) error { return managed.ErrNoPrevious }
 
 func TestManagedRollbackIsAdminCSRFAndConflict(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.Managed = &fakeManaged{}
 	do := func(r *http.Request) int {
 		rec := httptest.NewRecorder()

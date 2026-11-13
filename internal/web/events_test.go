@@ -11,10 +11,14 @@ import (
 	"time"
 
 	"github.com/fiddler110/crowsnest/internal/auth"
+	"github.com/fiddler110/crowsnest/internal/dockerctl/dockertest"
 )
 
 // A failed start leaves an error whose raw detail only admins may see.
-const failedStartScript = "#!/bin/sh\ncase \"$1\" in ps) if [ \"$2\" = \"-a\" ]; then echo windrose; fi ;; start) echo 'boom: secret path' >&2; exit 1 ;; stop) sleep 0.5 ;; esac\n"
+func failedStart(f *dockertest.Fake) {
+	f.OnStart = failWith("boom: secret path")
+	f.OnStop = slow(500 * time.Millisecond)
+}
 
 type eventReader struct {
 	t  *testing.T
@@ -43,7 +47,7 @@ func (er eventReader) next() (event, data string) {
 // cancel that disconnects.
 func openEvents(t *testing.T, role auth.Role) (*testHarness, eventReader, context.CancelFunc) {
 	t.Helper()
-	h := newHarness(t, failedStartScript)
+	h := newHarness(t, failedStart)
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: role}}
 	h.App.EventsMinGap = 10 * time.Millisecond
 	if err := h.App.Exclusivity.RequestStart(context.Background(), "windrose"); err != nil {
@@ -119,7 +123,7 @@ func TestEvents_PushesChangesAndStopsOnDisconnect(t *testing.T) {
 }
 
 func TestEvents_CapAndSession(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.MaxEventStreams = 1
 	h.App.eventStreams.Store(1)
 	rec := httptest.NewRecorder()
@@ -137,7 +141,7 @@ func TestEvents_CapAndSession(t *testing.T) {
 // One user's streams stop at their own cap, leaving the shared cap's slots
 // for others, and a refused stream holds no slot.
 func TestEvents_PerUserCap(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.MaxEventStreamsPerUser = 2
 	for i := 0; i < 2; i++ {
 		if !h.App.userEventStreams.acquire("tester", 2) {

@@ -17,7 +17,7 @@ import (
 )
 
 func TestUsersAPI(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	path := filepath.Join(t.TempDir(), "users")
 	hash, _ := auth.HashPassword("whatever1")
 	if err := auth.SetUserHash(path, "tester", hash); err != nil {
@@ -82,7 +82,7 @@ func TestUsersAPI(t *testing.T) {
 }
 
 func TestUsersAPI_PlayersForbidden(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer}}
 	for _, tc := range []struct{ m, p string }{{"GET", "/api/users"}, {"POST", "/api/users"}, {"PUT", "/api/users/x"}, {"DELETE", "/api/users/x"}} {
 		rec := httptest.NewRecorder()
@@ -94,7 +94,7 @@ func TestUsersAPI_PlayersForbidden(t *testing.T) {
 }
 
 func TestUsersAPI_GoogleOnly(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	path := filepath.Join(t.TempDir(), "users")
 	hash, _ := auth.HashPassword("whatever1")
 	auth.SetUserHash(path, "tester", hash)
@@ -150,7 +150,7 @@ func TestUsersAPI_GoogleOnly(t *testing.T) {
 }
 
 func TestGameAllowlistHidesGames(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n", "palworld", "valheim")
+	h := newHarness(t, nil, "palworld", "valheim")
 	h.App.Auth.Sessions.Users = auth.Users{"tester": {Role: auth.RolePlayer, Games: []string{"palworld"}}}
 	do := func(method, path, body string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
@@ -188,7 +188,7 @@ func TestGameAllowlistHidesGames(t *testing.T) {
 }
 
 func TestUsersAPIGames(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n", "palworld", "valheim")
+	h := newHarness(t, nil, "palworld", "valheim")
 	path := filepath.Join(t.TempDir(), "users")
 	hash, _ := auth.HashPassword("whatever1")
 	if err := auth.SetUserHash(path, "tester", hash); err != nil {
@@ -226,7 +226,7 @@ func TestUsersAPIGames(t *testing.T) {
 }
 
 func TestGoogleSettingsAPI(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	dir := t.TempDir()
 	users := filepath.Join(dir, "users")
 	hash, _ := auth.HashPassword("whatever1")
@@ -318,7 +318,7 @@ func TestGoogleSettingsAPI(t *testing.T) {
 }
 
 func TestPasswordLoginSwitch(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	dir := t.TempDir()
 	users := filepath.Join(dir, "users")
 	hash, _ := auth.HashPassword("whatever1")
@@ -381,7 +381,7 @@ func TestPasswordLoginSwitch(t *testing.T) {
 }
 
 func TestTOTPEnrolmentAPI(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	dir := t.TempDir()
 	users := filepath.Join(dir, "users")
 	hash, _ := auth.HashPassword("whatever1")
@@ -459,7 +459,7 @@ func TestOIDCProvidersAPI(t *testing.T) {
 	}))
 	defer idp.Close()
 
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	dir := t.TempDir()
 	users := filepath.Join(dir, "users")
 	hash, _ := auth.HashPassword("whatever1")
@@ -526,7 +526,7 @@ func TestOIDCProvidersAPI(t *testing.T) {
 }
 
 func TestUsersAPI_StepUp(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	path := filepath.Join(t.TempDir(), "users")
 	hash, _ := auth.HashPassword("whatever1")
 	if err := auth.SetUserHash(path, "tester", hash); err != nil {
@@ -593,7 +593,7 @@ func TestUsersAPI_StepUp(t *testing.T) {
 }
 
 func TestChangeOwnPassword(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	users := filepath.Join(t.TempDir(), "users")
 	hash, _ := auth.HashPassword("whatever1")
 	auth.SetUserHash(users, "tester", hash)
@@ -627,7 +627,7 @@ func TestChangeOwnPassword(t *testing.T) {
 }
 
 func TestMentionsAPI(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	h.App.Mentions, _ = notify.OpenMentions("")
 	h.App.DiscordOn = true
 	put := func(body string) *httptest.ResponseRecorder {
@@ -653,7 +653,7 @@ func TestMentionsAPI(t *testing.T) {
 }
 
 func TestMFAGate(t *testing.T) {
-	h := newHarness(t, "#!/bin/sh\nexit 0\n")
+	h := newHarness(t, nil)
 	dir := t.TempDir()
 	users := filepath.Join(dir, "users")
 	hash, _ := auth.HashPassword("whatever1")

@@ -357,7 +357,6 @@ func serve() error {
 		NightStartHour: cfg.NightShutdown.StartHour,
 		NightEndHour:   cfg.NightShutdown.EndHour,
 		MaxActiveGames: cfg.Server.MaxActiveGames,
-		AutoUpdate:     cfg.Server.AutoUpdate,
 	}, cfg.Server.SettingsFile)
 	if err != nil {
 		return fmt.Errorf("load settings: %w", err)
@@ -396,7 +395,6 @@ func serve() error {
 		exclusivityMgr.Memory = budget
 		go sampleMemory(ctx, budget, docker, registry)
 	}
-	exclusivityMgr.AutoUpdate = func() bool { return settingsStore.Get().AutoUpdate }
 	// Background starts (compose pull/up) belong to the process, not to the
 	// HTTP request that asked for them; shutdown cancels them.
 	exclusivityMgr.BaseContext = ctx

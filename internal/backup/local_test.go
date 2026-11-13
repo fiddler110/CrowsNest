@@ -151,11 +151,15 @@ func TestManager_LocalDirListsAndPrunesWithoutExec(t *testing.T) {
 		ts := now.Add(time.Duration(i-10) * time.Hour)
 		_ = os.Chtimes(p, ts, ts)
 	}
-	calls := filepath.Join(t.TempDir(), "calls")
+	var execs []string
 	d := games.GameDef{ID: "pal", DisplayName: "Pal", ContainerName: "pal",
 		Backup: &games.BackupSpec{Exec: []string{"backup"}, LocalDir: dir, Keep: 2}}
 	rec := &rec{}
-	m := &Manager{Root: r, History: rec, Docker: fakeDocker(t, `case "$1" in ps) echo pal ;; exec) echo "$*" >> `+calls+`; echo data > `+dir+`/new.tgz ;; esac`)}
+	m := &Manager{Root: r, History: rec, Docker: fakeDocker(t, true, func(_ string, cmd []string, _ string) (string, string, int) {
+		execs = append(execs, strings.Join(cmd, " "))
+		_ = os.WriteFile(filepath.Join(dir, "new.tgz"), []byte("data\n"), 0o600)
+		return "", "", 0
+	})}
 
 	files, err := m.List(context.Background(), d)
 	if err != nil || len(files) != 4 || files[0].Name != "bd.tgz" {
@@ -167,8 +171,8 @@ func TestManager_LocalDirListsAndPrunesWithoutExec(t *testing.T) {
 	if files, _ := m.List(context.Background(), d); len(files) != 2 {
 		t.Fatalf("after prune %d files, want 2", len(files))
 	}
-	if b, _ := os.ReadFile(calls); strings.Count(string(b), "\n") != 1 {
-		t.Fatalf("docker exec ran %q, want only the backup command (no find, no prune)", b)
+	if len(execs) != 1 {
+		t.Fatalf("docker exec ran %q, want only the backup command (no find, no prune)", execs)
 	}
 
 	// The drive vanishes: nothing is listed, backed up or pruned.
@@ -197,12 +201,12 @@ func TestRunBackup_NoNewFileOrEmptyFileIsAFailure(t *testing.T) {
 	r, mount := newRoot(t)
 	_ = r.EnsureGameDir("pal")
 	dir := filepath.Join(mount, "pal")
-	for name, script := range map[string]string{
-		"writes nothing": `exit 0`,
-		"empty file":     `: > ` + dir + `/e.tgz`,
+	for name, run := range map[string]func(){
+		"writes nothing": func() {},
+		"empty file":     func() { _ = os.WriteFile(filepath.Join(dir, "e.tgz"), nil, 0o600) },
 	} {
 		rc := &rec{}
-		m := &Manager{Root: r, History: rc, Docker: fakeDocker(t, `case "$1" in ps) echo pal ;; exec) `+script+` ;; esac`)}
+		m := &Manager{Root: r, History: rc, Docker: fakeDocker(t, true, func(string, []string, string) (string, string, int) { run(); return "", "", 0 })}
 		if err := m.RunBackup(context.Background(), localGame(dir), "alex"); err == nil {
 			t.Fatalf("%s: want a failure", name)
 		}
@@ -217,7 +221,7 @@ func TestRunBackup_PermissionDeniedGetsAHint(t *testing.T) {
 	_ = r.EnsureGameDir("pal")
 	dir := filepath.Join(mount, "pal")
 	rc := &rec{}
-	m := &Manager{Root: r, History: rc, Docker: fakeDocker(t, `case "$1" in ps) echo pal ;; exec) echo "tar: Permission denied" >&2; exit 2 ;; esac`)}
+	m := &Manager{Root: r, History: rc, Docker: fakeDocker(t, true, func(string, []string, string) (string, string, int) { return "", "tar: Permission denied\n", 2 })}
 	_ = m.RunBackup(context.Background(), localGame(dir), "alex")
 	if len(rc.events) != 1 || !strings.Contains(rc.events[0], "backups_dir_mode") {
 		t.Fatalf("events = %v", rc.events)
@@ -229,7 +233,7 @@ func TestRunBackup_RefusalIsRecordedAndNotified(t *testing.T) {
 	_ = r.EnsureGameDir("pal")
 	_ = os.Remove(filepath.Join(mount, markerName)) // the drive is gone
 	rc, n := &rec{}, &note{}
-	m := &Manager{Root: r, History: rc, Notifier: n, Docker: fakeDocker(t, `exit 0`)}
+	m := &Manager{Root: r, History: rc, Notifier: n, Docker: fakeDocker(t, false, ok)}
 	// A scheduled or before-stop backup has no actor: it must not fail silently.
 	if err := m.RunBackup(context.Background(), localGame(filepath.Join(mount, "pal")), ""); !errors.Is(err, ErrRootUnavailable) {
 		t.Fatalf("err = %v", err)
@@ -242,7 +246,7 @@ func TestRunBackup_RefusalIsRecordedAndNotified(t *testing.T) {
 func TestRunBackup_RefusedWhenAlmostFull(t *testing.T) {
 	r, mount := newRoot(t)
 	_ = r.EnsureGameDir("pal")
-	m := &Manager{Root: r, MinFree: 1 << 60, Docker: fakeDocker(t, `exit 0`)}
+	m := &Manager{Root: r, MinFree: 1 << 60, Docker: fakeDocker(t, false, ok)}
 	if err := m.RunBackup(context.Background(), localGame(filepath.Join(mount, "pal")), "alex"); !errors.Is(err, ErrLowSpace) {
 		t.Fatalf("err = %v, want ErrLowSpace", err)
 	}

@@ -367,19 +367,6 @@ games:
 `,
 			wantErr: "id must match",
 		},
-		{
-			name: "missing compose_profile",
-			yaml: `
-users_file: /app/users.env
-games:
-  - id: a
-    display_name: A
-    container_name: a
-    compose_file: f
-    compose_service: s
-`,
-			wantErr: "compose_profile is required",
-		},
 	}
 
 	for _, tt := range tests {

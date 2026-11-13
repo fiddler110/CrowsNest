@@ -11,8 +11,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -20,21 +18,16 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/config"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
+	"github.com/fiddler110/crowsnest/internal/dockerctl/dockertest"
 	"github.com/fiddler110/crowsnest/internal/games"
 	"github.com/fiddler110/crowsnest/internal/probes"
 )
 
 func fakeDocker(t *testing.T, running bool) *dockerctl.Client {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "docker")
-	script := "#!/bin/sh\necho -n\n"
-	if running {
-		script = "#!/bin/sh\necho palworld\n"
-	}
-	if err := os.WriteFile(path, []byte(script), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	return &dockerctl.Client{DockerBin: path}
+	f := dockertest.New(t)
+	f.Add("palworld", running)
+	return f.Client()
 }
 
 // palworldDef wires the bundled module against baseURL.

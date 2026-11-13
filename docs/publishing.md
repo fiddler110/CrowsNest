@@ -61,19 +61,16 @@ under **Security → Code scanning** as well as failing the job.
 * gosec: a `#nosec Gxxx -- reason` comment on the statement, reviewed like any
   other change.
 * Trivy: a `.trivyignore.yaml` entry with a `statement` and an `expired_at`
-  date. Prefer fixing over ignoring (see the compose note below).
+  date. Prefer fixing over ignoring.
 
 ## Image notes
 
-* **Bases are pinned by digest:** `docker:29.9.3-cli` for the docker CLI,
-  `golang:1.26.10-alpine3.24` to build, `alpine:3.24.4` at runtime (with
-  `apk upgrade`). Dependabot proposes digest bumps.
-* **The compose plugin is built from source:** v5.7.0 at its tagged commit,
-  with `golang.org/x/net` bumped to v0.62.0. The released v5.7.0 binary
-  carries CVE-2026-78661 (HIGH) and CVE-2026-97045 (MEDIUM) via x/net v0.60.0,
-  and no fixed binary exists yet. Once a compose release ships the fix, delete
-  the `compose` stage in the Dockerfile and copy the plugin from `docker-cli`
-  again.
+* **Bases are pinned by digest:** `golang:1.26.11-alpine3.24` to build,
+  `alpine:3.24.4` at runtime (with `apk upgrade`). Dependabot proposes digest
+  bumps.
+* **No docker CLI or compose in the image:** the panel uses the Docker Engine
+  API for everything (start, stop, exec, logs, create), so the image is the
+  one Go binary plus certificates and tzdata.
 * **Non-root** (uid 1000), static binaries (`CGO_ENABLED=0`, `-trimpath`),
   and a healthcheck built into the binary.
 * **Scan state checked on 2026-11-06:** 0 known vulnerabilities at every

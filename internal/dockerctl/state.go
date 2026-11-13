@@ -2,7 +2,6 @@ package dockerctl
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -20,9 +19,6 @@ type ContainerState struct {
 // State reads the container's current ContainerState. A container that does
 // not exist is an error (use Exists first when that is a normal case).
 func (c *Client) State(ctx context.Context, name string) (ContainerState, error) {
-	if c.useCLI() {
-		return c.cliState(ctx, name)
-	}
 	ctx, cancel := c.opCtx(ctx, defaultShortTimeout)
 	defer cancel()
 	ir, err := c.inspect(ctx, name)
@@ -46,28 +42,4 @@ func parseFinished(ts string) (time.Time, error) {
 		return time.Time{}, nil // docker reports 0001-01-01 for "never"
 	}
 	return t, nil
-}
-
-// cliState is the CLI fallback for State.
-func (c *Client) cliState(ctx context.Context, name string) (ContainerState, error) {
-	out, err := c.run(ctx, defaultShortTimeout, "inspect", "--format",
-		`{"running":{{json .State.Running}},"exit":{{.State.ExitCode}},"oom":{{json .State.OOMKilled}},"finished":"{{.State.FinishedAt}}","restarts":{{.RestartCount}}}`, name)
-	if err != nil {
-		return ContainerState{}, err
-	}
-	var v struct {
-		Running  bool   `json:"running"`
-		Exit     int    `json:"exit"`
-		OOM      bool   `json:"oom"`
-		Finished string `json:"finished"`
-		Restarts int    `json:"restarts"`
-	}
-	if err := json.Unmarshal([]byte(out), &v); err != nil {
-		return ContainerState{}, fmt.Errorf("dockerctl: parse inspect state of %s: %w", name, err)
-	}
-	fin, err := parseFinished(v.Finished)
-	if err != nil {
-		return ContainerState{}, err
-	}
-	return ContainerState{Running: v.Running, ExitCode: v.Exit, OOMKilled: v.OOM, FinishedAt: fin, RestartCount: v.Restarts}, nil
 }

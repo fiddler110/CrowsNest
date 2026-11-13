@@ -50,9 +50,9 @@ Done (passkeys, the Allow switch); see `CHANGELOG.md`. What is left of them is t
 
 #### P4: larger design work
 
-- [ ] **R24. A separate minimal guard image.** The guard holds the Docker socket but runs the full panel image
-  with the docker CLI and compose in it. Build a guard-only image (static binary, no shell).
-- [ ] **Phase 6** (track A): drop the docker CLI and compose from the panel image; makes R24 simpler.
+- [ ] **R24. A separate minimal guard image.** The guard holds the Docker socket but runs the panel image. The
+  image no longer has the docker CLI or compose (Phase 6), so what is left is a guard-only image: the static binary
+  and nothing else (no shell, no certificates it does not use).
 - [ ] **Tier 2 adapter-sidecar contract** (track A, Phase 2), when a module needs it.
 
 ### A. Modular games (open)
@@ -61,8 +61,6 @@ Done (passkeys, the Allow switch); see `CHANGELOG.md`. What is left of them is t
   contract is deferred until a module needs it.
 - [ ] **Phase 5 leftovers:** installing a module whose image the
   policy does not list (shown as "needs policy lines"). The extra port range is edited in `policy.yaml`.
-- [ ] **Phase 6 (optional):** drop the docker CLI and compose from the image (create containers through the Engine
-  API behind the guard); also removes the compose-from-source Dockerfile stage and its x/net CVE churn.
 
 ### B. Accounts and settings (open)
 

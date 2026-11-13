@@ -17,6 +17,7 @@ import (
 
 	"github.com/fiddler110/crowsnest/internal/backup"
 	"github.com/fiddler110/crowsnest/internal/dockerctl"
+	"github.com/fiddler110/crowsnest/internal/dockerctl/dockertest"
 	"github.com/fiddler110/crowsnest/internal/games"
 )
 
@@ -29,6 +30,7 @@ type engine struct {
 	helper     bool // the helper container exists
 	helperExit int
 	log        []string
+	exec       *dockertest.Fake // answers exec (the safety backup's command)
 }
 
 func (e *engine) note(s string) {
@@ -39,6 +41,10 @@ func (e *engine) note(s string) {
 
 func (e *engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p := apiPrefix.ReplaceAllString(r.URL.Path, "")
+	if strings.HasPrefix(p, "/exec/") || strings.HasSuffix(p, "/exec") {
+		e.exec.Handler().ServeHTTP(w, r)
+		return
+	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
 	switch {
@@ -63,6 +69,8 @@ func (e *engine) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p == "/containers/pal-restore" && r.Method == http.MethodDelete:
 		e.log = append(e.log, "remove pal-restore")
 		e.helper = false
+		w.WriteHeader(204)
+	case strings.HasSuffix(p, "/start") && r.Method == http.MethodPost:
 		w.WriteHeader(204)
 	case strings.HasSuffix(p, "/logs"):
 		s := "tar: no such file"
@@ -128,14 +136,11 @@ type fixture struct {
 
 func newFixture(t *testing.T, keep int) *fixture {
 	t.Helper()
-	e := &engine{gameUp: true}
+	e := &engine{gameUp: true, exec: dockertest.New(t)}
+	e.exec.Add("pal", true)
 	srv := httptest.NewServer(e)
 	t.Cleanup(srv.Close)
-	bin := filepath.Join(t.TempDir(), "docker")
-	if err := os.WriteFile(bin, []byte("#!/bin/sh\ncase \" $* \" in *\" ps \"*) echo pal-restore ;; esac\nexit 0\n"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	docker := &dockerctl.Client{Host: "tcp://" + strings.TrimPrefix(srv.URL, "http://"), HTTP: srv.Client(), DockerBin: bin}
+	docker := &dockerctl.Client{Host: "tcp://" + strings.TrimPrefix(srv.URL, "http://"), HTTP: srv.Client()}
 
 	mount := t.TempDir()
 	root := &backup.Root{Mount: mount, Mode: 0o775, StateFile: filepath.Join(t.TempDir(), "state"), ConfirmNew: true}

@@ -31,20 +31,14 @@ func TestFromConfig(t *testing.T) {
 			ID:             "windrose",
 			DisplayName:    "Windrose",
 			ContainerName:  "windrose",
-			ComposeFile:    "/windrose/compose.yaml",
-			ComposeProfile: "windrose",
-			ComposeService: "windrose",
 			ConnectAddress: "play.example.com:8211",
 			ConnectNote:    "Ask for the password",
 		},
 		{
-			ID:             "valheim",
-			DisplayName:    "Valheim",
-			ContainerName:  "valheim",
-			ComposeFile:    "/valheim/compose.yaml",
-			ComposeProfile: "valheim",
-			ComposeService: "valheim",
-			NightShutdown:  &optedOut,
+			ID:            "valheim",
+			DisplayName:   "Valheim",
+			ContainerName: "valheim",
+			NightShutdown: &optedOut,
 		},
 	}
 	docker := &dockerctl.Client{}
@@ -77,12 +71,7 @@ func TestFromConfig(t *testing.T) {
 		t.Errorf("defs[1].NightShutdown = true, want false (explicitly opted out)")
 	}
 
-	want := dockerctl.Target{
-		ContainerName:  "valheim",
-		ComposeFile:    "/valheim/compose.yaml",
-		ComposeProfile: "valheim",
-		ComposeService: "valheim",
-	}
+	want := dockerctl.Target{ContainerName: "valheim"}
 	if got := defs[1].DockerTarget(); got != want {
 		t.Errorf("defs[1].DockerTarget() = %+v, want %+v", got, want)
 	}

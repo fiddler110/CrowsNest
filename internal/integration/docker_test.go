@@ -42,6 +42,7 @@ func TestStartStopThroughTheGuard(t *testing.T) {
 		Name:     name,
 		Images:   map[string]bool{imageRepo: true},
 		Networks: map[string]bool{"bridge": true},
+		Exec:     true,
 	}})
 	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -74,6 +75,16 @@ func TestStartStopThroughTheGuard(t *testing.T) {
 	}
 	if out, err := via.Stats(ctx, name); err != nil || out.MemUsedBytes == 0 {
 		t.Errorf("stats = %+v, %v", out, err)
+	}
+	// Exec goes through the guard too: create, a hijacked start, the exit code from an inspect.
+	if out, err := via.Exec(ctx, name, "sh", "-c", "echo out; echo err >&2"); err != nil || !strings.Contains(out, "out") {
+		t.Errorf("exec = %q, %v", out, err)
+	}
+	if _, err := via.Exec(ctx, name, "sh", "-c", "echo bad >&2; exit 3"); err == nil || !strings.Contains(err.Error(), "exit status 3") || !strings.Contains(err.Error(), "bad") {
+		t.Errorf("failing exec = %v, want exit status 3 with stderr", err)
+	}
+	if out, err := via.ExecStdin(ctx, name, strings.NewReader("hello\n"), 10*time.Second, "cat"); err != nil || out != "hello\n" {
+		t.Errorf("exec with stdin = %q, %v", out, err)
 	}
 	if err := via.Stop(ctx, name); err != nil {
 		t.Fatalf("stop: %v", err)

@@ -21,7 +21,7 @@ loaders.general = () => {
   const form = $("settings-form");
   const errorEl = $("settings-error");
   const fields = ["idle_enabled", "idle_minutes", "night_enabled", "night_start_hour",
-    "night_end_hour", "max_active_games", "auto_update", "raw_console", "require_admin_mfa"];
+    "night_end_hour", "max_active_games", "raw_console", "require_admin_mfa"];
   const input = (n) => form.elements[n];
   (async () => {
     const res = await callAPI("/api/settings");

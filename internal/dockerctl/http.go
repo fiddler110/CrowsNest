@@ -69,26 +69,6 @@ func (c *Client) target() (base, socket string, ok bool) {
 	return "", "", false
 }
 
-// useCLI reports whether the read operations must use the docker CLI
-// instead of the HTTP API: TLS (DOCKER_TLS_VERIFY / DOCKER_CERT_PATH with a
-// TCP host, or an https/ssh/npipe host) is not implemented here, so those
-// configurations keep working through the CLI rather than breaking.
-func (c *Client) useCLI() bool {
-	if c.HTTP != nil {
-		return false
-	}
-	// An explicit DockerBin means the caller wants that binary used (the
-	// production wiring never sets it; tests use it to fake docker).
-	if c.DockerBin != "" {
-		return true
-	}
-	_, socket, ok := c.target()
-	if !ok {
-		return true
-	}
-	return socket == "" && (os.Getenv("DOCKER_TLS_VERIFY") != "" || os.Getenv("DOCKER_CERT_PATH") != "")
-}
-
 func (c *Client) client() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
@@ -219,9 +199,6 @@ func (c *Client) inspect(ctx context.Context, name string) (*inspectResp, error)
 // answers. Unlike the status checks it says nothing about any one container;
 // it is how the dashboard tells "docker is down" from "every game is offline".
 func (c *Client) Ping(ctx context.Context) error {
-	if c.useCLI() {
-		return c.cliPing(ctx)
-	}
 	ctx, cancel := c.opCtx(ctx, defaultShortTimeout)
 	defer cancel()
 	_, err := c.ping(ctx)
@@ -230,9 +207,6 @@ func (c *Client) Ping(ctx context.Context) error {
 
 // Exists reports whether a container by this name exists, running or not.
 func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
-	if c.useCLI() {
-		return c.cliExists(ctx, name)
-	}
 	ctx, cancel := c.opCtx(ctx, defaultShortTimeout)
 	defer cancel()
 	if _, err := c.inspect(ctx, name); err != nil {
@@ -247,9 +221,6 @@ func (c *Client) Exists(ctx context.Context, name string) (bool, error) {
 // Running reports whether the container is currently running. A container
 // that does not exist is not running (false, nil).
 func (c *Client) Running(ctx context.Context, name string) (bool, error) {
-	if c.useCLI() {
-		return c.cliRunning(ctx, name)
-	}
 	ctx, cancel := c.opCtx(ctx, defaultShortTimeout)
 	defer cancel()
 	ir, err := c.inspect(ctx, name)
@@ -264,9 +235,6 @@ func (c *Client) Running(ctx context.Context, name string) (bool, error) {
 
 // StartedAt returns the container's current-run start time.
 func (c *Client) StartedAt(ctx context.Context, name string) (time.Time, error) {
-	if c.useCLI() {
-		return c.cliStartedAt(ctx, name)
-	}
 	ctx, cancel := c.opCtx(ctx, defaultShortTimeout)
 	defer cancel()
 	ir, err := c.inspect(ctx, name)
@@ -283,9 +251,6 @@ func (c *Client) StartedAt(ctx context.Context, name string) (time.Time, error) 
 // FinishedAt returns when the container's most recent run ended. It's the
 // zero time for a container that has never stopped.
 func (c *Client) FinishedAt(ctx context.Context, name string) (time.Time, error) {
-	if c.useCLI() {
-		return c.cliFinishedAt(ctx, name)
-	}
 	ctx, cancel := c.opCtx(ctx, defaultShortTimeout)
 	defer cancel()
 	ir, err := c.inspect(ctx, name)
@@ -341,9 +306,6 @@ func (r *readCloser) Close() error {
 // optional; since accepts RFC3339 or a relative duration such as "1h". The
 // caller must cancel ctx or Close the reader to stop the stream.
 func (c *Client) Logs(ctx context.Context, name, since, tail string) (io.ReadCloser, error) {
-	if c.useCLI() {
-		return c.cliLogs(ctx, name, since, tail)
-	}
 	q := url.Values{"follow": {"1"}, "stdout": {"1"}, "stderr": {"1"}}
 	if since != "" {
 		s, err := sinceParam(since, time.Now())
@@ -514,9 +476,6 @@ func (c *Client) putSample(name string, sr *statsResp) {
 // two samples); later ones use one-shot and diff against the cached previous
 // sample.
 func (c *Client) Stats(ctx context.Context, name string) (Stats, error) {
-	if c.useCLI() {
-		return c.cliStats(ctx, name)
-	}
 	ctx, cancel := c.opCtx(ctx, defaultShortTimeout)
 	defer cancel()
 

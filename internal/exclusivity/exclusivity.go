@@ -190,12 +190,6 @@ type Manager struct {
 	// of the active-game limit. Optional: nil means only the limit applies.
 	Memory MemoryAdmitter
 
-	// AutoUpdate, when set and true, makes every start pull the game's
-	// latest image first (`compose pull`) so a restart picks up new server
-	// versions. A failed pull is logged and the start proceeds with the
-	// image already on disk.
-	AutoUpdate func() bool
-
 	// Notifier, when set, is told about user-initiated starts, stops and
 	// switches and about failed background starts. Optional — nil disables
 	// notifications. Delivery is asynchronous and best-effort.
@@ -518,7 +512,6 @@ func (m *Manager) launchStart(target games.GameDef, actor string, announce bool)
 		defer cancel()
 
 		dt := target.DockerTarget()
-		dt.Pull = m.AutoUpdate != nil && m.AutoUpdate()
 		err := m.docker.Start(ctx, dt)
 		res := StartResult{At: time.Now()}
 		switch {
