@@ -43,11 +43,14 @@ func Setup(w io.Writer, level, format string) error {
 	return nil
 }
 
+// oneLine keeps a logged value from forging extra log lines.
+var oneLine = strings.NewReplacer("\n", " ", "\r", " ")
+
 // bridge takes lines from the standard log package.
 type bridge struct{}
 
 func (bridge) Write(p []byte) (int, error) {
-	msg := strings.TrimRight(string(p), "\n")
+	msg := oneLine.Replace(strings.TrimRight(string(p), "\n"))
 	slog.Log(context.Background(), levelOf(msg), msg)
 	return len(p), nil
 }
