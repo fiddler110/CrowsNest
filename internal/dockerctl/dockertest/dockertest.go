@@ -209,7 +209,7 @@ func (f *Fake) serve(w http.ResponseWriter, r *http.Request) {
 
 func notFound(w http.ResponseWriter, name string) {
 	w.WriteHeader(http.StatusNotFound)
-	fmt.Fprintf(w, `{"message":"No such container: %s"}`, name)
+	writeJSON(w, map[string]string{"message": "No such container: " + name})
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
@@ -313,7 +313,7 @@ func (f *Fake) container(w http.ResponseWriter, r *http.Request, name, action st
 func frame(w io.Writer, stream byte, s string) {
 	var h [8]byte
 	h[0] = stream
-	binary.BigEndian.PutUint32(h[4:], uint32(len(s)))
+	binary.BigEndian.PutUint32(h[4:], uint32(len(s))) // #nosec G115 -- test frames are small
 	_, _ = w.Write(h[:])
 	_, _ = io.WriteString(w, s)
 }
