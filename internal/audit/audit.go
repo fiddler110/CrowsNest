@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -85,7 +86,7 @@ func (l *Log) Path() string {
 
 // Record appends msg.
 func (l *Log) Record(msg string) {
-	slog.Info(msg, "audit", true)
+	slog.Info(strings.NewReplacer("\n", " ", "\r", " ").Replace(msg), "audit", true)
 	if l == nil || l.f == nil {
 		return
 	}
